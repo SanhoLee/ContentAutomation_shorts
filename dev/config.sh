@@ -8,9 +8,15 @@ else
     echo "경고: secrets.sh 파일이 없습니다. ~/brain50/secrets.sh 를 생성하세요."
 fi
 
+# JOB_ID 설정 (run.sh에서 전달받거나 자동 생성)
+if [ -z "$JOB_ID" ]; then
+    JOB_ID=$(date +%Y%m%d_%H%M%S)
+fi
+export JOB_ID
+
 export BASE_DIR="$HOME/brain50"
 export SRC_DIR="$BASE_DIR/src"
-export WORK_DIR="$BASE_DIR/data/work"
+export WORK_DIR="$BASE_DIR/data/work/${JOB_ID}"
 export ASSETS_DIR="$BASE_DIR/data/assets"
 export OUTPUT_DIR="$BASE_DIR/data/output"
 export BACKUP_DIR="$BASE_DIR/data/backups"

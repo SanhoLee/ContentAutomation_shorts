@@ -8,18 +8,44 @@ else
     echo "경고: secrets.sh 파일이 없습니다. ~/brain50/secrets.sh 를 생성하세요."
 fi
 
-# JOB_ID 설정 (run.sh에서 전달받거나 자동 생성)
+# 환경 감지 (dev 또는 prod)
+ENV=$(basename "$(dirname "$0")")
+
+CONFIG_FILE="$(dirname "${BASH_SOURCE[0]}")/config.yaml"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "오류: $CONFIG_FILE 파일이 없습니다."
+    exit 1
+fi
+
+# Python으로 YAML 파싱하여 환경변수로 export
+python3 - <<EOF
+import yaml
+import os
+import sys
+
+with open("$CONFIG_FILE", "r", encoding="utf-8") as f:
+    config = yaml.safe_load(f)
+
+# common 설정 로드
+for key, value in config.get("common", {}).items():
+    os.environ[key] = str(value)
+
+# 현재 환경(dev/prod) 설정 로드
+env_config = config.get("$ENV", {})
+for key, value in env_config.items():
+    os.environ[key] = str(value)
+
+print(f"[INFO] 설정 로드 완료: ENV=$ENV", file=sys.stderr)
+EOF
+
+# JOB_ID 처리 (없으면 자동 생성)
 if [ -z "$JOB_ID" ]; then
     JOB_ID=$(date +%Y%m%d_%H%M%S)
 fi
 export JOB_ID
 
-export BASE_DIR="$HOME/brain50"
-export SRC_DIR="$BASE_DIR/src"
-export WORK_DIR="$BASE_DIR/data/work/${JOB_ID}"
-export ASSETS_DIR="$BASE_DIR/data/assets"
-export OUTPUT_DIR="$BASE_DIR/data/output"
-export BACKUP_DIR="$BASE_DIR/data/backups"
-export ATEMPO="1.15"            # 1.0=기본속도, 1.1~1.3=더 빠르게 (0.05 단위 추천)
-export TARGET_DURATION_SEC="60"
-export CHARS_PER_SEC="4.66"      # 한국어 TTS 기본 속도 (실측 후 조정 가능)
+# WORK_DIR 동적 설정
+export WORK_DIR="${WORK_DIR_BASE}/${JOB_ID}"
+
+echo "[INFO] JOB_ID=$JOB_ID, WORK_DIR=$WORK_DIR"

@@ -1,0 +1,24 @@
+# Shorts Automation Pipeline - 공통 + 환경별 설정
+common:
+  BASE_DIR: "/home/ubuntu/brain50"
+  ASSETS_DIR: "${BASE_DIR}/data/assets"
+  OUTPUT_DIR: "${BASE_DIR}/data/output"
+  BACKUP_DIR: "${BASE_DIR}/data/backups"
+
+dev:
+  WORK_DIR_BASE: "${BASE_DIR}/data/work"
+  CLAUDE_MODEL: "claude-sonnet-4-6"
+  MAX_TOKENS: 4000
+  LOG_LEVEL: "DEBUG"
+  ATEMPO: 1.15
+  TARGET_DURATION_SEC: 60
+  CHARS_PER_SEC: 4.66
+
+prod:
+  WORK_DIR_BASE: "${BASE_DIR}/data/work"
+  CLAUDE_MODEL: "claude-sonnet-4-6"
+  MAX_TOKENS: 4000
+  LOG_LEVEL: "INFO"
+  ATEMPO: 1.15
+  TARGET_DURATION_SEC: 60
+  CHARS_PER_SEC: 4.66

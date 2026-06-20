@@ -1,0 +1,38 @@
+# Secrets & Credentials
+secrets.sh
+.env
+*.env
+secrets*.sh
+config/*/secrets*.sh
+
+# Generated / Temporary data
+data/work/
+data/output/
+data/backups/
+*.mp4
+*.wav
+*.srt
+data/assets/broll/          # ← broll 폴더 전체 ignore (랜덤 추출 전략이니)
+data/assets/broll/**
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Logs & Temp
+*.log
+logs/
+*.tmp
+*.json  # work/ 안 json만 (assets/ json은 필요시 제외)
+
+# OS & Editor
+.DS_Store
+.vscode/
+.idea/
+
+# 기타
+archive/
+tree.txt

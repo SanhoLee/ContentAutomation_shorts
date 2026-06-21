@@ -99,18 +99,44 @@ def editable_stage_info(stage, job_id):
 
 
 def approval_buttons(stage):
-    rows = [[button("승인", "approve"), button("전체 취소", "cancel_all")]]
+    rows = [[button("승인", f"approve:{stage}"), button("전체 취소", "cancel_all")]]
+    previous = previous_stage_button(stage)
+    if previous:
+        rows.insert(0, [previous])
     if stage in ("await_script_approval", "await_caption_approval", "await_upload_meta_approval"):
-        rows.insert(0, [button("수정", "edit")])
+        rows.insert(0, [button("수정", f"edit:{stage}")])
     if stage == "await_tts_approval":
-        rows.insert(0, [button("스크립트 수정", "back:script"), button("TTS 재생성", "rerun:tts")])
+        rows.insert(0, [button("스크립트 수정", "back:await_tts_approval:await_script_approval"), button("TTS 재생성", f"rerun:{stage}:tts")])
     elif stage == "await_caption_approval":
-        rows.insert(1, [button("자막 재생성", "rerun:caption")])
+        rows.insert(1, [button("자막 재생성", f"rerun:{stage}:caption")])
     elif stage == "await_broll_approval":
-        rows.insert(0, [button("B-roll 재생성", "rerun:broll")])
+        rows.insert(0, [button("B-roll 재생성", f"rerun:{stage}:broll")])
     elif stage == "await_render_approval":
-        rows.insert(0, [button("렌더 다시 조정", "render_config")])
+        rows.insert(0, [button("렌더 다시 조정", f"back:{stage}:await_render_config")])
     return rows
+
+
+def previous_stage_button(stage):
+    labels = {
+        "await_tts_approval": "스크립트로 돌아가기",
+        "await_caption_approval": "TTS로 돌아가기",
+        "await_broll_approval": "자막으로 돌아가기",
+        "await_render_config": "B-roll로 돌아가기",
+        "await_render_approval": "렌더 설정으로 돌아가기",
+        "await_upload_meta_approval": "최종 영상으로 돌아가기",
+    }
+    targets = {
+        "await_tts_approval": "await_script_approval",
+        "await_caption_approval": "await_tts_approval",
+        "await_broll_approval": "await_caption_approval",
+        "await_render_config": "await_broll_approval",
+        "await_render_approval": "await_render_config",
+        "await_upload_meta_approval": "await_render_approval",
+    }
+    target = targets.get(stage)
+    if not target:
+        return None
+    return button(labels[stage], f"back:{stage}:{target}")
 
 
 def send_approval_prompt(chat_id, stage, text):
@@ -310,8 +336,9 @@ def send_render_ready(chat_id, job):
         f"현재값: font_size={font_size}, margin_v={margin_v}\n"
         "값 조정 후 렌더: /render font_size=22 margin_v=180",
         [
-            [button("현재값으로 렌더", "approve")],
-            [button("font 22 / margin 180", "render:22:180"), button("font 24 / margin 160", "render:24:160")],
+            [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
+            [button("현재값으로 렌더", "approve:await_render_config")],
+            [button("font 22 / margin 180", "render:await_render_config:22:180"), button("font 24 / margin 160", "render:await_render_config:24:160")],
             [button("전체 취소", "cancel_all")],
         ],
     )
@@ -568,30 +595,69 @@ def handle_callback(state, callback):
         send_message(chat_id, busy_message(job))
         return
     try:
-        if data == "approve":
+        if data.startswith("approve:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
             start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
         elif data == "cancel_all":
             job.clear()
             send_message(chat_id, "전체 작업을 취소했습니다.")
-        elif data == "edit":
+        elif data.startswith("edit:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
             handle_edit(chat_id, job)
-        elif data == "back:script":
-            job["stage"] = "await_script_approval"
-            send_message(chat_id, "스크립트 수정 단계로 돌아갑니다. 수정 후 승인하면 TTS를 다시 생성합니다.")
-            send_script(chat_id, job["job_id"])
-        elif data == "render_config":
-            job["stage"] = "await_render_config"
-            send_render_ready(chat_id, job)
+        elif data.startswith("back:"):
+            _, expected_stage, target_stage = data.split(":", 2)
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            go_back_to_stage(chat_id, job, target_stage)
         elif data.startswith("render:"):
-            _, font_size, margin_v = data.split(":")
+            _, expected_stage, font_size, margin_v = data.split(":")
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
             job["caption_font_size"] = positive_int(font_size, "font_size")
             job["caption_margin_v"] = positive_int(margin_v, "margin_v")
             start_background_task(state, chat_id, job, "렌더링", lambda: run_render(chat_id, job))
         elif data.startswith("rerun:"):
-            target = data.split(":", 1)[1]
+            _, expected_stage, target = data.split(":", 2)
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
             start_background_task(state, chat_id, job, f"{target} 재생성", lambda: handle_rerun(chat_id, job, "/rerun " + target))
     except Exception as exc:
         send_message(chat_id, f"오류: {exc}")
+
+def go_back_to_stage(chat_id, job, target_stage):
+    job_id = job.get("job_id")
+    if not job_id:
+        send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return
+    senders = {
+        "await_script_approval": send_script,
+        "await_tts_approval": send_tts,
+        "await_caption_approval": send_caption,
+        "await_broll_approval": send_broll,
+        "await_render_config": None,
+        "await_render_approval": send_rendered_video,
+        "await_upload_meta_approval": send_upload_meta,
+    }
+    if target_stage not in senders:
+        send_message(chat_id, f"돌아갈 수 없는 단계입니다: {target_stage}")
+        return
+    job["stage"] = target_stage
+    send_message(chat_id, "이전 단계로 돌아갑니다. 확인 후 다시 승인하세요.")
+    sender = senders[target_stage]
+    if target_stage == "await_render_config":
+        send_render_ready(chat_id, job)
+    elif sender:
+        sender(chat_id, job_id)
+
 
 def handle_rerun(chat_id, job, text):
     parts = text.split()

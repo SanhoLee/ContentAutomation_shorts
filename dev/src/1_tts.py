@@ -13,7 +13,7 @@ subprocess.run([
     "supertonic", "tts", TEXT,
     "-o", raw_path,
     "--lang", "ko",
-    "--voice", "M4"
+    "--voice", "M2"
 ], check=True)
 
 # 속도 후처리 (피치 유지, atempo)

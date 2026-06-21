@@ -17,7 +17,7 @@ ffmpeg -y \
 -i "$WORK_DIR/voice.wav" \
 -stream_loop -1 -i "$ASSETS_DIR/bgm.mp3" \
 -t "$DURATION" \
--filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles=${WORK_DIR}/subs.srt:force_style='FontName=Noto Sans CJK KR,FontSize=20,PrimaryColour=&H00FFFFFF,Outline=2,BorderStyle=3,MarginV=200'[v]; \
+-filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles=${WORK_DIR}/subs.srt:force_style='FontName=Noto Sans CJK KR,FontSize=20,PrimaryColour=&H00FFFFFF,Outline=2,BorderStyle=3,MarginV=55'[v]; \
 [2:a]volume=0.15[bgm]; \
 [1:a][bgm]amix=inputs=2:duration=first:dropout_transition=0:weights=1 1[aout]" \
 -map "[v]" -map "[aout]" \

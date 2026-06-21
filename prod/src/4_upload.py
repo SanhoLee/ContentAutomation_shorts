@@ -41,6 +41,7 @@ with open(os.path.join(WORK_DIR, "video_meta.json"), "r", encoding="utf-8") as f
 title = video_meta["title"]
 topic_hashtags = video_meta["hashtags"]
 intro_description = video_meta["description"]
+summary = video_meta.get("summary", "")
 
 if len(title) > 100:
     title = title[:97] + "..."
@@ -58,8 +59,9 @@ template = template.replace("{{MUSIC_ARTIST}}", bgm_info["artist"])
 template = template.replace("{{MUSIC_ID}}", bgm_info["audio_id"])
 template = template.replace("{{TOPIC_HASHTAGS}}", topic_hashtags)
 
-# 설명란 = 인트로(아들 톤) + 고정 템플릿
-description = f"{intro_description}\n\n{template}"
+# 설명란 = 인트로(아들 톤) + 본문 요약 + 고정 템플릿
+summary_block = f"영상 요약\n{summary}\n\n" if summary else ""
+description = f"{intro_description}\n\n{summary_block}{template}"
 
 # 인증
 creds = Credentials(
@@ -99,4 +101,6 @@ video_id = response["id"]
 print(f"업로드 완료: https://youtube.com/shorts/{video_id}")
 print(f"제목: {title}")
 print(f"\n--- 설명란 인트로 ---\n{intro_description}")
+if summary:
+    print(f"\n--- 요약 ---\n{summary}")
 print("\n상태: private (확인 후 YouTube Studio에서 공개 전환하세요)")

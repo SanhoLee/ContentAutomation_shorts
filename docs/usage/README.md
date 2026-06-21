@@ -7,6 +7,7 @@
 - [기본 사용법 (주제만 입력)](basic-usage.md)
 - [JOB_ID 함께 사용하기](with-job-id.md)
 - [개발/운영 환경 구분](environment.md)
+- [텔레그램 승인형 실행](telegram-bot.md)
 
 ## 목적
 - 수동 확인 중심의 현재 워크플로우를 유지하면서

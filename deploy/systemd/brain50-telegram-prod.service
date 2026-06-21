@@ -1,0 +1,16 @@
+[Unit]
+Description=Brain50 Telegram Bot (prod)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/brain50/prod
+ExecStart=/home/ubuntu/brain50/prod/sh/telegram_bot.sh
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -41,7 +41,7 @@ export TELEGRAM_CHAT_ID="..."
 - `/rerun tts`: TTS를 다시 생성합니다.
 - `/rerun caption`: 자막을 다시 생성합니다.
 - `/rerun broll`: B-roll을 다시 생성합니다.
-- `/render font_size=22 margin_v=180`: 자막 렌더 설정을 바꿔 렌더링합니다.
+- `/render font_size=22 margin_v=55`: 자막 렌더 설정을 바꿔 렌더링합니다.
 - `/status`: 현재 작업 상태를 확인합니다.
 - `/cancel`: 전체 작업 상태를 취소합니다.
 
@@ -52,7 +52,7 @@ export TELEGRAM_CHAT_ID="..."
 3. TTS 음성 확인 후 `/approve`, `/rerun tts`, 또는 `스크립트 수정` 버튼
 4. 자막 확인/수정 후 `/approve` 또는 `/rerun caption`
 5. B-roll 확인 후 `/approve` 또는 `/rerun broll`
-6. 렌더 설정 확인 후 `/approve` 또는 `/render font_size=22 margin_v=180`
+6. 렌더 설정 확인 후 `/approve` 또는 `/render font_size=22 margin_v=55`
 7. 최종 영상 확인 후 `/approve`
 8. 제목, 요약, 설명, 해시태그 확인 후 `/approve`
 9. YouTube 비공개 업로드 실행

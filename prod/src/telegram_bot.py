@@ -329,12 +329,12 @@ def send_broll(chat_id, job_id):
 
 def send_render_ready(chat_id, job):
     font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20"))
-    margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "200"))
+    margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "55"))
     send_action_message(
         chat_id,
         "렌더 설정 확인 단계입니다.\n"
         f"현재값: font_size={font_size}, margin_v={margin_v}\n"
-        "값 조정 후 렌더: /render font_size=22 margin_v=180",
+        "값 조정 후 렌더: /render font_size=22 margin_v=55",
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
@@ -390,7 +390,7 @@ def run_render(chat_id, job):
     job_id = job["job_id"]
     args = [str(BASE_DIR / "sh" / "2_render.sh")]
     font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20")))
-    margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "200")))
+    margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "55")))
     args += ["--font-size", font_size, "--margin-v", margin_v]
     send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}")
     run_command(args, job_id, job.get("topic"))
@@ -737,7 +737,7 @@ def help_text():
         "/retry 오메가3 기억력",
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
-        "/render font_size=22 margin_v=180",
+        "/render font_size=22 margin_v=55",
         "/run_auto 오메가3가 정말 뇌에 좋을까?",
         "/status",
         "/cancel",

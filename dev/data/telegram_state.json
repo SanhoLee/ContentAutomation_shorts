@@ -1,0 +1,13 @@
+{
+  "offset": 75111340,
+  "chats": {
+    "8888459876": {
+      "job_id": "trend_20260621_112532",
+      "topic": "치매",
+      "approval_required": true,
+      "stage": "await_render_approval",
+      "caption_font_size": "22",
+      "caption_margin_v": "55"
+    }
+  }
+}

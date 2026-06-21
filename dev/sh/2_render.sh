@@ -6,7 +6,7 @@ mkdir -p "$OUTPUT_DIR"
 
 DURATION_OVERRIDE=""
 FONT_SIZE="${CAPTION_FONT_SIZE:-20}"
-MARGIN_V="${CAPTION_MARGIN_V:-200}"
+MARGIN_V="${CAPTION_MARGIN_V:-55}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in

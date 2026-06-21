@@ -112,4 +112,33 @@ journalctl -u brain50-telegram-prod.service -f
 ```bash
 sudo systemctl stop brain50-telegram-dev.service
 sudo systemctl disable brain50-telegram-dev.service
-```
+`
+
+## PubMed 검색 실패 처리
+
+트렌드 후보나 사용자가 고른 주제가 PubMed에서 직접 검색되지 않아도 스크립트 생성은 계속 진행합니다. 대신 봇은 PubMed 직접 근거가 없었다는 안내와 로그를 먼저 보여줍니다.
+
+- 로그 파일: `data/work/{JOB_ID}/pubmed_status.json`
+- 새 주제로 다시 생성: `/retry 오메가3 기억력`
+
+PubMed 결과가 없는 경우 Claude는 논문 수치나 특정 연구 결과를 지어내지 않고, 자체 지식 범위의 신빙성 높은 일반 의학 정보와 생활 맥락 중심으로 조심스럽게 작성하도록 지시합니다. 주제가 너무 짧거나, 너무 구체적이거나, `추천`, `가격`, `후기`, `고르는법`처럼 소비자 검색어에 가까운 경우 PubMed 검색이 약할 수 있습니다. 이때는 `오메가3 기억력`, `수면 부족 치매 위험`, `근력 운동 인지기능`처럼 연구 주제형 키워드로 바꿔보세요.
+
+## 봇이 꺼져 있을 때
+
+봇 프로세스가 완전히 꺼져 있으면 텔레그램 메시지를 읽을 주체가 없으므로 `/run ...`에 대해 "서버가 꺼져 있다"는 답장을 보낼 수 없습니다. 이 알림은 같은 서버 안의 bot만으로는 불가능합니다.
+
+대신 아래 구조로 대응합니다.
+
+- `systemd`의 `Restart=always`로 프로세스가 죽으면 자동 재시작합니다.
+- `systemctl status brain50-telegram-dev.service`로 현재 실행 상태를 확인합니다.
+- 외부 알림이 필요하면 UptimeRobot, GitHub Actions cron, 별도 서버 같은 외부 헬스체크가 `getMe` 또는 서버 healthcheck를 주기적으로 확인해야 합니다.
+
+## Claude API 타임아웃 처리
+
+스크립트 생성 단계에서 `api.anthropic.com` `ReadTimeout`이 발생하면 주제 검색 실패가 아니라 Claude 응답 생성이 설정 시간 안에 끝나지 않은 상황입니다. 기본값은 아래처럼 분리되어 있습니다.
+
+- 일반 HTTP 검색 타임아웃: `REQUEST_TIMEOUT=20`
+- Claude 응답 타임아웃: `CLAUDE_TIMEOUT=180`
+- Claude 일시 오류 재시도: `CLAUDE_RETRIES=2`
+
+Lightsail에서 반복적으로 같은 오류가 나면 `.env` 또는 systemd 환경변수에 `CLAUDE_TIMEOUT=300`처럼 더 크게 설정한 뒤 봇 서비스를 재시작하세요. 텔레그램에서는 같은 트렌드 후보를 다시 고르려면 `/pick 1`을 다시 보내고, 주제를 바꿔 재생성하려면 `/retry 오메가3 기억력`처럼 입력하면 됩니다.

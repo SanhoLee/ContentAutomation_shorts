@@ -22,6 +22,7 @@ if not TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN is required")
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}"
+STATE_LOCK = threading.Lock()
 
 
 def api(method, data=None, files=None):
@@ -160,7 +161,11 @@ def load_state():
 
 def save_state(state):
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(state, ensure_ascii=False, indent=2)
+    tmp_path = STATE_PATH.with_suffix(STATE_PATH.suffix + ".tmp")
+    with STATE_LOCK:
+        tmp_path.write_text(payload, encoding="utf-8")
+        os.replace(tmp_path, STATE_PATH)
 
 
 def chat_state(state, chat_id):
@@ -386,6 +391,68 @@ def positive_int(value, name):
     return str(value)
 
 
+
+
+def media_duration_seconds(path):
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return max(float(result.stdout.strip()), 1.0)
+    except Exception:
+        return None
+
+
+def render_progress_ratio(progress_path, duration):
+    if not progress_path.exists() or not duration:
+        return None
+    try:
+        lines = progress_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    seconds = None
+    for line in lines:
+        if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
+            try:
+                seconds = int(line.split("=", 1)[1]) / 1_000_000
+            except ValueError:
+                pass
+        elif line.startswith("out_time="):
+            value = line.split("=", 1)[1]
+            try:
+                hours, minutes, rest = value.split(":")
+                seconds = int(hours) * 3600 + int(minutes) * 60 + float(rest)
+            except ValueError:
+                pass
+    if seconds is None:
+        return None
+    return max(0.0, min(seconds / duration, 1.0))
+
+
+def start_render_progress(chat_id, job_id, stop_event):
+    duration = media_duration_seconds(work_dir(job_id) / "voice.wav")
+    progress_path = work_dir(job_id) / "render_progress.txt"
+
+    def reporter():
+        send_message(chat_id, "렌더링 진행률: 시작")
+        sent = set()
+        checkpoints = [(0.25, "25%"), (0.50, "50%"), (0.75, "75%")]
+        while not stop_event.wait(2.0):
+            ratio = render_progress_ratio(progress_path, duration)
+            if ratio is None:
+                continue
+            for threshold, label in checkpoints:
+                if ratio >= threshold and label not in sent:
+                    send_message(chat_id, f"렌더링 진행률: {label}")
+                    sent.add(label)
+
+    thread = threading.Thread(target=reporter, daemon=True)
+    thread.start()
+    return thread
+
 def run_render(chat_id, job):
     job_id = job["job_id"]
     args = [str(BASE_DIR / "sh" / "2_render.sh")]
@@ -393,7 +460,15 @@ def run_render(chat_id, job):
     margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "55")))
     args += ["--font-size", font_size, "--margin-v", margin_v]
     send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}")
-    run_command(args, job_id, job.get("topic"))
+    stop_progress = threading.Event()
+    progress_thread = start_render_progress(chat_id, job_id, stop_progress)
+    try:
+        run_command(args, job_id, job.get("topic"))
+    finally:
+        stop_progress.set()
+        if progress_thread:
+            progress_thread.join(timeout=1)
+    send_message(chat_id, "렌더링 진행률: 완료")
     job["stage"] = "await_render_approval"
     send_rendered_video(chat_id, job_id)
 

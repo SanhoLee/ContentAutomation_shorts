@@ -35,7 +35,10 @@ fi
 
 echo "자막 설정: FontSize=${FONT_SIZE}, MarginV=${MARGIN_V}"
 
-ffmpeg -y \
+RENDER_PROGRESS_FILE="$WORK_DIR/render_progress.txt"
+rm -f "$RENDER_PROGRESS_FILE"
+
+ffmpeg -y -nostats -progress "$RENDER_PROGRESS_FILE" \
 -stream_loop -1 -i "$WORK_DIR/broll.mp4" \
 -i "$WORK_DIR/voice.wav" \
 -stream_loop -1 -i "$ASSETS_DIR/bgm.mp3" \

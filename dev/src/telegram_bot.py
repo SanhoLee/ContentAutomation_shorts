@@ -205,6 +205,12 @@ def parse_key_values(text):
     return values
 
 
+def positive_int(value, name):
+    if not str(value).isdigit() or int(value) <= 0:
+        raise ValueError(f"{name}은 양의 정수로 입력하세요: {value}")
+    return str(value)
+
+
 def run_render(chat_id, job):
     job_id = job["job_id"]
     args = [str(BASE_DIR / "sh" / "2_render.sh")]
@@ -336,9 +342,9 @@ def handle_render(chat_id, job, text):
         return
     values = parse_key_values(text)
     if "font_size" in values:
-        job["caption_font_size"] = values["font_size"]
+        job["caption_font_size"] = positive_int(values["font_size"], "font_size")
     if "margin_v" in values:
-        job["caption_margin_v"] = values["margin_v"]
+        job["caption_margin_v"] = positive_int(values["margin_v"], "margin_v")
     run_render(chat_id, job)
 
 
@@ -349,18 +355,43 @@ def handle_status(chat_id, job):
     send_message(chat_id, json.dumps(job, ensure_ascii=False, indent=2))
 
 
+def command_specs():
+    return [
+        ("run", "승인형 파이프라인 시작"),
+        ("run_auto", "승인 없이 전체 파이프라인 실행"),
+        ("trend", "트렌드 후보 조회"),
+        ("pick", "트렌드 후보 선택"),
+        ("approve", "현재 산출물 승인"),
+        ("rerun", "tts/caption/broll 재생성"),
+        ("render", "자막 렌더 설정 변경"),
+        ("status", "현재 상태 확인"),
+        ("cancel", "현재 작업 취소"),
+        ("help", "명령어 도움말"),
+    ]
+
+
+def register_bot_commands():
+    commands = json.dumps([
+        {"command": command, "description": description}
+        for command, description in command_specs()
+    ], ensure_ascii=False)
+    return api("setMyCommands", {"commands": commands})
+
+
 def help_text():
     return "\n".join([
         "명령어",
-        "/run 주제 - 승인형 파이프라인 시작",
-        "/run_auto 주제 - 승인 없이 전체 파이프라인 실행",
-        "/trend 키워드 - 트렌드 후보 조회 후 선택 대기",
-        "/pick 번호 - 트렌드 후보 선택 후 스크립트 생성",
-        "/approve - 현재 산출물 승인 후 다음 단계 진행",
-        "/rerun tts|caption|broll - 해당 단계 재생성",
-        "/render font_size=22 margin_v=180 - 렌더 설정 변경 후 렌더링",
-        "/status - 현재 상태 확인",
-        "/cancel - 현재 작업 취소",
+        "/run 오메가3가 정말 뇌에 좋을까?",
+        "/trend 오메가3",
+        "/pick 1",
+        "/approve",
+        "/rerun tts | /rerun caption | /rerun broll",
+        "/render font_size=22 margin_v=180",
+        "/run_auto 오메가3가 정말 뇌에 좋을까?",
+        "/status",
+        "/cancel",
+        "",
+        "흐름: run/trend -> approve 반복 -> 렌더 확인 -> 메타데이터 승인 -> 비공개 업로드",
     ])
 
 
@@ -412,6 +443,10 @@ def poll_updates(offset):
 def main():
     state = load_state()
     send_to = ALLOWED_CHAT_ID
+    try:
+        register_bot_commands()
+    except Exception:
+        pass
     if send_to:
         send_message(send_to, f"Brain50 Telegram bot started: {BASE_DIR}")
     while True:

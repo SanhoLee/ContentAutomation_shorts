@@ -27,7 +27,11 @@ export TELEGRAM_CHAT_ID="..."
 
 `TELEGRAM_CHAT_ID`를 설정하면 해당 chat_id 외의 요청은 거부합니다.
 
+봇은 시작 시 `/help`, `/run`, `/approve` 같은 명령을 텔레그램 앱의 명령어 메뉴에도 등록합니다.
+
 ## 기본 명령
+
+잘못된 명령이나 잘못된 렌더 값이 들어오면 오류 메시지를 보내고 현재 작업 상태를 유지합니다.
 
 - `/run 주제`: 승인형 파이프라인을 시작합니다.
 - `/run_auto 주제`: 승인 없이 전체 파이프라인을 실행합니다.
@@ -73,3 +77,39 @@ export TELEGRAM_CHAT_ID="..."
 - `CAPTION_MARGIN_V`: 자막 수직 위치
 
 텔레그램에서 별도 조정 없이 `/approve`하면 기본값으로 렌더링합니다.
+
+## Lightsail 상시 실행
+
+`./sh/telegram_bot.sh`를 SSH나 VSCode 터미널에서 직접 실행하면 해당 터미널 세션이 끊길 때 같이 종료될 수 있습니다. 노트북을 끄거나 VSCode를 닫아도 계속 실행하려면 Lightsail 서버에서 `systemd` 서비스로 등록하세요.
+
+개발 환경 서비스를 등록하는 예시입니다.
+
+```bash
+sudo cp ~/brain50/deploy/systemd/brain50-telegram-dev.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now brain50-telegram-dev.service
+sudo systemctl status brain50-telegram-dev.service
+```
+
+운영 환경은 prod 서비스 파일을 사용합니다.
+
+```bash
+sudo cp ~/brain50/deploy/systemd/brain50-telegram-prod.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now brain50-telegram-prod.service
+sudo systemctl status brain50-telegram-prod.service
+```
+
+로그 확인:
+
+```bash
+journalctl -u brain50-telegram-dev.service -f
+journalctl -u brain50-telegram-prod.service -f
+```
+
+서비스 중지:
+
+```bash
+sudo systemctl stop brain50-telegram-dev.service
+sudo systemctl disable brain50-telegram-dev.service
+```

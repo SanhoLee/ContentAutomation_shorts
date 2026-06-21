@@ -72,6 +72,59 @@ def send_file_or_path(chat_id, path, caption=None, as_video=False):
         return send_message(chat_id, f"파일 전송 실패: {exc}\n서버에서 확인하세요: {path}")
 
 
+
+def inline_keyboard(rows):
+    return json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
+
+
+def button(text, callback_data):
+    return {"text": text, "callback_data": callback_data}
+
+
+def send_action_message(chat_id, text, rows):
+    return api("sendMessage", {"chat_id": chat_id, "text": text, "reply_markup": inline_keyboard(rows)})
+
+
+def editable_stage_info(stage, job_id):
+    if not job_id:
+        return None
+    base = work_dir(job_id)
+    mapping = {
+        "await_script_approval": (base / "script.txt", "script.txt"),
+        "await_caption_approval": (base / "subs.srt", "subs.srt"),
+        "await_upload_meta_approval": (base / "video_meta.json", "video_meta.json"),
+    }
+    return mapping.get(stage)
+
+
+def approval_buttons(stage):
+    rows = [[button("승인", "approve"), button("취소", "cancel")]]
+    if stage in ("await_script_approval", "await_caption_approval", "await_upload_meta_approval"):
+        rows.insert(0, [button("수정", "edit")])
+    if stage == "await_tts_approval":
+        rows.insert(0, [button("TTS 재생성", "rerun:tts")])
+    elif stage == "await_caption_approval":
+        rows.insert(1, [button("자막 재생성", "rerun:caption")])
+    elif stage == "await_broll_approval":
+        rows.insert(0, [button("B-roll 재생성", "rerun:broll")])
+    elif stage == "await_render_approval":
+        rows.insert(0, [button("렌더 다시 조정", "render_config")])
+    return rows
+
+
+def send_approval_prompt(chat_id, stage, text):
+    return send_action_message(chat_id, text, approval_buttons(stage))
+
+
+def download_telegram_file(file_id, destination):
+    info = api("getFile", {"file_id": file_id})
+    file_path = info.get("result", {}).get("file_path")
+    if not file_path:
+        raise RuntimeError("텔레그램 파일 경로를 받지 못했습니다.")
+    request = Request(f"https://api.telegram.org/file/bot{TOKEN}/{file_path}")
+    with urlopen(request, timeout=POLL_TIMEOUT + 30) as response:
+        destination.write_bytes(response.read())
+
 def load_state():
     if not STATE_PATH.exists():
         return {"offset": 0, "chats": {}}
@@ -174,10 +227,16 @@ def send_pubmed_notice(chat_id, job_id):
     send_file_or_path(chat_id, pubmed_status_path(job_id), "pubmed_status.json")
 
 
+
+
 def send_script(chat_id, job_id):
     send_pubmed_notice(chat_id, job_id)
     path = work_dir(job_id) / "script.txt"
-    send_message(chat_id, f"스크립트 생성 완료. 확인 후 /approve 또는 /cancel\n\n{preview_file(path)}")
+    send_approval_prompt(
+        chat_id,
+        "await_script_approval",
+        f"스크립트 생성 완료. 확인 후 승인하거나 수정하세요.\n\n{preview_file(path)}",
+    )
     if path.exists():
         send_file_or_path(chat_id, path, "script.txt")
 
@@ -185,14 +244,19 @@ def send_script(chat_id, job_id):
 def send_tts(chat_id, job_id):
     path = work_dir(job_id) / "voice.wav"
     if path.exists():
-        send_file_or_path(chat_id, path, "TTS 음성입니다. 확인 후 /approve 또는 /rerun tts")
+        send_file_or_path(chat_id, path, "TTS 음성입니다.")
+        send_approval_prompt(chat_id, "await_tts_approval", "TTS를 확인한 뒤 승인하거나 재생성하세요.")
     else:
         send_message(chat_id, f"voice.wav를 찾지 못했습니다: {path}")
 
 
 def send_caption(chat_id, job_id):
     path = work_dir(job_id) / "subs.srt"
-    send_message(chat_id, f"자막 생성 완료. 수정이 필요하면 서버에서 subs.srt를 고친 뒤 /approve 하세요.\n\n{preview_file(path)}")
+    send_approval_prompt(
+        chat_id,
+        "await_caption_approval",
+        f"자막 생성 완료. 확인 후 승인하거나 수정하세요.\n\n{preview_file(path)}",
+    )
     if path.exists():
         send_file_or_path(chat_id, path, "subs.srt")
 
@@ -200,7 +264,8 @@ def send_caption(chat_id, job_id):
 def send_broll(chat_id, job_id):
     path = work_dir(job_id) / "broll.mp4"
     if path.exists():
-        send_file_or_path(chat_id, path, "B-roll 확인 후 /approve 또는 /rerun broll", as_video=True)
+        send_file_or_path(chat_id, path, "B-roll 영상입니다.", as_video=True)
+        send_approval_prompt(chat_id, "await_broll_approval", "B-roll을 확인한 뒤 승인하거나 재생성하세요.")
     else:
         send_message(chat_id, f"broll.mp4를 찾지 못했습니다: {path}")
 
@@ -208,19 +273,24 @@ def send_broll(chat_id, job_id):
 def send_render_ready(chat_id, job):
     font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20"))
     margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "200"))
-    send_message(
+    send_action_message(
         chat_id,
         "렌더 설정 확인 단계입니다.\n"
         f"현재값: font_size={font_size}, margin_v={margin_v}\n"
-        "기본값으로 렌더: /approve\n"
         "값 조정 후 렌더: /render font_size=22 margin_v=180",
+        [
+            [button("현재값으로 렌더", "approve")],
+            [button("font 22 / margin 180", "render:22:180"), button("font 24 / margin 160", "render:24:160")],
+            [button("취소", "cancel")],
+        ],
     )
 
 
 def send_rendered_video(chat_id, job_id):
     path = output_file(job_id)
     if path.exists():
-        send_file_or_path(chat_id, path, "최종 합성 영상입니다. 확인 후 /approve 또는 /render font_size=22 margin_v=180", as_video=True)
+        send_file_or_path(chat_id, path, "최종 합성 영상입니다.", as_video=True)
+        send_approval_prompt(chat_id, "await_render_approval", "최종 영상을 확인한 뒤 승인하거나 렌더 설정을 다시 조정하세요.")
     else:
         send_message(chat_id, f"렌더 결과를 찾지 못했습니다: {path}")
 
@@ -237,11 +307,10 @@ def send_upload_meta(chat_id, job_id):
         f"요약: {meta.get('summary', '')}\n\n"
         f"해시태그: {meta.get('hashtags', '')}\n\n"
         f"설명:\n{meta.get('description', '')}\n\n"
-        "승인하면 비공개 영상으로 업로드합니다: /approve"
+        "승인하면 비공개 영상으로 업로드합니다."
     )
-    send_message(chat_id, text[:MAX_TEXT_PREVIEW])
+    send_approval_prompt(chat_id, "await_upload_meta_approval", text[:MAX_TEXT_PREVIEW])
     send_file_or_path(chat_id, meta_path, "video_meta.json")
-
 
 def parse_key_values(text):
     values = {}
@@ -401,6 +470,81 @@ def handle_pick(chat_id, job, text):
     run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), "--trend-choice", choice])
 
 
+
+def handle_edit(chat_id, job):
+    job_id = job.get("job_id")
+    stage = job.get("stage")
+    info = editable_stage_info(stage, job_id)
+    if not info:
+        send_message(chat_id, "현재 단계는 텍스트 파일 수정 대상이 아닙니다. 재생성이나 렌더 설정 버튼을 사용하세요.")
+        return
+    path, name = info
+    job["edit_target"] = str(path)
+    job["edit_stage"] = stage
+    send_message(
+        chat_id,
+        f"수정 모드입니다. 아래 {name} 파일을 열어 필요한 부분만 고친 뒤, 수정한 파일을 텔레그램으로 다시 보내세요. "
+        "짧은 수정이면 다음 메시지에 전체 수정본을 보내도 됩니다.",
+    )
+    if path.exists():
+        send_file_or_path(chat_id, path, f"수정용 원본: {name}")
+
+
+def apply_edit_message(chat_id, job, message):
+    target = job.get("edit_target")
+    if not target:
+        return False
+    path = Path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = message.get("document")
+    if doc:
+        download_telegram_file(doc["file_id"], path)
+    else:
+        text = message.get("text")
+        if not text or text.startswith("/"):
+            return False
+        path.write_text(text, encoding="utf-8")
+    job.pop("edit_target", None)
+    job["stage"] = job.pop("edit_stage", job.get("stage"))
+    send_message(chat_id, f"수정본을 저장했습니다: {path.name}")
+    stage = job.get("stage")
+    if stage == "await_script_approval":
+        send_script(chat_id, job["job_id"])
+    elif stage == "await_caption_approval":
+        send_caption(chat_id, job["job_id"])
+    elif stage == "await_upload_meta_approval":
+        send_upload_meta(chat_id, job["job_id"])
+    return True
+
+
+def handle_callback(state, callback):
+    chat_id = callback.get("message", {}).get("chat", {}).get("id")
+    data = callback.get("data", "")
+    if not chat_id:
+        return
+    job = chat_state(state, chat_id)
+    try:
+        api("answerCallbackQuery", {"callback_query_id": callback.get("id", "")})
+    except Exception:
+        pass
+    if data == "approve":
+        run_next_stage(chat_id, job)
+    elif data == "cancel":
+        job.clear()
+        send_message(chat_id, "현재 작업을 취소했습니다.")
+    elif data == "edit":
+        handle_edit(chat_id, job)
+    elif data == "render_config":
+        job["stage"] = "await_render_config"
+        send_render_ready(chat_id, job)
+    elif data.startswith("render:"):
+        _, font_size, margin_v = data.split(":")
+        job["caption_font_size"] = positive_int(font_size, "font_size")
+        job["caption_margin_v"] = positive_int(margin_v, "margin_v")
+        run_render(chat_id, job)
+    elif data.startswith("rerun:"):
+        handle_rerun(chat_id, job, "/rerun " + data.split(":", 1)[1])
+
 def handle_rerun(chat_id, job, text):
     parts = text.split()
     target = parts[1].lower() if len(parts) > 1 else ""
@@ -449,6 +593,7 @@ def command_specs():
         ("trend", "트렌드 후보 조회"),
         ("pick", "트렌드 후보 선택"),
         ("approve", "현재 산출물 승인"),
+        ("edit", "현재 텍스트 산출물 수정"),
         ("retry", "PubMed 실패 후 새 주제 재시도"),
         ("proceed", "PubMed 실패 후 근거 부족 상태로 진행"),
         ("rerun", "tts/caption/broll 재생성"),
@@ -474,6 +619,7 @@ def help_text():
         "/trend 오메가3",
         "/pick 1",
         "/approve",
+        "/edit",
         "/retry 오메가3 기억력",
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
@@ -489,7 +635,7 @@ def help_text():
 def handle_message(state, message):
     chat_id = message.get("chat", {}).get("id")
     text = (message.get("text") or "").strip()
-    if not chat_id or not text:
+    if not chat_id:
         return
     if ALLOWED_CHAT_ID and str(chat_id) != str(ALLOWED_CHAT_ID):
         send_message(chat_id, "허용되지 않은 chat_id입니다.")
@@ -497,7 +643,11 @@ def handle_message(state, message):
 
     job = chat_state(state, chat_id)
     try:
-        if text.startswith("/start") or text.startswith("/help"):
+        if apply_edit_message(chat_id, job, message):
+            return
+        if not text:
+            send_message(chat_id, help_text())
+        elif text.startswith("/start") or text.startswith("/help"):
             send_message(chat_id, help_text())
         elif text.startswith("/run_auto "):
             handle_run_auto(chat_id, job, text)
@@ -509,6 +659,8 @@ def handle_message(state, message):
             handle_pick(chat_id, job, text)
         elif text.startswith("/approve"):
             run_next_stage(chat_id, job)
+        elif text.startswith("/edit"):
+            handle_edit(chat_id, job)
         elif text.startswith("/retry ") or text == "/retry":
             handle_retry(chat_id, job, text)
         elif text.startswith("/proceed"):
@@ -549,6 +701,10 @@ def main():
             data = poll_updates(state.get("offset", 0))
             for update in data.get("result", []):
                 state["offset"] = update["update_id"] + 1
+                callback = update.get("callback_query")
+                if callback:
+                    handle_callback(state, callback)
+                    save_state(state)
                 message = update.get("message") or update.get("edited_message")
                 if message:
                     handle_message(state, message)

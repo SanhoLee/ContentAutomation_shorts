@@ -38,6 +38,25 @@
 - `OUTPUT_DIR`: 최종 mp4 저장 위치
 - `ATEMPO`, `TARGET_DURATION_SEC`, `CHARS_PER_SEC`: 콘텐츠 길이와 TTS 속도 관련 값
 
+
+
+## TTS 실행 파일 확인
+
+TTS 단계는 기본적으로 `supertonic` 실행 파일을 사용합니다. Lightsail에서 systemd로 봇을 실행하면 로그인 shell과 PATH가 달라 `supertonic`을 못 찾을 수 있습니다.
+
+```bash
+which supertonic
+ls ~/.local/bin/supertonic
+```
+
+설치되어 있지만 다른 위치에 있다면 `dev/secrets.sh` 또는 `prod/secrets.sh`에 절대 경로를 지정하세요.
+
+```bash
+export TTS_BIN=/home/ubuntu/.local/bin/supertonic
+```
+
+설치 자체가 없다면 먼저 supertonic CLI를 설치해야 합니다. `ATEMPO`가 1.0이 아니면 `ffmpeg`도 필요합니다.
+
 ## 실행
 
 개발 테스트:

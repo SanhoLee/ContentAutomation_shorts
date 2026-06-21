@@ -15,8 +15,11 @@ TARGET_DURATION_SEC = int(os.environ.get("TARGET_DURATION_SEC", "60"))
 CHARS_PER_SEC = float(os.environ.get("CHARS_PER_SEC", "4.66"))
 TREND_CANDIDATE_COUNT = int(os.environ.get("TREND_CANDIDATE_COUNT", "5"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "20"))
+CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "180"))
+CLAUDE_RETRIES = int(os.environ.get("CLAUDE_RETRIES", "2"))
 
 TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
+PUBMED_STATUS_PATH = os.path.join(WORK_DIR, "pubmed_status.json")
 
 total_chars = int(TARGET_DURATION_SEC * ATEMPO * CHARS_PER_SEC)
 prompt_target_chars = int(total_chars * 1.15)
@@ -28,6 +31,7 @@ def parse_args():
     parser.add_argument("topic", nargs="*", help="아이디어 또는 주제 문장")
     parser.add_argument("--trend", help="키워드 후보를 뽑을 씨드 단어")
     parser.add_argument("--trend-choice", type=int, help="trend_candidates.json에서 선택할 후보 번호(1부터 시작)")
+    parser.add_argument("--allow-no-pubmed", action="store_true", help="PubMed 결과가 없어도 일반 설명 중심으로 계속 생성")
     return parser.parse_args()
 
 
@@ -56,6 +60,26 @@ def request_json(url, params=None, headers=None):
         text = text.split("\n", 1)[1]
     return json.loads(text)
 
+def request_text(url, params=None, headers=None):
+    try:
+        import requests
+
+        res = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+        res.raise_for_status()
+        return res.text
+    except ModuleNotFoundError:
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+
+        if params:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}{urlencode(params)}"
+        request_headers = {"User-Agent": "Mozilla/5.0"}
+        request_headers.update(headers or {})
+        request = Request(url, headers=request_headers)
+        with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return response.read().decode(charset, errors="replace")
 
 def fetch_google_suggestions(seed):
     data = request_json(
@@ -155,27 +179,54 @@ def load_trend_choice(choice):
     }
 
 
-def fetch_pubmed_abstracts(topic):
-    import requests
+class PubMedSearchError(Exception):
+    pass
 
-    search = requests.get(
+
+def assess_pubmed_query(topic):
+    compact = re.sub(r"\s+", "", topic)
+    word_count = len(topic.split())
+    if len(compact) <= 2:
+        return "주제가 너무 짧습니다. 예: 단어 하나보다 `오메가3 기억력`, `수면 부족 치매 위험`처럼 범위를 조금 넓혀보세요."
+    if len(topic) >= 35 or word_count >= 6:
+        return "주제가 너무 구체적일 수 있습니다. PubMed 검색용으로는 핵심 의학 키워드 2~4개 정도가 더 잘 맞습니다."
+    if re.search(r"추천|가격|순위|고르는법|브랜드|후기|먹는법", topic):
+        return "검색어가 소비자/유튜브형 키워드에 가깝습니다. PubMed에는 `효능`, `위험`, `인지기능`, `혈중 지질`처럼 연구 주제형 표현이 더 잘 맞습니다."
+    return "PubMed에서 직접 맞는 초록을 찾지 못했습니다. 표현을 더 넓히거나, 건강/질환/기전 중심 키워드로 바꿔보세요."
+
+
+def write_pubmed_status(topic, pmids, status, message, abstracts_preview=""):
+    payload = {
+        "topic": topic,
+        "status": status,
+        "pmids": pmids,
+        "pmid_count": len(pmids),
+        "message": message,
+        "abstracts_preview": abstracts_preview[:1200],
+    }
+    with open(PUBMED_STATUS_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
+def fetch_pubmed_abstracts(topic):
+    search = request_json(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
         params={"db": "pubmed", "term": topic, "retmax": 5, "sort": "relevance", "retmode": "json"},
-        timeout=REQUEST_TIMEOUT,
     )
-    search.raise_for_status()
-    pmids = search.json().get("esearchresult", {}).get("idlist", [])
+    pmids = search.get("esearchresult", {}).get("idlist", [])
 
     if not pmids:
-        return "PubMed에서 직접 관련 초록을 찾지 못했습니다. 이 경우 과학적 단정은 피하고, 일반적인 설명과 실천 팁 중심으로 작성하세요."
+        message = assess_pubmed_query(topic)
+        write_pubmed_status(topic, pmids, "no_results", message)
+        return "PubMed에서 직접 관련 초록을 찾지 못했습니다. 이 경우 논문 수치나 특정 연구 결과를 지어내지 말고, 신뢰 가능한 일반 의학 지식과 건강 커뮤니케이션 원칙을 바탕으로 조심스럽게 작성하세요. 근거가 불확실한 내용은 가능성이 있습니다, 도움될 수 있습니다처럼 표현하세요."
 
-    abstracts = requests.get(
+    text = request_text(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
         params={"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "text"},
-        timeout=REQUEST_TIMEOUT,
     )
-    abstracts.raise_for_status()
-    return abstracts.text
+    write_pubmed_status(topic, pmids, "ok", "PubMed 초록을 찾았습니다.", text)
+    return text
 
 
 def pace_instruction():
@@ -230,7 +281,8 @@ def build_prompt(topic, abstracts, trend_context=None):
 
 내용 조건:
 - 초록에서 확인 가능한 구체적 숫자나 통계가 있으면 최소 3개 포함하세요.
-- 초록에 근거가 부족한 내용은 단정하지 말고 "가능성이 있습니다", "도움이 될 수 있습니다"처럼 표현하세요.
+- PubMed 초록이 없거나 근거가 부족한 경우 숫자, 표본 수, 논문 결과를 지어내지 마세요.
+- PubMed 초록이 없는 경우 Claude가 자체 지식 범위에서 신빙성 높은 일반 의학 정보와 콘텐츠 가치가 있는 생활 맥락을 구성하되, 단정 대신 "가능성이 있습니다", "도움이 될 수 있습니다"처럼 표현하세요.
 - 마지막 장면은 반드시 실천 가능한 행동 제안이어야 합니다.
 
 각 장면마다 Pexels 영상 검색용 "visual_query"도 작성하세요. visual_query는 2~4개의 영어 키워드로만 작성하세요.
@@ -258,22 +310,51 @@ YouTube 업로드용 메타데이터도 함께 작성하세요.
 def call_claude(prompt):
     import requests
 
-    res = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": os.environ["ANTHROPIC_API_KEY"],
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
-            "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
-            "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        timeout=REQUEST_TIMEOUT,
+    payload = {
+        "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+        "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {
+        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    last_error = None
+    for attempt in range(1, CLAUDE_RETRIES + 2):
+        try:
+            print(f"Claude 호출 시도 {attempt}/{CLAUDE_RETRIES + 1} (timeout={CLAUDE_TIMEOUT}s)")
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=CLAUDE_TIMEOUT,
+            )
+            if res.status_code in (429, 500, 502, 503, 504):
+                last_error = requests.HTTPError(f"Claude transient status {res.status_code}: {res.text[:500]}")
+                if attempt <= CLAUDE_RETRIES:
+                    time.sleep(min(10 * attempt, 30))
+                    continue
+            res.raise_for_status()
+            return res.json()
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            print(f"Claude 호출 실패: {type(exc).__name__}: {exc}")
+            if attempt <= CLAUDE_RETRIES:
+                time.sleep(min(10 * attempt, 30))
+                continue
+        except requests.HTTPError as exc:
+            last_error = exc
+            status = exc.response.status_code if exc.response is not None else None
+            if status in (429, 500, 502, 503, 504) and attempt <= CLAUDE_RETRIES:
+                print(f"Claude 일시 오류 {status}. 재시도합니다.")
+                time.sleep(min(10 * attempt, 30))
+                continue
+            raise
+    raise RuntimeError(
+        f"Claude API 호출이 {CLAUDE_RETRIES + 1}회 실패했습니다. "
+        f"CLAUDE_TIMEOUT={CLAUDE_TIMEOUT}s. 마지막 오류: {last_error}"
     )
-    res.raise_for_status()
-    return res.json()
 
 
 def parse_claude_json(response):
@@ -396,7 +477,15 @@ def main():
     print(f"실제 목표: {total_chars}자 / 프롬프트 요청 목표(여유분 포함): {prompt_target_chars}자, 최소 {min_scenes_estimate}개 장면")
     print(f"선택 주제: {topic}")
 
-    abstracts = fetch_pubmed_abstracts(topic)
+    try:
+        abstracts = fetch_pubmed_abstracts(topic)
+    except PubMedSearchError as exc:
+        if not args.allow_no_pubmed:
+            print(f"PubMed 검색 결과 없음: {exc}")
+            print(f"상세 로그: {PUBMED_STATUS_PATH}")
+            raise
+        abstracts = "PubMed에서 직접 관련 초록을 찾지 못했습니다. 과학적 단정은 피하고, 일반적인 설명과 실천 팁 중심으로 작성하세요."
+        write_pubmed_status(topic, [], "continued_without_results", str(exc))
     prompt = build_prompt(topic, abstracts, trend_context)
 
     with open(os.path.join(WORK_DIR, "claude_prompt.txt"), "w", encoding="utf-8") as f:

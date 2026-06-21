@@ -100,6 +100,33 @@ def output_file(job_id):
     return OUTPUT_DIR / f"output_{job_id}.mp4"
 
 
+def pubmed_status_path(job_id):
+    return work_dir(job_id) / "pubmed_status.json"
+
+
+def read_pubmed_status(job_id):
+    path = pubmed_status_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def pubmed_retry_message(status):
+    if not status:
+        return "PubMed 검색 결과를 확인하지 못했습니다."
+    return "\n".join([
+        "PubMed에서 관련 초록을 찾지 못했습니다.",
+        f"주제: {status.get('topic', '')}",
+        f"원인 추정: {status.get('message', '')}",
+        "",
+        "다시 시도: /retry 새 주제",
+        "근거 부족을 감수하고 진행: /proceed",
+    ])
+
+
 def run_command(args, job_id, topic=None, extra_env=None):
     env = os.environ.copy()
     env["JOB_ID"] = job_id
@@ -113,7 +140,13 @@ def run_command(args, job_id, topic=None, extra_env=None):
     log_name = f"telegram_{Path(args[0]).name}_{int(time.time())}.log"
     (log_dir / log_name).write_text((result.stdout or "") + "\n" + (result.stderr or ""), encoding="utf-8")
     if result.returncode != 0:
-        raise RuntimeError(f"명령 실패: {' '.join(shlex.quote(a) for a in args)}\n로그: {log_dir / log_name}\n\n{result.stderr[-1200:]}")
+        tail = (result.stderr or result.stdout or "")[-1600:]
+        hint = ""
+        if "ReadTimeout" in tail and "api.anthropic.com" in tail:
+            hint = "\n\n진단: Claude API 응답이 설정된 시간 안에 끝나지 않았습니다. 주제 문제가 아니라 네트워크 지연이나 응답 생성 지연일 가능성이 큽니다. 잠시 후 같은 /pick 번호를 다시 실행하거나 /retry 새 주제로 재시도하세요. 반복되면 CLAUDE_TIMEOUT 값을 더 크게 설정하세요."
+        elif "api.anthropic.com" in tail:
+            hint = "\n\n진단: Claude API 호출 단계에서 실패했습니다. 로그 파일의 HTTP 상태와 메시지를 확인하세요."
+        raise RuntimeError(f"명령 실패: {' '.join(shlex.quote(a) for a in args)}\n로그: {log_dir / log_name}{hint}\n\n{tail}")
     return result.stdout
 
 
@@ -127,7 +160,22 @@ def preview_file(path, limit=MAX_TEXT_PREVIEW):
     return text
 
 
+def send_pubmed_notice(chat_id, job_id):
+    status = read_pubmed_status(job_id)
+    if not status or status.get("status") == "ok":
+        return
+    send_message(chat_id, "\n".join([
+        "PubMed 직접 검색 결과 없이 생성했습니다.",
+        f"주제: {status.get('topic', '')}",
+        f"원인 추정: {status.get('message', '')}",
+        "Claude는 일반 의학 지식 기반으로 조심스럽게 작성했습니다.",
+        "주제가 마음에 들지 않으면 /retry 새 주제로 다시 생성할 수 있습니다.",
+    ]))
+    send_file_or_path(chat_id, pubmed_status_path(job_id), "pubmed_status.json")
+
+
 def send_script(chat_id, job_id):
+    send_pubmed_notice(chat_id, job_id)
     path = work_dir(job_id) / "script.txt"
     send_message(chat_id, f"스크립트 생성 완료. 확인 후 /approve 또는 /cancel\n\n{preview_file(path)}")
     if path.exists():
@@ -259,6 +307,24 @@ def run_next_stage(chat_id, job):
     else:
         send_message(chat_id, f"승인할 단계가 없습니다. 현재 단계: {stage}")
 
+def run_script_generation(chat_id, job, args):
+    job_id = job["job_id"]
+    try:
+        run_command(args, job_id, job.get("topic"))
+        job["stage"] = "await_script_approval"
+        send_script(chat_id, job_id)
+        return True
+    except RuntimeError:
+        status = read_pubmed_status(job_id)
+        if status and status.get("status") == "no_results":
+            job["stage"] = "await_pubmed_retry"
+            job["pending_script_args"] = args[1:]
+            send_message(chat_id, pubmed_retry_message(status))
+            send_file_or_path(chat_id, pubmed_status_path(job_id), "pubmed_status.json")
+            return False
+        raise
+
+
 def handle_run_auto(chat_id, job, text):
     topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
     if not topic:
@@ -294,9 +360,32 @@ def handle_run(chat_id, job, text, trend=False):
     else:
         job["stage"] = "await_script_approval"
         send_message(chat_id, f"스크립트 생성 시작: JOB_ID={job_id}")
-        run_command([str(BASE_DIR / "sh" / "0_script.sh"), topic], job_id, topic)
-        send_script(chat_id, job_id)
+        run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), topic])
 
+def handle_retry(chat_id, job, text):
+    topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+    if not topic:
+        send_message(chat_id, "새 주제를 입력하세요. 예: /retry 오메가3 기억력")
+        return
+    job_id = job.get("job_id") or new_job_id("retry")
+    job["job_id"] = job_id
+    job["topic"] = topic
+    job["approval_required"] = True
+    send_message(chat_id, f"새 주제로 스크립트 생성 재시도: {topic}")
+    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), topic])
+
+
+def handle_proceed(chat_id, job):
+    job_id = job.get("job_id")
+    if not job_id:
+        send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return
+    pending = job.get("pending_script_args")
+    if not pending:
+        send_message(chat_id, "근거 부족 상태에서 이어갈 명령이 없습니다.")
+        return
+    send_message(chat_id, "PubMed 근거 부족을 감수하고 일반 설명 중심으로 스크립트 생성을 진행합니다.")
+    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), "--allow-no-pubmed", *pending])
 
 def handle_pick(chat_id, job, text):
     if job.get("stage") != "await_trend_choice":
@@ -309,9 +398,7 @@ def handle_pick(chat_id, job, text):
     choice = parts[1]
     job_id = job["job_id"]
     send_message(chat_id, f"선택 후보로 스크립트 생성 시작: {choice}")
-    run_command([str(BASE_DIR / "sh" / "0_script.sh"), "--trend-choice", choice], job_id, job.get("topic"))
-    job["stage"] = "await_script_approval"
-    send_script(chat_id, job_id)
+    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), "--trend-choice", choice])
 
 
 def handle_rerun(chat_id, job, text):
@@ -362,6 +449,8 @@ def command_specs():
         ("trend", "트렌드 후보 조회"),
         ("pick", "트렌드 후보 선택"),
         ("approve", "현재 산출물 승인"),
+        ("retry", "PubMed 실패 후 새 주제 재시도"),
+        ("proceed", "PubMed 실패 후 근거 부족 상태로 진행"),
         ("rerun", "tts/caption/broll 재생성"),
         ("render", "자막 렌더 설정 변경"),
         ("status", "현재 상태 확인"),
@@ -385,6 +474,8 @@ def help_text():
         "/trend 오메가3",
         "/pick 1",
         "/approve",
+        "/retry 오메가3 기억력",
+        "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
         "/render font_size=22 margin_v=180",
         "/run_auto 오메가3가 정말 뇌에 좋을까?",
@@ -418,6 +509,10 @@ def handle_message(state, message):
             handle_pick(chat_id, job, text)
         elif text.startswith("/approve"):
             run_next_stage(chat_id, job)
+        elif text.startswith("/retry ") or text == "/retry":
+            handle_retry(chat_id, job, text)
+        elif text.startswith("/proceed"):
+            handle_proceed(chat_id, job)
         elif text.startswith("/rerun"):
             handle_rerun(chat_id, job, text)
         elif text.startswith("/render"):

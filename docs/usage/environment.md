@@ -117,3 +117,33 @@ source ./config.sh
 ```
 
 각 단계는 필요한 입력 파일을 `data/work/{JOB_ID}/`에서 읽습니다. 따라서 `script.txt`, `subs.srt`, `scenes_timed.json`을 사람이 수정한 뒤 다음 단계만 이어서 실행할 수 있습니다. 개별 단계 재실행 시 해당 단계가 생성하는 파일만 백업하고, 다른 단계의 수동 수정 파일은 건드리지 않습니다.
+
+## 주제 입력 옵션
+
+텔레그램 명령 연동을 염두에 두고 `0_script.sh`는 두 가지 방식으로 사용할 수 있습니다.
+
+옵션 1: 아이디어를 그대로 대본화합니다.
+
+```bash
+cd ~/brain50/dev
+export JOB_ID=idea_001
+source ./config.sh
+./sh/0_script.sh "오메가3가 정말 뇌에 좋을까?"
+```
+
+옵션 2: 특정 단어로 Google/YouTube 기반 후보를 먼저 확인한 뒤 선택합니다.
+
+```bash
+cd ~/brain50/dev
+export JOB_ID=trend_omega3
+source ./config.sh
+./sh/0_script.sh --trend "오메가3"
+```
+
+후보는 `data/work/{JOB_ID}/trend_candidates.json`에 저장되고 터미널에도 1번부터 출력됩니다. 선택한 번호로 실제 대본을 생성합니다.
+
+```bash
+./sh/0_script.sh --trend-choice 1
+```
+
+`--trend-choice`로 생성한 경우 선택 키워드와 후보 목록은 `video_meta.json`의 `trend_context`에 함께 저장됩니다.

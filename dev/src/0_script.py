@@ -1,220 +1,411 @@
-import requests
-import os
+import argparse
 import json
+import os
 import re
 import sys
+from collections import defaultdict
+from urllib.parse import quote
+
 
 WORK_DIR = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
 os.makedirs(WORK_DIR, exist_ok=True)
 
-# TOPIC을 명령줄 인자로 받음
-if len(sys.argv) > 1:
-    TOPIC = sys.argv[1]
-else:
-    print("오류: TOPIC을 입력해주세요.")
-    print("사용법: python 0_script.py \"주제 문장\"")
-    print("예시: python 0_script.py \"오메가3가 정말 뇌에 좋을까?\"")
-    sys.exit(1)
-
 ATEMPO = float(os.environ.get("ATEMPO", "1.0"))
 TARGET_DURATION_SEC = int(os.environ.get("TARGET_DURATION_SEC", "60"))
 CHARS_PER_SEC = float(os.environ.get("CHARS_PER_SEC", "4.66"))
+TREND_CANDIDATE_COUNT = int(os.environ.get("TREND_CANDIDATE_COUNT", "5"))
+REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "20"))
+
+TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
 
 total_chars = int(TARGET_DURATION_SEC * ATEMPO * CHARS_PER_SEC)
 prompt_target_chars = int(total_chars * 1.15)
 min_scenes_estimate = max(8, prompt_target_chars // 28)
 
-print(f"실제 목표: {total_chars}자 / 프롬프트 요청 목표(여유분 포함): {prompt_target_chars}자, 최소 {min_scenes_estimate}개 장면")
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Shorts script generator")
+    parser.add_argument("topic", nargs="*", help="아이디어 또는 주제 문장")
+    parser.add_argument("--trend", help="키워드 후보를 뽑을 씨드 단어")
+    parser.add_argument("--trend-choice", type=int, help="trend_candidates.json에서 선택할 후보 번호(1부터 시작)")
+    return parser.parse_args()
 
 
-# 1. PubMed에서 관련 논문 검색
-search = requests.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", params={
-    "db": "pubmed", "term": TOPIC, "retmax": 5, "sort": "relevance", "retmode": "json"
-}).json()
-pmids = search["esearchresult"]["idlist"]
+def request_json(url, params=None, headers=None):
+    try:
+        import requests
 
-# 2. 논문 초록 가져오기
-abstracts = requests.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi", params={
-    "db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "text"
-}).text
+        res = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+        res.raise_for_status()
+        text = res.text.strip()
+    except ModuleNotFoundError:
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+
+        if params:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}{urlencode(params)}"
+        request_headers = {"User-Agent": "Mozilla/5.0"}
+        request_headers.update(headers or {})
+        request = Request(url, headers=request_headers)
+        with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            text = response.read().decode(charset, errors="replace").strip()
+
+    if text.startswith(")]}'"):
+        text = text.split("\n", 1)[1]
+    return json.loads(text)
 
 
-# 3. Claude로 대본 작성
-if ATEMPO >= 1.2:
-    pace_instruction = "Write in a very fast-paced, punchy, energetic style: short sentences, minimal filler words, rapid-fire delivery - like an enthusiastic friend talking quickly."
-elif ATEMPO >= 1.1:
-    pace_instruction = "Write in a brisk, conversational style: shorter sentences, less filler - like a friendly person talking a bit faster than usual."
-else:
-    pace_instruction = "Write in a relaxed, warm conversational style with natural pauses."
+def fetch_google_suggestions(seed):
+    data = request_json(
+        "https://suggestqueries.google.com/complete/search",
+        params={"client": "firefox", "hl": "ko", "gl": "KR", "ie": "utf-8", "oe": "utf-8", "q": seed},
+    )
+    return data[1] if len(data) > 1 else []
 
 
-prompt = f"""Here are PubMed abstracts about '{TOPIC}':
+def fetch_youtube_suggestions(seed):
+    data = request_json(
+        "https://suggestqueries.google.com/complete/search",
+        params={"client": "firefox", "ds": "yt", "hl": "ko", "gl": "KR", "ie": "utf-8", "oe": "utf-8", "q": seed},
+    )
+    return data[1] if len(data) > 1 else []
 
-{abstracts}
 
-Write a YouTube Shorts narration script (in KOREAN) for adults aged 50+, designed to maximize watch-through (low drop-off).
+def fetch_google_trends_topics(seed):
+    url = f"https://trends.google.com/trends/api/autocomplete/{quote(seed)}"
+    data = request_json(url, params={"hl": "ko", "tz": "-540"})
+    topics = data.get("default", {}).get("topics", [])
+    return [t.get("title") for t in topics if t.get("title")]
 
-**LENGTH: Write AT LEAST {prompt_target_chars} Korean characters total (more is fine - err on the side of writing more scenes rather than fewer). Use at least {min_scenes_estimate} scenes. It's better to overshoot than undershoot.**
 
-NARRATIVE ARC (expand with multiple examples/scenes per section as needed to reach the length target):
-1. HOOK - A surprising question or fact ("wait, that's me?")
-2-3. MECHANISM - WHY this happens, with SPECIFIC numbers from the abstracts (sample sizes, percentages, hours, age groups)
-4-5. ANALOGY + EXAMPLE - Compare the science to everyday life, with a concrete example
-6-7. SURPRISING DETAIL - One or two more concrete stats or unexpected findings from the abstracts
-8-9. RELATABLE SCENARIO - One or two "이런 적 있으시죠?" type situations
-10. ACTION - One specific, doable action for tonight/tomorrow morning (this MUST be the final scene)
+def normalize_keyword(text):
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    return text.strip(" \t\n\r-_/|,.")
 
-Each scene is a short paragraph, roughly 25-35 Korean characters (about 6-8 seconds spoken).
 
-CONTENT REQUIREMENTS:
-- Include AT LEAST 3 specific numbers/statistics from the abstracts (no vague phrases like "연구에 따르면 좋다고 합니다")
-- {pace_instruction}
-- Friendly tone, no jargon
-- The LAST scene must always be the actionable tip - this is important for the trimming step later
+def collect_trend_candidates(seed):
+    sources = {
+        "google_suggest": fetch_google_suggestions,
+        "youtube_suggest": fetch_youtube_suggestions,
+        "google_trends_topic": fetch_google_trends_topics,
+    }
+    grouped = defaultdict(set)
+    errors = {}
 
-For EACH scene also write "visual_query": 2-4 English keywords for Pexels stock video search matching that scene's content/mood.
+    for source, fetcher in sources.items():
+        try:
+            for keyword in fetcher(seed):
+                normalized = normalize_keyword(keyword)
+                if normalized and len(normalized) <= 40:
+                    grouped[normalized].add(source)
+        except Exception as exc:
+            errors[source] = str(exc)
 
-Also provide:
-- "title": A catchy YouTube Shorts title in Korean, 15-25 characters, can include relevant emojis (🧠 etc), related to the topic
-- "hashtags": 3-5 Korean hashtags (with #) specific to THIS video's topic (e.g. #뇌활성화 #기억력개선) - do NOT repeat generic channel hashtags like #brain50 or #뇌건강
-- "description": A YouTube description written in KOREAN, in the voice of an adult son writing to his parents (50s-60s) before they watch this video. Use fully polite/formal Korean (경어, 합니다/해요체), but warm and affectionate, like a son gently introducing something he prepared for his mom and dad. 3-5 sentences. Briefly introduce what this video is about and why it's worth watching - do NOT repeat the narration script verbatim, write it as a separate, caring intro message. Example tone (write your own, don't copy): "오늘은 뇌 건강에 관한 좋은 정보를 가져왔어요. 요즘 깜빡 깜빡하신다고 하셨던 것, 사실 작은 습관 하나로도 많이 달라질 수 있대요. 영상 보시고 오늘부터 같이 한번 해보면 좋을 것 같아요 :)"
+    scored = []
+    for keyword, source_names in grouped.items():
+        score = len(source_names) * 10
+        if seed.replace(" ", "") in keyword.replace(" ", ""):
+            score += 3
+        if 4 <= len(keyword) <= 20:
+            score += 2
+        scored.append({
+            "keyword": keyword,
+            "sources": sorted(source_names),
+            "score": score,
+        })
 
-**Output ONLY a JSON object in this exact format, no explanation, no markdown code blocks:**
+    scored.sort(key=lambda item: (-item["score"], item["keyword"]))
+    candidates = scored[:TREND_CANDIDATE_COUNT]
+    payload = {"seed": seed, "candidates": candidates, "errors": errors}
+
+    with open(TREND_CANDIDATES_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    print(f"트렌드 후보 저장: {TREND_CANDIDATES_PATH}")
+    for i, item in enumerate(candidates, start=1):
+        print(f"{i}. {item['keyword']} ({', '.join(item['sources'])})")
+    if errors:
+        print("일부 트렌드 소스 조회 실패:")
+        for source, error in errors.items():
+            print(f"- {source}: {error}")
+
+    if not candidates:
+        raise Exception("트렌드 후보를 찾지 못했습니다. 다른 키워드로 다시 시도하세요.")
+
+
+def load_trend_choice(choice):
+    if not os.path.exists(TREND_CANDIDATES_PATH):
+        raise Exception("trend_candidates.json이 없습니다. 먼저 --trend 옵션을 실행하세요.")
+
+    with open(TREND_CANDIDATES_PATH, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    candidates = payload.get("candidates", [])
+    index = choice - 1
+    if index < 0 or index >= len(candidates):
+        raise Exception(f"선택 번호가 범위를 벗어났습니다: {choice}")
+
+    selected = candidates[index]
+    return selected["keyword"], {
+        "seed": payload.get("seed", ""),
+        "selected": selected,
+        "candidates": candidates,
+    }
+
+
+def fetch_pubmed_abstracts(topic):
+    import requests
+
+    search = requests.get(
+        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+        params={"db": "pubmed", "term": topic, "retmax": 5, "sort": "relevance", "retmode": "json"},
+        timeout=REQUEST_TIMEOUT,
+    )
+    search.raise_for_status()
+    pmids = search.json().get("esearchresult", {}).get("idlist", [])
+
+    if not pmids:
+        return "PubMed에서 직접 관련 초록을 찾지 못했습니다. 이 경우 과학적 단정은 피하고, 일반적인 설명과 실천 팁 중심으로 작성하세요."
+
+    abstracts = requests.get(
+        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+        params={"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "text"},
+        timeout=REQUEST_TIMEOUT,
+    )
+    abstracts.raise_for_status()
+    return abstracts.text
+
+
+def pace_instruction():
+    if ATEMPO >= 1.2:
+        return "매우 빠르고 에너지 있는 말투로 씁니다. 짧은 문장, 적은 군더더기, 빠르게 치고 나가는 리듬을 사용하세요."
+    if ATEMPO >= 1.1:
+        return "조금 빠른 대화체로 씁니다. 문장은 짧게, 설명은 압축해서 친근하게 전달하세요."
+    return "따뜻하고 여유 있는 대화체로 씁니다. 자연스러운 쉼표와 호흡을 살리세요."
+
+
+def build_prompt(topic, abstracts, trend_context=None):
+    trend_block = ""
+    if trend_context:
+        candidates = ", ".join(item["keyword"] for item in trend_context.get("candidates", []))
+        trend_block = f"""
+
+트렌드 참고 정보:
+- 사용자가 처음 던진 단어: {trend_context.get('seed', '')}
+- 선택된 키워드: {trend_context.get('selected', {}).get('keyword', topic)}
+- 함께 검토된 후보: {candidates}
+이 정보는 제목과 훅의 방향을 잡는 데만 사용하고, 본문은 아래 PubMed 근거와 상식적인 건강 커뮤니케이션 원칙을 우선하세요.
+"""
+
+    return f"""아래는 '{topic}'와 관련해 PubMed에서 가져온 초록입니다.
+
+{abstracts}{trend_block}
+
+50대 이상 시청자를 위한 한국어 YouTube Shorts 내레이션 대본을 작성하세요. 목표는 이탈률을 낮추고 끝까지 보게 만드는 것입니다.
+
+길이 조건:
+- 한국어 글자 기준 최소 {prompt_target_chars}자 이상 작성하세요.
+- 장면은 최소 {min_scenes_estimate}개 이상으로 구성하세요.
+- 부족한 것보다 약간 넘치는 편이 낫습니다. 너무 길면 후처리에서 줄입니다.
+
+구성:
+1. 훅: "어, 이거 내 얘기인가?" 싶게 만드는 질문이나 의외의 사실
+2-3. 원리: 왜 그런 현상이 생기는지 설명. 초록에 숫자, 표본 수, 비율, 시간, 연령대가 있으면 구체적으로 넣기
+4-5. 비유와 예시: 일상생활에 빗대어 쉽게 설명
+6-7. 의외의 세부 내용: 사람들이 잘 모르는 포인트나 추가 수치
+8-9. 공감 상황: "이런 적 있으시죠?"처럼 시청자가 자기 경험으로 받아들이게 하기
+10. 행동 제안: 오늘 밤이나 내일 아침 바로 할 수 있는 한 가지 행동. 마지막 장면은 반드시 실천 팁이어야 합니다.
+
+문체와 한국어 표현:
+- 전체 대본은 한국어로 작성하세요.
+- 영어식 직역을 피하고, 한국어 대화 문맥에 맞게 자연스럽게 바꾸세요.
+- 50대 이상이 듣기에 편한 존댓말을 사용하되, 강의처럼 딱딱하지 않게 쓰세요.
+- 커뮤니티 글, 댓글, 검색어에서 사람들이 실제로 쓰는 말투처럼 구체적이고 생활감 있게 쓰세요.
+- 숫자와 기호는 TTS가 어색하게 읽지 않도록 가능한 한 한글 발음으로 풀어 쓰세요. 예: 오메가3는 "오메가 쓰리", 50+는 "오십 대 이상", %는 "퍼센트".
+- 조사와 숫자/기호가 붙어 어색하게 읽힐 표현은 피하세요. 예: "3은"보다 "세 가지는" 또는 "오메가 쓰리는"처럼 쓰세요.
+- 전문용어는 쉬운 말로 바꾸고, 꼭 필요할 때만 짧게 설명하세요.
+- {pace_instruction()}
+
+내용 조건:
+- 초록에서 확인 가능한 구체적 숫자나 통계가 있으면 최소 3개 포함하세요.
+- 초록에 근거가 부족한 내용은 단정하지 말고 "가능성이 있습니다", "도움이 될 수 있습니다"처럼 표현하세요.
+- 마지막 장면은 반드시 실천 가능한 행동 제안이어야 합니다.
+
+각 장면마다 Pexels 영상 검색용 "visual_query"도 작성하세요. visual_query는 2~4개의 영어 키워드로만 작성하세요.
+
+YouTube 업로드용 메타데이터도 함께 작성하세요.
+- "title": 본문 핵심과 맞는 한국어 Shorts 제목. 15~25자 권장. 낚시성 과장은 피하고 클릭하고 싶게 쓰세요.
+- "summary": 영상 내용을 2~3문장으로 요약하세요. description 상단에 들어갈 문장입니다.
+- "hashtags": 이 영상 주제에 맞는 한국어 해시태그 3~5개. #brain50, #뇌건강처럼 고정 채널 태그만 반복하지 마세요.
+- "description": 부모님께 보내는 아들이 영상 보기 전에 짧게 소개하는 느낌의 한국어 설명문. 3~5문장, 따뜻한 존댓말로 쓰세요. 대본을 그대로 반복하지 말고 별도 소개글로 쓰세요.
+
+반드시 아래 JSON 객체만 출력하세요. 설명, 마크다운 코드블록, 주석은 출력하지 마세요.
 
 {{
   "title": "제목 텍스트",
+  "summary": "요약 텍스트",
   "hashtags": "#태그1 #태그2 #태그3",
-  "description": "설명란 텍스트",
+  "description": "설명란 인트로 텍스트",
   "scenes": [
-    {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}},
-    ...
+    {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}}
   ]
 }}
 """
 
 
-res = requests.post(
-    "https://api.anthropic.com/v1/messages",
-    headers={
-        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json"
-    },
-    json={
-        "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
-        "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    }
-)
+def call_claude(prompt):
+    import requests
 
-response = res.json()
-
-print("stop_reason:", response["stop_reason"])
-print("usage:", response["usage"])
-
-raw = response["content"][0]["text"]
-
-# 디버깅용 저장
-with open(os.path.join(WORK_DIR, "raw_response.txt"), "w", encoding="utf-8") as f:
-    f.write(raw)
-
-# 토큰 부족으로 잘린 경우
-if response["stop_reason"] == "max_tokens":
-    raise Exception(
-        "Claude output truncated. Increase max_tokens."
+    res = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+            "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=REQUEST_TIMEOUT,
     )
-
-# 혹시 ```json ... ``` 형태로 반환한 경우 제거
-raw = raw.strip()
-
-if raw.startswith("```json"):
-    raw = raw[len("```json"):]
-
-if raw.endswith("```"):
-    raw = raw[:-3]
-
-raw = raw.strip()
-
-try:
-    result = json.loads(raw)
-
-except json.JSONDecodeError as e:
-
-    print("===== Claude Raw =====")
-    print(raw)
-    print("======================")
-
-    raise Exception(
-        f"JSON 파싱 실패: {e}\n"
-        f"raw_response.txt 파일을 확인하세요."
-    )
+    res.raise_for_status()
+    return res.json()
 
 
+def parse_claude_json(response):
+    print("stop_reason:", response["stop_reason"])
+    print("usage:", response["usage"])
 
+    raw = response["content"][0]["text"]
+    with open(os.path.join(WORK_DIR, "raw_response.txt"), "w", encoding="utf-8") as f:
+        f.write(raw)
 
+    if response["stop_reason"] == "max_tokens":
+        raise Exception("Claude output truncated. Increase max_tokens.")
 
-scenes = result["scenes"]
-video_title = result["title"]
-video_hashtags = result["hashtags"]
-video_description = result["description"]
+    raw = raw.strip()
+    if raw.startswith("```json"):
+        raw = raw[len("```json"):]
+    if raw.endswith("```"):
+        raw = raw[:-3]
+    raw = raw.strip()
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        print("===== Claude Raw =====")
+        print(raw)
+        print("======================")
+        raise Exception(f"JSON 파싱 실패: {e}\nraw_response.txt 파일을 확인하세요.")
 
 
 def korean_char_count(text):
-    return len(re.sub(r'[^\uAC00-\uD7A3]', '', text))
+    return len(re.sub(r"[^\uAC00-\uD7A3]", "", text))
 
 
-total_actual = sum(korean_char_count(s["text"]) for s in scenes)
-print(f"\n생성된 글자수: {total_actual}자 (실제 목표: {total_chars}자)")
-
-# 마지막 장면(액션)은 항상 유지, 그 앞부터 잘라서 목표치 맞추기
-if total_actual > total_chars * 1.10:
-    action_scene = scenes[-1]
-    body_scenes = scenes[:-1]
-
-    running_total = korean_char_count(action_scene["text"])
-    kept = []
-    for s in body_scenes:
-        c = korean_char_count(s["text"])
-        if running_total + c <= total_chars * 1.05:
-            kept.append(s)
-            running_total += c
-        else:
-            break
-
-    scenes = kept + [action_scene]
+def trim_scenes(scenes):
     total_actual = sum(korean_char_count(s["text"]) for s in scenes)
-    print(f"트리밍 후 글자수: {total_actual}자, 장면 {len(scenes)}개")
-else:
-    print(f"트리밍 불필요, 장면 {len(scenes)}개")
+    print(f"\n생성된 글자수: {total_actual}자 (실제 목표: {total_chars}자)")
+
+    if total_actual > total_chars * 1.10:
+        action_scene = scenes[-1]
+        body_scenes = scenes[:-1]
+        running_total = korean_char_count(action_scene["text"])
+        kept = []
+
+        for scene in body_scenes:
+            count = korean_char_count(scene["text"])
+            if running_total + count <= total_chars * 1.05:
+                kept.append(scene)
+                running_total += count
+            else:
+                break
+
+        scenes = kept + [action_scene]
+        total_actual = sum(korean_char_count(s["text"]) for s in scenes)
+        print(f"트리밍 후 글자수: {total_actual}자, 장면 {len(scenes)}개")
+    else:
+        print(f"트리밍 불필요, 장면 {len(scenes)}개")
+
+    return scenes
 
 
-# TTS용 전체 텍스트 (장면 사이 빈 줄 2개로 구분)
-full_text = "\n\n".join(s["text"] for s in scenes)
+def write_outputs(result, topic, trend_context=None):
+    scenes = trim_scenes(result["scenes"])
+    full_text = "\n\n".join(s["text"] for s in scenes)
 
-with open(os.path.join(WORK_DIR, "script.txt"), "w", encoding="utf-8") as f:
-    f.write(full_text)
+    video_title = result["title"]
+    video_summary = result.get("summary", "")
+    video_hashtags = result["hashtags"]
+    video_description = result["description"]
 
-with open(os.path.join(WORK_DIR, "scenes.json"), "w", encoding="utf-8") as f:
-    json.dump(scenes, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(WORK_DIR, "script.txt"), "w", encoding="utf-8") as f:
+        f.write(full_text)
 
-with open(os.path.join(WORK_DIR, "video_meta.json"), "w", encoding="utf-8") as f:
-    json.dump({
+    with open(os.path.join(WORK_DIR, "scenes.json"), "w", encoding="utf-8") as f:
+        json.dump(scenes, f, ensure_ascii=False, indent=2)
+
+    meta = {
+        "topic": topic,
         "title": video_title,
+        "summary": video_summary,
         "hashtags": video_hashtags,
-        "description": video_description
-    }, f, ensure_ascii=False, indent=2)
+        "description": video_description,
+    }
+    if trend_context:
+        meta["trend_context"] = trend_context
 
-print("=== 생성된 대본 (TTS용) ===")
-print(full_text)
-print(f"\n=== 제목 ===\n{video_title}")
-print(f"\n=== 해시태그 ===\n{video_hashtags}")
-print(f"\n=== 설명란 인트로 ===\n{video_description}")
-print("\n=== 장면별 영상 검색어 ===")
+    with open(os.path.join(WORK_DIR, "video_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
 
-for i, s in enumerate(scenes):
-    print(f"{i}: {s['visual_query']}")
+    print("=== 생성된 대본 (TTS용) ===")
+    print(full_text)
+    print(f"\n=== 제목 ===\n{video_title}")
+    print(f"\n=== 요약 ===\n{video_summary}")
+    print(f"\n=== 해시태그 ===\n{video_hashtags}")
+    print(f"\n=== 설명란 인트로 ===\n{video_description}")
+    print("\n=== 장면별 영상 검색어 ===")
+    for i, scene in enumerate(scenes):
+        print(f"{i}: {scene['visual_query']}")
+
+
+def main():
+    args = parse_args()
+
+    if args.trend:
+        collect_trend_candidates(args.trend)
+        return
+
+    trend_context = None
+    if args.trend_choice:
+        topic, trend_context = load_trend_choice(args.trend_choice)
+    else:
+        topic = " ".join(args.topic).strip()
+
+    if not topic:
+        print("오류: TOPIC을 입력해주세요.")
+        print("사용법: python 0_script.py \"주제 문장\"")
+        print("트렌드 후보: python 0_script.py --trend \"키워드\"")
+        print("후보 선택: python 0_script.py --trend-choice 1")
+        sys.exit(1)
+
+    print(f"실제 목표: {total_chars}자 / 프롬프트 요청 목표(여유분 포함): {prompt_target_chars}자, 최소 {min_scenes_estimate}개 장면")
+    print(f"선택 주제: {topic}")
+
+    abstracts = fetch_pubmed_abstracts(topic)
+    prompt = build_prompt(topic, abstracts, trend_context)
+
+    with open(os.path.join(WORK_DIR, "claude_prompt.txt"), "w", encoding="utf-8") as f:
+        f.write(prompt)
+
+    response = call_claude(prompt)
+    result = parse_claude_json(response)
+    write_outputs(result, topic, trend_context)
+
+
+if __name__ == "__main__":
+    main()

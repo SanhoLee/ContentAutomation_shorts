@@ -8,12 +8,30 @@ from googleapiclient.http import MediaFileUpload
 WORK_DIR = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.expanduser("~/brain50/data/output"))
 ASSETS_DIR = os.environ.get("ASSETS_DIR", os.path.expanduser("~/brain50/data/assets"))
+OUTPUT_FILE = os.environ.get("OUTPUT_FILE")
 
-# 가장 최근 생성된 output 파일 찾기
-output_files = sorted(glob.glob(os.path.join(OUTPUT_DIR, "output_*.mp4")))
-if not output_files:
+
+def resolve_video_path():
+    if OUTPUT_FILE:
+        if os.path.exists(OUTPUT_FILE):
+            return OUTPUT_FILE
+        raise Exception(f"OUTPUT_FILE이 존재하지 않습니다: {OUTPUT_FILE}")
+
+    marker_path = os.path.join(WORK_DIR, "output_path.txt")
+    if os.path.exists(marker_path):
+        with open(marker_path, "r", encoding="utf-8") as f:
+            candidate = f.read().strip()
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    output_files = sorted(glob.glob(os.path.join(OUTPUT_DIR, "output_*.mp4")))
+    if output_files:
+        return output_files[-1]
+
     raise Exception("업로드할 영상이 없습니다.")
-video_path = output_files[-1]
+
+
+video_path = resolve_video_path()
 print(f"업로드 대상: {video_path}")
 
 # 영상별 메타데이터 (제목, 해시태그, 설명 인트로)
@@ -42,8 +60,6 @@ template = template.replace("{{TOPIC_HASHTAGS}}", topic_hashtags)
 
 # 설명란 = 인트로(아들 톤) + 고정 템플릿
 description = f"{intro_description}\n\n{template}"
-
-
 
 # 인증
 creds = Credentials(

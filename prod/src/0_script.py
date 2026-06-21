@@ -2,11 +2,19 @@ import requests
 import os
 import json
 import re
+import sys
 
 WORK_DIR = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
 os.makedirs(WORK_DIR, exist_ok=True)
 
-TOPIC = "SuperAgers 신경생성"  # <- 여기만 매번 바꾸면 됩니다
+# TOPIC을 명령줄 인자로 받음
+if len(sys.argv) > 1:
+    TOPIC = sys.argv[1]
+else:
+    print("오류: TOPIC을 입력해주세요.")
+    print("사용법: python 0_script.py \"주제 문장\"")
+    print("예시: python 0_script.py \"오메가3가 정말 뇌에 좋을까?\"")
+    sys.exit(1)
 
 ATEMPO = float(os.environ.get("ATEMPO", "1.0"))
 TARGET_DURATION_SEC = int(os.environ.get("TARGET_DURATION_SEC", "60"))
@@ -93,8 +101,8 @@ res = requests.post(
         "content-type": "application/json"
     },
     json={
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 4000,          # 기존 1500 → 4000
+        "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+        "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
         "messages": [
             {
                 "role": "user",

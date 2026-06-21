@@ -76,3 +76,44 @@ source ./config.sh
 ```
 
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
+
+## 단계별 생성과 수동 보정
+
+`1_generate.sh`는 여전히 TTS, caption, B-roll을 순서대로 실행하는 통합 wrapper입니다. 다만 발음이나 자막 보정이 필요할 때는 아래 개별 스크립트를 같은 `JOB_ID`로 실행할 수 있습니다.
+
+```bash
+cd ~/brain50/dev
+export JOB_ID=test_job_001
+source ./config.sh
+
+# 1) script.txt를 읽어 voice.wav 생성
+./sh/1_tts.sh
+
+# script.txt를 수동 수정한 뒤 TTS만 다시 생성하려면 같은 명령을 다시 실행합니다.
+# 기존 voice.wav는 data/backups/{JOB_ID}/{TIMESTAMP}/tts/ 아래로 이동합니다.
+
+# 2) 수정된 script.txt와 voice.wav를 읽어 subs.srt, scenes_timed.json 생성
+./sh/1_caption.sh
+
+# subs.srt를 수동 수정한 뒤 바로 렌더링하려면 caption/broll을 다시 돌리지 않고 2_render.sh로 넘어갑니다.
+
+# 3) scenes_timed.json을 읽어 broll.mp4 생성
+./sh/1_broll.sh
+
+# 4) 현재 WORK_DIR의 voice.wav, subs.srt, broll.mp4를 읽어 렌더링
+./sh/2_render.sh
+```
+
+운영 환경도 같은 방식입니다.
+
+```bash
+cd ~/brain50/prod
+export JOB_ID=prod_20250621_001
+source ./config.sh
+./sh/1_tts.sh
+./sh/1_caption.sh
+./sh/1_broll.sh
+./sh/2_render.sh
+```
+
+각 단계는 필요한 입력 파일을 `data/work/{JOB_ID}/`에서 읽습니다. 따라서 `script.txt`, `subs.srt`, `scenes_timed.json`을 사람이 수정한 뒤 다음 단계만 이어서 실행할 수 있습니다. 개별 단계 재실행 시 해당 단계가 생성하는 파일만 백업하고, 다른 단계의 수동 수정 파일은 건드리지 않습니다.

@@ -3,6 +3,9 @@
 CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_NAME="$(basename "$CONFIG_DIR")"
 
+# systemd 서비스는 로그인 shell보다 PATH가 짧을 수 있으므로 사용자 설치 bin을 보강합니다.
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+
 # secrets.sh 로드 (API 키 등 민감 정보)
 SECRETS_FILE="$CONFIG_DIR/secrets.sh"
 if [ -f "$SECRETS_FILE" ]; then

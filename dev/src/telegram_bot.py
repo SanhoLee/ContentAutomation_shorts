@@ -527,23 +527,26 @@ def handle_callback(state, callback):
         api("answerCallbackQuery", {"callback_query_id": callback.get("id", "")})
     except Exception:
         pass
-    if data == "approve":
-        run_next_stage(chat_id, job)
-    elif data == "cancel":
-        job.clear()
-        send_message(chat_id, "현재 작업을 취소했습니다.")
-    elif data == "edit":
-        handle_edit(chat_id, job)
-    elif data == "render_config":
-        job["stage"] = "await_render_config"
-        send_render_ready(chat_id, job)
-    elif data.startswith("render:"):
-        _, font_size, margin_v = data.split(":")
-        job["caption_font_size"] = positive_int(font_size, "font_size")
-        job["caption_margin_v"] = positive_int(margin_v, "margin_v")
-        run_render(chat_id, job)
-    elif data.startswith("rerun:"):
-        handle_rerun(chat_id, job, "/rerun " + data.split(":", 1)[1])
+    try:
+        if data == "approve":
+            run_next_stage(chat_id, job)
+        elif data == "cancel":
+            job.clear()
+            send_message(chat_id, "현재 작업을 취소했습니다.")
+        elif data == "edit":
+            handle_edit(chat_id, job)
+        elif data == "render_config":
+            job["stage"] = "await_render_config"
+            send_render_ready(chat_id, job)
+        elif data.startswith("render:"):
+            _, font_size, margin_v = data.split(":")
+            job["caption_font_size"] = positive_int(font_size, "font_size")
+            job["caption_margin_v"] = positive_int(margin_v, "margin_v")
+            run_render(chat_id, job)
+        elif data.startswith("rerun:"):
+            handle_rerun(chat_id, job, "/rerun " + data.split(":", 1)[1])
+    except Exception as exc:
+        send_message(chat_id, f"오류: {exc}")
 
 def handle_rerun(chat_id, job, text):
     parts = text.split()

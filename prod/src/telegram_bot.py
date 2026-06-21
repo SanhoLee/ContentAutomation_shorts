@@ -2,6 +2,7 @@ import json
 import os
 import shlex
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -98,11 +99,11 @@ def editable_stage_info(stage, job_id):
 
 
 def approval_buttons(stage):
-    rows = [[button("승인", "approve"), button("취소", "cancel")]]
+    rows = [[button("승인", "approve"), button("전체 취소", "cancel_all")]]
     if stage in ("await_script_approval", "await_caption_approval", "await_upload_meta_approval"):
         rows.insert(0, [button("수정", "edit")])
     if stage == "await_tts_approval":
-        rows.insert(0, [button("TTS 재생성", "rerun:tts")])
+        rows.insert(0, [button("스크립트 수정", "back:script"), button("TTS 재생성", "rerun:tts")])
     elif stage == "await_caption_approval":
         rows.insert(1, [button("자막 재생성", "rerun:caption")])
     elif stage == "await_broll_approval":
@@ -139,6 +140,36 @@ def save_state(state):
 def chat_state(state, chat_id):
     chats = state.setdefault("chats", {})
     return chats.setdefault(str(chat_id), {})
+
+
+def busy_message(job):
+    label = job.get("busy") or "작업"
+    return f"현재 {label} 진행 중입니다. 완료 메시지가 올 때까지 다른 입력은 처리하지 않습니다."
+
+
+def is_busy(job):
+    return bool(job.get("busy"))
+
+
+def start_background_task(state, chat_id, job, label, target):
+    if is_busy(job):
+        send_message(chat_id, busy_message(job))
+        return
+    job["busy"] = label
+    save_state(state)
+    send_message(chat_id, f"진행 중입니다: {label}")
+
+    def runner():
+        try:
+            target()
+        except Exception as exc:
+            send_message(chat_id, f"오류: {exc}")
+        finally:
+            current = chat_state(state, chat_id)
+            current.pop("busy", None)
+            save_state(state)
+
+    threading.Thread(target=runner, daemon=True).start()
 
 
 def new_job_id(prefix="tg"):
@@ -281,7 +312,7 @@ def send_render_ready(chat_id, job):
         [
             [button("현재값으로 렌더", "approve")],
             [button("font 22 / margin 180", "render:22:180"), button("font 24 / margin 160", "render:24:160")],
-            [button("취소", "cancel")],
+            [button("전체 취소", "cancel_all")],
         ],
     )
 
@@ -400,8 +431,11 @@ def handle_run_auto(chat_id, job, text):
         send_message(chat_id, "주제를 입력하세요. 예: /run_auto 오메가3가 정말 뇌에 좋을까?")
         return
     job_id = new_job_id("auto")
+    busy = job.get("busy")
     job.clear()
     job.update({"job_id": job_id, "topic": topic, "approval_required": False, "stage": "running_auto"})
+    if busy:
+        job["busy"] = busy
     send_message(chat_id, f"자동 실행 시작: JOB_ID={job_id}")
     run_command([str(BASE_DIR / "run.sh"), topic, job_id], job_id, topic)
     job["stage"] = "done"
@@ -413,8 +447,11 @@ def handle_run(chat_id, job, text, trend=False):
         send_message(chat_id, "주제를 입력하세요. 예: /run 오메가3가 정말 뇌에 좋을까?")
         return
     job_id = new_job_id("trend" if trend else "tg")
+    busy = job.get("busy")
     job.clear()
     job.update({"job_id": job_id, "topic": topic, "approval_required": True})
+    if busy:
+        job["busy"] = busy
     if trend:
         job["stage"] = "await_trend_choice"
         send_message(chat_id, f"트렌드 후보 조회 시작: {topic}")
@@ -527,14 +564,21 @@ def handle_callback(state, callback):
         api("answerCallbackQuery", {"callback_query_id": callback.get("id", "")})
     except Exception:
         pass
+    if is_busy(job):
+        send_message(chat_id, busy_message(job))
+        return
     try:
         if data == "approve":
-            run_next_stage(chat_id, job)
-        elif data == "cancel":
+            start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
+        elif data == "cancel_all":
             job.clear()
-            send_message(chat_id, "현재 작업을 취소했습니다.")
+            send_message(chat_id, "전체 작업을 취소했습니다.")
         elif data == "edit":
             handle_edit(chat_id, job)
+        elif data == "back:script":
+            job["stage"] = "await_script_approval"
+            send_message(chat_id, "스크립트 수정 단계로 돌아갑니다. 수정 후 승인하면 TTS를 다시 생성합니다.")
+            send_script(chat_id, job["job_id"])
         elif data == "render_config":
             job["stage"] = "await_render_config"
             send_render_ready(chat_id, job)
@@ -542,9 +586,10 @@ def handle_callback(state, callback):
             _, font_size, margin_v = data.split(":")
             job["caption_font_size"] = positive_int(font_size, "font_size")
             job["caption_margin_v"] = positive_int(margin_v, "margin_v")
-            run_render(chat_id, job)
+            start_background_task(state, chat_id, job, "렌더링", lambda: run_render(chat_id, job))
         elif data.startswith("rerun:"):
-            handle_rerun(chat_id, job, "/rerun " + data.split(":", 1)[1])
+            target = data.split(":", 1)[1]
+            start_background_task(state, chat_id, job, f"{target} 재생성", lambda: handle_rerun(chat_id, job, "/rerun " + target))
     except Exception as exc:
         send_message(chat_id, f"오류: {exc}")
 
@@ -602,7 +647,7 @@ def command_specs():
         ("rerun", "tts/caption/broll 재생성"),
         ("render", "자막 렌더 설정 변경"),
         ("status", "현재 상태 확인"),
-        ("cancel", "현재 작업 취소"),
+        ("cancel", "전체 작업 취소"),
         ("help", "명령어 도움말"),
     ]
 
@@ -646,6 +691,9 @@ def handle_message(state, message):
 
     job = chat_state(state, chat_id)
     try:
+        if is_busy(job) and not text.startswith("/status"):
+            send_message(chat_id, busy_message(job))
+            return
         if apply_edit_message(chat_id, job, message):
             return
         if not text:
@@ -653,30 +701,30 @@ def handle_message(state, message):
         elif text.startswith("/start") or text.startswith("/help"):
             send_message(chat_id, help_text())
         elif text.startswith("/run_auto "):
-            handle_run_auto(chat_id, job, text)
+            start_background_task(state, chat_id, job, "자동 실행", lambda: handle_run_auto(chat_id, job, text))
         elif text.startswith("/run "):
-            handle_run(chat_id, job, text, trend=False)
+            start_background_task(state, chat_id, job, "스크립트 생성", lambda: handle_run(chat_id, job, text, trend=False))
         elif text.startswith("/trend "):
-            handle_run(chat_id, job, text, trend=True)
+            start_background_task(state, chat_id, job, "트렌드 조회", lambda: handle_run(chat_id, job, text, trend=True))
         elif text.startswith("/pick"):
-            handle_pick(chat_id, job, text)
+            start_background_task(state, chat_id, job, "스크립트 생성", lambda: handle_pick(chat_id, job, text))
         elif text.startswith("/approve"):
-            run_next_stage(chat_id, job)
+            start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
         elif text.startswith("/edit"):
             handle_edit(chat_id, job)
         elif text.startswith("/retry ") or text == "/retry":
-            handle_retry(chat_id, job, text)
+            start_background_task(state, chat_id, job, "스크립트 재생성", lambda: handle_retry(chat_id, job, text))
         elif text.startswith("/proceed"):
-            handle_proceed(chat_id, job)
+            start_background_task(state, chat_id, job, "스크립트 생성", lambda: handle_proceed(chat_id, job))
         elif text.startswith("/rerun"):
-            handle_rerun(chat_id, job, text)
+            start_background_task(state, chat_id, job, "재생성", lambda: handle_rerun(chat_id, job, text))
         elif text.startswith("/render"):
-            handle_render(chat_id, job, text)
+            start_background_task(state, chat_id, job, "렌더링", lambda: handle_render(chat_id, job, text))
         elif text.startswith("/status"):
             handle_status(chat_id, job)
         elif text.startswith("/cancel"):
             job.clear()
-            send_message(chat_id, "현재 작업을 취소했습니다.")
+            send_message(chat_id, "전체 작업을 취소했습니다.")
         else:
             send_message(chat_id, help_text())
     except Exception as exc:

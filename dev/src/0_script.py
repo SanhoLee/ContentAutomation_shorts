@@ -101,8 +101,8 @@ res = requests.post(
         "content-type": "application/json"
     },
     json={
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 4000,          # 기존 1500 → 4000
+        "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+        "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
         "messages": [
             {
                 "role": "user",

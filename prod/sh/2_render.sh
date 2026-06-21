@@ -4,7 +4,6 @@ source "$(dirname "$0")/../config.sh"
 
 mkdir -p "$OUTPUT_DIR"
 
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$WORK_DIR/voice.wav")
 echo "나레이션 길이: ${DURATION}초"
 
@@ -23,6 +22,7 @@ ffmpeg -y \
 [1:a][bgm]amix=inputs=2:duration=first:dropout_transition=0:weights=1 1[aout]" \
 -map "[v]" -map "[aout]" \
 -c:v libx264 -c:a aac -pix_fmt yuv420p \
-"$OUTPUT_DIR/output_${TIMESTAMP}.mp4"
+"$OUTPUT_FILE"
 
-echo "완료! $OUTPUT_DIR/output_${TIMESTAMP}.mp4 생성됨 (${DURATION}초)"
+echo "$OUTPUT_FILE" > "$WORK_DIR/output_path.txt"
+echo "완료! $OUTPUT_FILE 생성됨 (${DURATION}초)"

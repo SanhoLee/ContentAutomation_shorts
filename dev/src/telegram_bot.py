@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ if not TOKEN:
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}"
 STATE_LOCK = threading.Lock()
+STOP_REQUESTED = False
 
 
 def api(method, data=None, files=None):
@@ -872,6 +874,30 @@ def handle_message(state, message):
         send_message(chat_id, f"오류: {exc}")
 
 
+def startup_message():
+    return "\n".join([
+        "Brain50 Telegram bot started.",
+        f"BASE_DIR: {BASE_DIR}",
+        "",
+        help_text(),
+    ])
+
+
+def shutdown_message(signum=None):
+    label = f"signal {signum}" if signum else "shutdown"
+    return f"Brain50 Telegram bot stopped. bye bye. ({label})"
+
+
+def request_shutdown(signum, frame):
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
+    if ALLOWED_CHAT_ID:
+        try:
+            send_message(ALLOWED_CHAT_ID, shutdown_message(signum))
+        except Exception:
+            pass
+
+
 def poll_updates(offset):
     params = {"timeout": POLL_TIMEOUT, "offset": offset}
     query = urlencode(params)
@@ -882,13 +908,15 @@ def poll_updates(offset):
 def main():
     state = load_state()
     send_to = ALLOWED_CHAT_ID
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     try:
         register_bot_commands()
     except Exception:
         pass
     if send_to:
-        send_message(send_to, f"Brain50 Telegram bot started: {BASE_DIR}")
-    while True:
+        send_message(send_to, startup_message())
+    while not STOP_REQUESTED:
         try:
             data = poll_updates(state.get("offset", 0))
             for update in data.get("result", []):

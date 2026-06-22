@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import defaultdict
 from urllib.parse import quote
 
@@ -17,6 +18,7 @@ TREND_CANDIDATE_COUNT = int(os.environ.get("TREND_CANDIDATE_COUNT", "5"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "20"))
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "180"))
 CLAUDE_RETRIES = int(os.environ.get("CLAUDE_RETRIES", "2"))
+PUBMED_QUERY_TIMEOUT = int(os.environ.get("PUBMED_QUERY_TIMEOUT", "60"))
 
 TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
 PUBMED_STATUS_PATH = os.path.join(WORK_DIR, "pubmed_status.json")
@@ -195,9 +197,10 @@ def assess_pubmed_query(topic):
     return "PubMed에서 직접 맞는 초록을 찾지 못했습니다. 표현을 더 넓히거나, 건강/질환/기전 중심 키워드로 바꿔보세요."
 
 
-def write_pubmed_status(topic, pmids, status, message, abstracts_preview=""):
+def write_pubmed_status(topic, pmids, status, message, abstracts_preview="", pubmed_query=None):
     payload = {
         "topic": topic,
+        "pubmed_query": pubmed_query or topic,
         "status": status,
         "pmids": pmids,
         "pmid_count": len(pmids),
@@ -209,23 +212,97 @@ def write_pubmed_status(topic, pmids, status, message, abstracts_preview=""):
     return payload
 
 
+def contains_korean(text):
+    return bool(re.search(r"[가-힣]", text or ""))
+
+
+def clean_pubmed_query(query):
+    query = re.sub(r"[`\"']", "", query or "")
+    query = re.sub(r"\s+", " ", query).strip(" .;:-")
+    if len(query) > 120:
+        query = query[:120].rsplit(" ", 1)[0].strip()
+    return query
+
+
+def translate_pubmed_query(topic):
+    if not contains_korean(topic):
+        return clean_pubmed_query(topic) or topic
+
+    import requests
+
+    payload = {
+        "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+        "max_tokens": 120,
+        "messages": [{
+            "role": "user",
+            "content": (
+                "Convert the Korean health/medical content topic below into a concise English PubMed search query. "
+                "Use 2 to 6 biomedical keywords, disease/risk/mechanism terms when relevant, and no Korean. "
+                "Do not add explanations, quotes, markdown, or Boolean operators unless essential.\n\n"
+                f"Korean topic: {topic}"
+            ),
+        }],
+    }
+    headers = {
+        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+
+    last_error = None
+    for attempt in range(1, CLAUDE_RETRIES + 2):
+        try:
+            print(f"PubMed 검색어 영어 변환 시도 {attempt}/{CLAUDE_RETRIES + 1} (timeout={PUBMED_QUERY_TIMEOUT}s)")
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=PUBMED_QUERY_TIMEOUT,
+            )
+            if res.status_code in (429, 500, 502, 503, 504):
+                last_error = requests.HTTPError(f"Claude transient status {res.status_code}: {res.text[:500]}")
+                if attempt <= CLAUDE_RETRIES:
+                    time.sleep(min(5 * attempt, 15))
+                    continue
+            res.raise_for_status()
+            translated = clean_pubmed_query(res.json()["content"][0]["text"])
+            if translated and not contains_korean(translated):
+                print(f"PubMed 검색어: {topic} -> {translated}")
+                return translated
+            last_error = RuntimeError(f"invalid translated query: {translated}")
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            print(f"PubMed 검색어 변환 실패: {type(exc).__name__}: {exc}")
+        except requests.HTTPError as exc:
+            last_error = exc
+            status = exc.response.status_code if exc.response is not None else None
+            if status not in (429, 500, 502, 503, 504):
+                raise
+        if attempt <= CLAUDE_RETRIES:
+            time.sleep(min(5 * attempt, 15))
+
+    print(f"PubMed 검색어 영어 변환 실패. 원문으로 검색합니다: {last_error}")
+    return topic
+
+
 def fetch_pubmed_abstracts(topic):
+    pubmed_query = translate_pubmed_query(topic)
     search = request_json(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-        params={"db": "pubmed", "term": topic, "retmax": 5, "sort": "relevance", "retmode": "json"},
+        params={"db": "pubmed", "term": pubmed_query, "retmax": 5, "sort": "relevance", "retmode": "json"},
     )
     pmids = search.get("esearchresult", {}).get("idlist", [])
 
     if not pmids:
-        message = assess_pubmed_query(topic)
-        write_pubmed_status(topic, pmids, "no_results", message)
+        message = assess_pubmed_query(pubmed_query)
+        write_pubmed_status(topic, pmids, "no_results", message, pubmed_query=pubmed_query)
         return "PubMed에서 직접 관련 초록을 찾지 못했습니다. 이 경우 논문 수치나 특정 연구 결과를 지어내지 말고, 신뢰 가능한 일반 의학 지식과 건강 커뮤니케이션 원칙을 바탕으로 조심스럽게 작성하세요. 근거가 불확실한 내용은 가능성이 있습니다, 도움될 수 있습니다처럼 표현하세요."
 
     text = request_text(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
         params={"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "text"},
     )
-    write_pubmed_status(topic, pmids, "ok", "PubMed 초록을 찾았습니다.", text)
+    write_pubmed_status(topic, pmids, "ok", "PubMed 초록을 찾았습니다.", text, pubmed_query=pubmed_query)
     return text
 
 
@@ -251,6 +328,7 @@ def build_prompt(topic, abstracts, trend_context=None):
 """
 
     return f"""아래는 '{topic}'와 관련해 PubMed에서 가져온 초록입니다.
+한국어 주제는 콘텐츠 방향으로 유지하되, PubMed 검색은 필요 시 영어 의학 키워드로 변환해 수행했습니다.
 
 {abstracts}{trend_block}
 

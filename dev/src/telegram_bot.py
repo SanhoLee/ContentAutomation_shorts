@@ -18,6 +18,7 @@ OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", BASE_DIR / "data" / "output"))
 STATE_PATH = Path(os.environ.get("TELEGRAM_STATE_PATH", BASE_DIR / "data" / "telegram_state.json"))
 POLL_TIMEOUT = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "30"))
 MAX_TEXT_PREVIEW = int(os.environ.get("TELEGRAM_MAX_TEXT_PREVIEW", "3500"))
+POLL_ERROR_NOTIFY_INTERVAL = int(os.environ.get("TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL", "1800"))
 
 if not TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN is required")
@@ -898,6 +899,24 @@ def request_shutdown(signum, frame):
             pass
 
 
+
+def is_transient_poll_error(exc):
+    text = str(exc).lower()
+    transient_markers = (
+        "timed out",
+        "timeout",
+        "connection reset by peer",
+        "remote end closed connection without response",
+        "temporarily unavailable",
+        "connection aborted",
+        "network is unreachable",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def poll_error_backoff(consecutive_errors):
+    return min(60, 5 + max(consecutive_errors - 1, 0) * 5)
+
 def poll_updates(offset):
     params = {"timeout": POLL_TIMEOUT, "offset": offset}
     query = urlencode(params)
@@ -916,9 +935,12 @@ def main():
         pass
     if send_to:
         send_message(send_to, startup_message())
+    consecutive_poll_errors = 0
+    last_poll_error_notice_at = 0
     while not STOP_REQUESTED:
         try:
             data = poll_updates(state.get("offset", 0))
+            consecutive_poll_errors = 0
             for update in data.get("result", []):
                 state["offset"] = update["update_id"] + 1
                 callback = update.get("callback_query")
@@ -931,12 +953,19 @@ def main():
                     save_state(state)
             save_state(state)
         except Exception as exc:
-            if send_to:
-                try:
-                    send_message(send_to, f"Bot polling error: {exc}")
-                except Exception:
-                    pass
-            time.sleep(5)
+            consecutive_poll_errors += 1
+            if is_transient_poll_error(exc):
+                print(f"[WARN] transient polling error: {exc}", flush=True)
+            else:
+                now = time.time()
+                if send_to and now - last_poll_error_notice_at >= POLL_ERROR_NOTIFY_INTERVAL:
+                    try:
+                        send_message(send_to, f"Bot polling error: {exc}")
+                        last_poll_error_notice_at = now
+                    except Exception:
+                        pass
+                print(f"[ERROR] polling error: {exc}", flush=True)
+            time.sleep(poll_error_backoff(consecutive_poll_errors))
 
 
 if __name__ == "__main__":

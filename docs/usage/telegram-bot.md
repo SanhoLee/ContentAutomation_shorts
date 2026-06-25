@@ -61,7 +61,8 @@ export TELEGRAM_CHAT_ID="..."
 
 봇은 기존 shell 스크립트를 그대로 호출하고, 모든 산출물은 `data/work/{JOB_ID}/`에 저장합니다.
 
-- 상태 파일: `data/telegram_state.json` (런타임 생성 파일이며 git에 커밋하지 않습니다.)
+
+- 상태 파일: `data/telegram_state.json` (런타임 생성 파일이며 `.gitignore`에 포함되어 git에 커밋하지 않습니다.)
 - 스크립트: `data/work/{JOB_ID}/script.txt`
 - 음성: `data/work/{JOB_ID}/voice.wav`
 - 자막: `data/work/{JOB_ID}/subs.srt`

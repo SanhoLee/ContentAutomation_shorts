@@ -13,27 +13,49 @@ FALLBACK_QUERY = "calm nature peaceful background"  # 거의 항상 결과 있�
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 headers = {"Authorization": PEXELS_API_KEY}
+used_video_ids = set()
 
 
-def fetch_clip(query, save_path):
-    url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=20"
-    res = requests.get(url, headers=headers)
+def select_video(videos, min_duration):
+    min_duration = float(min_duration)
+    unused = [v for v in videos if v.get("id") not in used_video_ids]
+    pool = unused or videos
+    long_enough = [v for v in pool if float(v.get("duration") or 0) >= min_duration]
+    candidates = long_enough or pool
+    return random.choice(candidates), not bool(unused), not bool(long_enough)
+
+
+def fetch_clip(query, save_path, min_duration):
+    res = requests.get(
+        "https://api.pexels.com/videos/search",
+        headers=headers,
+        params={"query": query, "orientation": "portrait", "per_page": 40},
+        timeout=30,
+    )
     res.raise_for_status()
     videos = res.json().get("videos", [])
     if not videos:
-        return False
+        return None
 
-    video = random.choice(videos)
+    video, duplicate_allowed, short_allowed = select_video(videos, min_duration)
+    video_id = video.get("id")
+    if video_id is not None:
+        used_video_ids.add(video_id)
     portrait = [v for v in video["video_files"] if v["width"] < v["height"]]
     candidates = portrait or video["video_files"]
     target = random.choice(candidates)
 
-    video_data = requests.get(target["link"])
+    video_data = requests.get(target["link"], timeout=60)
     video_data.raise_for_status()
 
     with open(save_path, "wb") as f:
         f.write(video_data.content)
-    return True
+    return {
+        "video_id": video_id,
+        "video_duration": video.get("duration"),
+        "duplicate_allowed": duplicate_allowed,
+        "short_allowed": short_allowed,
+    }
 
 
 def normalize(raw_path, out_path, duration):
@@ -62,18 +84,20 @@ def process_scene(i, scene):
     query = scene["visual_query"]
 
     # 1차: 지정 쿼리
-    if fetch_clip(query, raw_path):
+    clip_info = fetch_clip(query, raw_path, duration)
+    if clip_info:
         try:
             normalize(raw_path, out_path, duration)
-            return {"index": i, "status": "ok", "query_used": query}
+            return {"index": i, "status": "ok", "query_used": query, **clip_info}
         except subprocess.CalledProcessError as e:
             pass  # 정규화 실패 -> fallback으로
 
     # 2차: fallback 쿼리
-    if fetch_clip(FALLBACK_QUERY, raw_path):
+    clip_info = fetch_clip(FALLBACK_QUERY, raw_path, duration)
+    if clip_info:
         try:
             normalize(raw_path, out_path, duration)
-            return {"index": i, "status": "fallback", "query_used": FALLBACK_QUERY}
+            return {"index": i, "status": "fallback", "query_used": FALLBACK_QUERY, **clip_info}
         except subprocess.CalledProcessError:
             pass
 

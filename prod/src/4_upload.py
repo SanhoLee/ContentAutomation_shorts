@@ -46,17 +46,10 @@ summary = video_meta.get("summary", "")
 if len(title) > 100:
     title = title[:97] + "..."
 
-# BGM 정보
-with open(os.path.join(ASSETS_DIR, "bgm_info.json"), "r", encoding="utf-8") as f:
-    bgm_info = json.load(f)
-
 # 설명 템플릿 로드 및 치환
 with open(os.path.join(ASSETS_DIR, "description_template.txt"), "r", encoding="utf-8") as f:
     template = f.read()
 
-template = template.replace("{{MUSIC_TRACK}}", bgm_info["track"])
-template = template.replace("{{MUSIC_ARTIST}}", bgm_info["artist"])
-template = template.replace("{{MUSIC_ID}}", bgm_info["audio_id"])
 template = template.replace("{{TOPIC_HASHTAGS}}", topic_hashtags)
 
 # 설명란 = 인트로(아들 톤) + 본문 요약 + 고정 템플릿

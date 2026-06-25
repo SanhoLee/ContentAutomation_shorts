@@ -171,6 +171,21 @@ def save_state(state):
         os.replace(tmp_path, STATE_PATH)
 
 
+def clear_stale_busy_flags(state):
+    """Clear in-flight markers from a previous bot process.
+
+    Long-running stages run in background threads. Those threads do not survive
+    a systemd restart, but the persisted state file can still contain "busy".
+    If we keep that marker, the freshly started bot blocks every command as if
+    work were still running.
+    """
+    cleared = []
+    for chat_id, job in state.get("chats", {}).items():
+        if isinstance(job, dict) and job.pop("busy", None):
+            cleared.append(chat_id)
+    return cleared
+
+
 def chat_state(state, chat_id):
     chats = state.setdefault("chats", {})
     return chats.setdefault(str(chat_id), {})
@@ -926,6 +941,10 @@ def poll_updates(offset):
 
 def main():
     state = load_state()
+    stale_busy_chats = clear_stale_busy_flags(state)
+    if stale_busy_chats:
+        save_state(state)
+        print(f"[INFO] cleared stale busy flags on startup: {stale_busy_chats}", flush=True)
     send_to = ALLOWED_CHAT_ID
     signal.signal(signal.SIGTERM, request_shutdown)
     signal.signal(signal.SIGINT, request_shutdown)

@@ -12,22 +12,43 @@ FADE_DURATION = 0.3
 headers = {"Authorization": PEXELS_API_KEY}
 
 
-def fetch_clip(query, save_path):
-    url = f"https://api.pexels.com/videos/search?query={query}&orientation=portrait&per_page=15"
-    res = requests.get(url, headers=headers)
+def select_video(videos, used_video_ids, min_duration):
+    min_duration = float(min_duration)
+    unused = [v for v in videos if v.get("id") not in used_video_ids]
+    pool = unused or videos
+    long_enough = [v for v in pool if float(v.get("duration") or 0) >= min_duration]
+    candidates = long_enough or pool
+    return random.choice(candidates), not bool(unused), not bool(long_enough)
+
+
+def fetch_clip(query, save_path, used_video_ids, min_duration):
+    res = requests.get(
+        "https://api.pexels.com/videos/search",
+        headers=headers,
+        params={"query": query, "orientation": "portrait", "per_page": 40},
+        timeout=30,
+    )
     res.raise_for_status()
     videos = res.json().get("videos", [])
     if not videos:
-        return False
-    video = random.choice(videos)
+        return None
+    video, duplicate_allowed, short_allowed = select_video(videos, used_video_ids, min_duration)
+    video_id = video.get("id")
+    if video_id is not None:
+        used_video_ids.add(video_id)
     portrait = [v for v in video["video_files"] if v["width"] < v["height"]]
     candidates = portrait or video["video_files"]
     target = random.choice(candidates)
-    video_data = requests.get(target["link"])
+    video_data = requests.get(target["link"], timeout=60)
     video_data.raise_for_status()
     with open(save_path, "wb") as f:
         f.write(video_data.content)
-    return True
+    return {
+        "video_id": video_id,
+        "video_duration": video.get("duration"),
+        "duplicate_allowed": duplicate_allowed,
+        "short_allowed": short_allowed,
+    }
 
 
 def normalize(raw_path, out_path, duration):
@@ -56,6 +77,7 @@ with open(os.path.join(WORK_DIR, "broll_status.json"), "r", encoding="utf-8") as
     results = json.load(f)
 
 failed = [r for r in results if r["status"] == "failed"]
+used_video_ids = {r.get("video_id") for r in results if r.get("video_id")}
 
 if not failed:
     print("재시도할 장면이 없습니다.")
@@ -75,10 +97,12 @@ for r in failed:
 
     print(f"[{i}] 재시도: '{simplified_query}'")
 
-    if fetch_clip(simplified_query, raw_path):
+    clip_info = fetch_clip(simplified_query, raw_path, used_video_ids, duration)
+    if clip_info:
         normalize(raw_path, out_path, duration)
         r["status"] = "ok_retry"
         r["query_used"] = simplified_query
+        r.update(clip_info)
         print("    -> 성공")
     else:
         print("    -> 여전히 실패")

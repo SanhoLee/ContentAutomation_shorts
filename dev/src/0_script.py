@@ -33,8 +33,8 @@ _DATA_DIR             = os.path.normpath(os.path.join(WORK_DIR, ".."))
 INSIGHTS_PATH         = os.environ.get("FEEDBACK_INSIGHTS", os.path.join(_DATA_DIR, "feedback_insights.json"))
 
 total_chars        = int(TARGET_DURATION_SEC * ATEMPO * CHARS_PER_SEC)
-prompt_target_chars = int(total_chars * 1.15)
-min_scenes_estimate = max(8, prompt_target_chars // 28)
+prompt_target_chars = int(total_chars * 1.30)
+min_scenes_estimate = max(12, prompt_target_chars // 28)
 
 
 # ─────────────────────────────────────────────

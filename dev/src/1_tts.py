@@ -39,7 +39,7 @@ subprocess.run([
     tts_executable, "tts", TEXT,
     "-o", raw_path,
     "--lang", "ko",
-    "--voice", os.environ.get("TTS_VOICE", "M2")
+    "--voice", os.environ.get("TTS_VOICE", "F1")
 ], check=True)
 
 # 속도 후처리 (피치 유지, atempo)

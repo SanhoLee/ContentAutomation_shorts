@@ -656,7 +656,7 @@ main_keyword       : {main_keyword}
 def call_claude(prompt):
     import requests
     payload = {"model": CLAUDE_SCRIPT_MODEL,
-               "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
+               "max_tokens": int(os.environ.get("MAX_TOKENS", "1000")),
                "messages": [{"role": "user", "content": prompt}]}
     headers = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
                "anthropic-version": "2023-06-01", "content-type": "application/json"}

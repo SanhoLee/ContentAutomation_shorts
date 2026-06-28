@@ -10,7 +10,7 @@ dev:
   OUTPUT_DIR: "${BASE_DIR}/data/output"
   BACKUP_DIR: "${BASE_DIR}/data/backups"
   CLAUDE_MODEL: "claude-sonnet-4-6"
-  MAX_TOKENS: 4000
+  MAX_TOKENS: 1000
   LOG_LEVEL: "DEBUG"
   ATEMPO: 1.3
   TARGET_DURATION_SEC: 90
@@ -26,7 +26,7 @@ prod:
   OUTPUT_DIR: "${BASE_DIR}/data/output"
   BACKUP_DIR: "${BASE_DIR}/data/backups"
   CLAUDE_MODEL: "claude-sonnet-4-6"
-  MAX_TOKENS: 4000
+  MAX_TOKENS: 1000
   LOG_LEVEL: "INFO"
   ATEMPO: 1.15
   TARGET_DURATION_SEC: 60

@@ -413,7 +413,7 @@ python 0_script.py "다음 주제"
 | `CLAUDE_STRATEGY_MODEL` | `claude-3-5-haiku-latest` | Stage 1 전략 수립 모델 |
 | `CLAUDE_STRATEGY_FALLBACK_MODELS` | `claude-3-5-haiku-20241022` | Stage 1 모델이 400 invalid model 응답을 낼 때 순서대로 재시도할 모델 목록(쉼표 구분) |
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | Stage 2 대본 작성 모델 |
-| `MAX_TOKENS` | `4000` | Stage 2 최대 출력 토큰 |
+| `MAX_TOKENS` | `1000` | Stage 2 최대 출력 토큰 |
 
 ### 영상 길이
 

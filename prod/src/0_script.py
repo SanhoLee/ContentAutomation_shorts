@@ -391,7 +391,7 @@ def call_claude(prompt):
 
     payload = {
         "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
-        "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
+        "max_tokens": int(os.environ.get("MAX_TOKENS", "1000")),
         "messages": [{"role": "user", "content": prompt}],
     }
     headers = {

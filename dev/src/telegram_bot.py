@@ -19,6 +19,11 @@ STATE_PATH = Path(os.environ.get("TELEGRAM_STATE_PATH", BASE_DIR / "data" / "tel
 POLL_TIMEOUT = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "30"))
 MAX_TEXT_PREVIEW = int(os.environ.get("TELEGRAM_MAX_TEXT_PREVIEW", "3500"))
 POLL_ERROR_NOTIFY_INTERVAL = int(os.environ.get("TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL", "1800"))
+DEFAULT_CAPTION_FONT_SIZE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_FONT_SIZE", "22")
+DEFAULT_CAPTION_MARGIN_V = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_V", "60")
+DEFAULT_CAPTION_MARGIN_H = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_H", "10")
+DEFAULT_WEB_RESEARCH = os.environ.get("TELEGRAM_DEFAULT_WEB_RESEARCH", "true").lower() not in ("off", "0", "false", "no")
+
 
 if not TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN is required")
@@ -351,13 +356,13 @@ def send_broll(chat_id, job_id):
 
 
 def send_render_ready(chat_id, job):
-    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20")))
-    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  "55")))
-    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  "10")))
+    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
+    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
+    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
     msg = (
         "렌더 설정 확인\n"
         "현재: font=" + font_size + ", margin_v=" + margin_v + ", margin_h=" + margin_h + "\n"
-        "조정: /render font_size=22 margin_v=100 margin_h=12\n"
+        "조정: /render font_size=22 margin_v=60 margin_h=12\n"
         "또는 /set 으로 저장 후 재렌더"
     )
     send_action_message(
@@ -366,7 +371,7 @@ def send_render_ready(chat_id, job):
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
-            [button("font 20 기본",  "render:await_render_config:20:55"),
+            [button("font 22 기본",  "render:await_render_config:22:60"),
              button("font 22 여유",  "render:await_render_config:22:100")],
             [button("전체 취소", "cancel_all")],
         ],
@@ -436,8 +441,8 @@ def _build_extra_env(job):
         env["CAPTION_MARGIN_H"] = str(job["caption_margin_h"])
     if "tts_voice" in job:
         env["TTS_VOICE"] = str(job["tts_voice"])
-    if job.get("web_research") is False:
-        env["ENABLE_WEB_RESEARCH"] = "false"
+    if "web_research" in job:
+        env["ENABLE_WEB_RESEARCH"] = "true" if job.get("web_research") else "false"
     return env
 
 
@@ -472,7 +477,7 @@ def handle_set(chat_id, job, text):
             cur_text,
             "",
             "사용법:",
-            "  /set font_size=22 margin_v=100 margin_h=12",
+            "  /set font_size=22 margin_v=60 margin_h=12",
             "  /set voice=F2 web=off",
             "  /set reset  <- 초기화",
         ]
@@ -506,7 +511,7 @@ def handle_set(chat_id, job, text):
             "설정 저장:\n" + "\n".join("  " + c for c in changed) +
             "\n\n/run_auto 실행 시 자동 적용됩니다.")
     else:
-        send_message(chat_id, "변경할 설정이 없습니다.\n사용법: /set font_size=22 margin_v=100")
+        send_message(chat_id, "변경할 설정이 없습니다.\n사용법: /set font_size=22 margin_v=60")
 
 
 
@@ -574,9 +579,9 @@ def start_render_progress(chat_id, job_id, stop_event):
 
 def run_render(chat_id, job):
     job_id    = job["job_id"]
-    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20")))
-    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  "55")))
-    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  "10")))
+    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
+    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
+    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
     args      = [str(BASE_DIR / "sh" / "2_render.sh"),
                  "--font-size", font_size, "--margin-v", margin_v]
     extra_env = {"CAPTION_MARGIN_H": margin_h}
@@ -599,11 +604,11 @@ def run_render(chat_id, job):
 def _run_render_silent(chat_id, job, extra_env=None):
     """승인 프롬프트 없이 렌더링만 실행 (run_auto 전용)."""
     job_id    = job["job_id"]
-    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20")))
-    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  "55")))
+    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
+    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
     env       = dict(extra_env or {})
     env.setdefault("CAPTION_MARGIN_H",
-        str(job.get("caption_margin_h", os.environ.get("CAPTION_MARGIN_H", "10"))))
+        str(job.get("caption_margin_h", os.environ.get("CAPTION_MARGIN_H", DEFAULT_CAPTION_MARGIN_H))))
     args = [str(BASE_DIR / "sh" / "2_render.sh"),
             "--font-size", font_size, "--margin-v", margin_v]
     stop_progress   = threading.Event()
@@ -676,7 +681,8 @@ def handle_run_auto(chat_id, job, text):
         send_message(chat_id,
             "주제를 입력하세요.\n"
             "예: /run_auto 치매 초기증상과 건망증 차이\n\n"
-            "실행 전 설정: /set font_size=22 margin_v=100 margin_h=12 web=off"
+            "기본 설정: font_size=22 margin_v=60 web=on\n"
+            "실행 전 변경: /set font_size=22 margin_v=60 margin_h=12 web=off"
         )
         return
 
@@ -687,6 +693,10 @@ def handle_run_auto(chat_id, job, text):
     job.update({
         "job_id": job_id, "topic": topic,
         "approval_required": False, "stage": "running_auto",
+        "caption_font_size": DEFAULT_CAPTION_FONT_SIZE,
+        "caption_margin_v": DEFAULT_CAPTION_MARGIN_V,
+        "caption_margin_h": DEFAULT_CAPTION_MARGIN_H,
+        "web_research": DEFAULT_WEB_RESEARCH,
     })
     job.update(settings)
     if busy:
@@ -737,7 +747,13 @@ def handle_run(chat_id, job, text, trend=False):
     job_id = new_job_id("trend" if trend else "tg")
     busy = job.get("busy")
     job.clear()
-    job.update({"job_id": job_id, "topic": topic, "approval_required": True})
+    job.update({
+        "job_id": job_id, "topic": topic, "approval_required": True,
+        "caption_font_size": DEFAULT_CAPTION_FONT_SIZE,
+        "caption_margin_v": DEFAULT_CAPTION_MARGIN_V,
+        "caption_margin_h": DEFAULT_CAPTION_MARGIN_H,
+        "web_research": DEFAULT_WEB_RESEARCH,
+    })
     if busy:
         job["busy"] = busy
     if trend:
@@ -1001,8 +1017,8 @@ def help_text():
         "/retry 오메가3 기억력",
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
-        "/render font_size=22 margin_v=55",
-        "/set font_size=22 margin_v=100 margin_h=12  <- 실행 전 설정",
+        "/render font_size=22 margin_v=60",
+        "/set font_size=22 margin_v=60 margin_h=12  <- 실행 전 설정",
     "/set web=off voice=F2  <- web_search 끄기 / 목소리 변경",
     "/set  <- 현재 설정 확인  |  /set reset  <- 초기화",
     "/run_auto 오메가3가 정말 뇌에 좋을까?",

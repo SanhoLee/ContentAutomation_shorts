@@ -34,7 +34,7 @@ INSIGHTS_PATH         = os.environ.get("FEEDBACK_INSIGHTS", os.path.join(_DATA_D
 
 total_chars        = int(TARGET_DURATION_SEC * ATEMPO * CHARS_PER_SEC)
 prompt_target_chars = int(total_chars * 1.30)
-min_scenes_estimate = max(12, prompt_target_chars // 28)
+min_scenes_estimate = max(16, prompt_target_chars // 28)
 
 
 # ─────────────────────────────────────────────

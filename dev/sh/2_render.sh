@@ -5,8 +5,8 @@ source "$(dirname "$0")/../config.sh"
 mkdir -p "$OUTPUT_DIR"
 
 DURATION_OVERRIDE=""
-FONT_SIZE="${CAPTION_FONT_SIZE:-20}"
-MARGIN_V="${CAPTION_MARGIN_V:-55}"
+FONT_SIZE="${CAPTION_FONT_SIZE:-22}"
+MARGIN_V="${CAPTION_MARGIN_V:-60}"
 MARGIN_H="${CAPTION_MARGIN_H:-10}"  # 좌우 마진 (PlayResX=384 기준, 10 ≈ 실제 28px)
 
 while [ "$#" -gt 0 ]; do

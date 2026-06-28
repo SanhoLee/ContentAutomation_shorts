@@ -437,6 +437,11 @@ python 0_script.py "다음 주제"
 | `WHISPER_MODEL` | `small` | faster-whisper 모델 크기 |
 | `CAPTION_MAX_CHARS` | `16` | 자막 한 라인 최대 글자수 |
 | `CAPTION_MIN_CHARS` | `6` | 자막 한 라인 최소 글자수 |
+| `CAPTION_FONT_SIZE` | `22` | 렌더 스크립트 기본 자막 폰트 크기 |
+| `CAPTION_MARGIN_V` | `60` | 렌더 스크립트 기본 자막 수직 위치 |
+| `TELEGRAM_DEFAULT_CAPTION_FONT_SIZE` | `22` | 텔레그램 실행 기본 자막 폰트 크기 |
+| `TELEGRAM_DEFAULT_CAPTION_MARGIN_V` | `60` | 텔레그램 실행 기본 자막 수직 위치 |
+| `TELEGRAM_DEFAULT_WEB_RESEARCH` | `true` | 텔레그램 실행 기본 web_search 사용 여부 |
 
 ### 피드백
 

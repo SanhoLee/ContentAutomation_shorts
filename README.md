@@ -280,7 +280,7 @@ keywords -- video_key, keyword, ktype, sentiment(+1/0/-1)
 
 | 구분 | 모델 | 역할 |
 |------|------|------|
-| Stage 1 | `claude-haiku-4-5` | 전략 수립 (빠름·저렴) |
+| Stage 1 | `claude-3-5-haiku-latest` | 전략 수립 (빠름·저렴) |
 | Stage 2 | `claude-sonnet-4-6` | 대본 작성 (품질 집중) |
 
 Stage 1이 검색 키워드·제목·훅 유형을 먼저 확정하므로,  
@@ -410,7 +410,8 @@ python 0_script.py "다음 주제"
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `CLAUDE_STRATEGY_MODEL` | `claude-haiku-4-5-20251001` | Stage 1 전략 수립 모델 |
+| `CLAUDE_STRATEGY_MODEL` | `claude-3-5-haiku-latest` | Stage 1 전략 수립 모델 |
+| `CLAUDE_STRATEGY_FALLBACK_MODELS` | `claude-3-5-haiku-20241022` | Stage 1 모델이 400 invalid model 응답을 낼 때 순서대로 재시도할 모델 목록(쉼표 구분) |
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | Stage 2 대본 작성 모델 |
 | `MAX_TOKENS` | `4000` | Stage 2 최대 출력 토큰 |
 

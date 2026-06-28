@@ -22,7 +22,15 @@ WEB_RESEARCH_TIMEOUT = int(os.environ.get("WEB_RESEARCH_TIMEOUT", "120"))
 ENABLE_WEB_RESEARCH  = os.environ.get("ENABLE_WEB_RESEARCH", "true").lower() != "false"
 
 # Stage 1 전략 수립용 모델 (빠르고 저렴한 Haiku)
-CLAUDE_STRATEGY_MODEL = os.environ.get("CLAUDE_STRATEGY_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_STRATEGY_MODEL = os.environ.get("CLAUDE_STRATEGY_MODEL", "claude-3-5-haiku-latest")
+CLAUDE_STRATEGY_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.environ.get(
+        "CLAUDE_STRATEGY_FALLBACK_MODELS",
+        "claude-3-5-haiku-20241022"
+    ).split(",")
+    if m.strip()
+]
 # Stage 2 대본 작성용 모델 (품질 집중 Sonnet)
 CLAUDE_SCRIPT_MODEL   = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
@@ -94,6 +102,42 @@ def request_text(url, params=None, headers=None):
         with urlopen(req, timeout=REQUEST_TIMEOUT) as r:
             return r.read().decode(r.headers.get_content_charset() or "utf-8", errors="replace")
 
+
+
+def describe_http_error(response):
+    """Return an actionable, compact HTTP error message for Claude/API logs."""
+    try:
+        body = response.json()
+    except Exception:
+        body = response.text
+    if not isinstance(body, str):
+        body = json.dumps(body, ensure_ascii=False)
+    body = re.sub(r"\s+", " ", body).strip()
+    if len(body) > 700:
+        body = body[:700] + "..."
+    return f"HTTP {response.status_code}: {body}"
+
+
+def is_invalid_model_error(response):
+    if response.status_code != 400:
+        return False
+    try:
+        body = response.json()
+    except Exception:
+        body = {"raw": response.text}
+    text = json.dumps(body, ensure_ascii=False).lower()
+    return "model" in text and ("not found" in text or "invalid" in text or "does not exist" in text)
+
+
+def strategy_model_candidates():
+    candidates = [CLAUDE_STRATEGY_MODEL, *CLAUDE_STRATEGY_FALLBACK_MODELS, CLAUDE_SCRIPT_MODEL]
+    seen = set()
+    unique = []
+    for model in candidates:
+        if model and model not in seen:
+            seen.add(model)
+            unique.append(model)
+    return unique
 
 # ─────────────────────────────────────────────
 # 트렌드 후보
@@ -214,23 +258,31 @@ def translate_pubmed_query(topic):
     headers = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
                "anthropic-version": "2023-06-01", "content-type": "application/json"}
     last_err = None
-    for attempt in range(1, CLAUDE_RETRIES + 2):
-        try:
-            print(f"PubMed 쿼리 번역 시도 {attempt}")
-            res = requests.post("https://api.anthropic.com/v1/messages",
-                                headers=headers, json=payload, timeout=PUBMED_QUERY_TIMEOUT)
-            if res.status_code in (429, 500, 502, 503, 504):
-                last_err = Exception(f"status {res.status_code}")
-                time.sleep(min(5 * attempt, 15)); continue
-            res.raise_for_status()
-            translated = clean_pubmed_query(res.json()["content"][0]["text"])
-            if translated and not contains_korean(translated):
-                print(f"  번역: {topic} → {translated}")
-                return translated
-        except Exception as e:
-            last_err = e
-            print(f"  실패: {e}")
-            time.sleep(min(5 * attempt, 15))
+    for model in strategy_model_candidates():
+        payload["model"] = model
+        for attempt in range(1, CLAUDE_RETRIES + 2):
+            try:
+                print(f"PubMed 쿼리 번역 시도 {attempt} (model={model})")
+                res = requests.post("https://api.anthropic.com/v1/messages",
+                                    headers=headers, json=payload, timeout=PUBMED_QUERY_TIMEOUT)
+                if is_invalid_model_error(res):
+                    last_err = Exception(describe_http_error(res))
+                    print(f"  ⚠️  모델 오류, 다음 후보로 전환: {last_err}")
+                    break
+                if res.status_code in (429, 500, 502, 503, 504):
+                    last_err = Exception(describe_http_error(res))
+                    time.sleep(min(5 * attempt, 15)); continue
+                if res.status_code >= 400:
+                    last_err = Exception(describe_http_error(res))
+                    res.raise_for_status()
+                translated = clean_pubmed_query(res.json()["content"][0]["text"])
+                if translated and not contains_korean(translated):
+                    print(f"  번역: {topic} → {translated}")
+                    return translated
+            except Exception as e:
+                last_err = e
+                print(f"  실패: {e}")
+                time.sleep(min(5 * attempt, 15))
     print(f"번역 실패. 원문 사용: {last_err}")
     return topic
 
@@ -386,37 +438,45 @@ JSON만 출력. 설명·주석·마크다운 없이.
 
     headers = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
                "anthropic-version": "2023-06-01", "content-type": "application/json"}
-    payload = {"model": CLAUDE_STRATEGY_MODEL, "max_tokens": 600,
+    payload = {"max_tokens": 600,
                "messages": [{"role": "user", "content": prompt}]}
 
     last_err = None
-    for attempt in range(1, 4):
-        try:
-            print(f"📋 Stage 1: 전략 수립 중 (시도 {attempt})...")
-            res = requests.post("https://api.anthropic.com/v1/messages",
-                                headers=headers, json=payload, timeout=30)
-            res.raise_for_status()
-            raw = res.json()["content"][0]["text"].strip()
-            raw = re.sub(r"^```(?:json)?", "", raw).rstrip("`").strip()
-            strategy = json.loads(raw)
-            strategy["topic"] = topic  # 원본 보존
+    for model in strategy_model_candidates():
+        payload["model"] = model
+        for attempt in range(1, 4):
+            try:
+                print(f"📋 Stage 1: 전략 수립 중 (시도 {attempt}, model={model})...")
+                res = requests.post("https://api.anthropic.com/v1/messages",
+                                    headers=headers, json=payload, timeout=30)
+                if is_invalid_model_error(res):
+                    last_err = Exception(describe_http_error(res))
+                    print(f"  ⚠️  모델 오류, 다음 후보로 전환: {last_err}")
+                    break
+                if res.status_code >= 400:
+                    last_err = Exception(describe_http_error(res))
+                    res.raise_for_status()
+                raw = res.json()["content"][0]["text"].strip()
+                raw = re.sub(r"^```(?:json)?", "", raw).rstrip("`").strip()
+                strategy = json.loads(raw)
+                strategy["topic"] = topic  # 원본 보존
 
-            print(f"  ✅ main_keyword    : {strategy.get('main_keyword')}")
-            print(f"  ✅ title           : {strategy.get('title')}")
-            print(f"  ✅ hook_type       : {strategy.get('hook_type')}")
-            print(f"  ✅ search_format   : {strategy.get('search_title_format')}")
-            print(f"  ✅ core_message    : {strategy.get('core_message')}")
+                print(f"  ✅ main_keyword    : {strategy.get('main_keyword')}")
+                print(f"  ✅ title           : {strategy.get('title')}")
+                print(f"  ✅ hook_type       : {strategy.get('hook_type')}")
+                print(f"  ✅ search_format   : {strategy.get('search_title_format')}")
+                print(f"  ✅ core_message    : {strategy.get('core_message')}")
 
-            with open(STRATEGY_PATH, "w", encoding="utf-8") as f:
-                json.dump(strategy, f, ensure_ascii=False, indent=2)
-            return strategy
+                with open(STRATEGY_PATH, "w", encoding="utf-8") as f:
+                    json.dump(strategy, f, ensure_ascii=False, indent=2)
+                return strategy
 
-        except Exception as e:
-            last_err = e
-            print(f"  ⚠️  실패: {e}")
-            time.sleep(3)
+            except Exception as e:
+                last_err = e
+                print(f"  ⚠️  실패: {e}")
+                time.sleep(3)
 
-    raise RuntimeError(f"Stage 1 전략 수립 실패 (3회): {last_err}")
+    raise RuntimeError(f"Stage 1 전략 수립 실패: {last_err}")
 
 
 # ─────────────────────────────────────────────

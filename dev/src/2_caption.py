@@ -25,7 +25,7 @@ import re
 from faster_whisper import WhisperModel
 
 WORK_DIR   = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
-MAX_CHARS  = int(os.environ.get("CAPTION_MAX_CHARS", "16"))
+MAX_CHARS  = int(os.environ.get("CAPTION_MAX_CHARS", "13"))  # 한글 폰트 가로폭 기준 최적값
 MIN_CHARS  = int(os.environ.get("CAPTION_MIN_CHARS", "6"))
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 
@@ -73,38 +73,62 @@ def _syllables(text: str) -> float:
 # 1. 자막 라인 분할
 # ─────────────────────────────────────────────
 
+def _join_tokens(tokens: list[str]) -> str:
+    """
+    토큰 목록을 한국어 규칙에 맞게 문자열로 결합.
+    조사/어미(_ATTACH)는 앞 단어에 공백 없이 붙이고,
+    그 외 일반 어절은 공백으로 구분한다.
+    """
+    if not tokens:
+        return ""
+    result = tokens[0]
+    for tok in tokens[1:]:
+        if _ATTACH.match(tok):
+            result += tok        # 조사: 공백 없이 직접 붙임
+        else:
+            result += " " + tok  # 일반 어절: 공백 유지
+    return result
+
+
 def split_script_to_lines(script_text: str) -> list[str]:
     """
     caption_script.txt를 한국어 문법 기반으로 자막 라인 분할.
-    조사·어미가 앞 단어와 분리되지 않도록 처리.
+
+    - 조사·어미(_ATTACH)는 앞 단어에 공백 없이 붙임 (원문 띄어쓰기 보존)
+    - 문장 끝(_SENTENCE_END)에서 즉시 줄바꿈
+    - 절 경계(_CLAUSE_BREAK) + 충분한 길이일 때 줄바꿈
+    - MAX_CHARS 초과 시 강제 줄바꿈
     """
     tokens  = script_text.replace("\n", " ").replace("\r", " ").split()
     tokens  = [t for t in tokens if t]
 
-    lines   = []
-    current = []
-    cur_len = 0
+    lines      = []
+    cur_tokens = []   # 현재 라인에 쌓이는 토큰 목록
+    cur_syl    = 0.0
 
     for i, token in enumerate(tokens):
-        tok_len = _syllables(token)
+        tok_syl = _syllables(token)
 
-        # 조사/어미 → 현재 라인에 무조건 붙임
-        if _ATTACH.match(token) and current:
-            current.append(token)
-            cur_len += tok_len
-            if _SENTENCE_END.search("".join(current)):
-                lines.append("".join(current))
-                current = []; cur_len = 0
+        # 조사/어미 → 공백 없이 앞 토큰에 붙임 (줄바꿈 트리거 검사 포함)
+        if _ATTACH.match(token) and cur_tokens:
+            cur_tokens.append(token)
+            cur_syl += tok_syl
+            joined = _join_tokens(cur_tokens)
+            if _SENTENCE_END.search(joined):
+                lines.append(joined)
+                cur_tokens = []; cur_syl = 0.0
             continue
 
-        # 최대 글자수 초과 → 현재 라인 마감
-        if cur_len + tok_len > MAX_CHARS and cur_len >= MIN_CHARS:
-            lines.append("".join(current))
-            current = []; cur_len = 0
+        # 최대 음절수 초과 → 현재 라인 마감
+        if cur_syl + tok_syl > MAX_CHARS and cur_syl >= MIN_CHARS:
+            line = _join_tokens(cur_tokens)
+            if line:
+                lines.append(line)
+            cur_tokens = []; cur_syl = 0.0
 
-        current.append(token)
-        cur_len += tok_len
-        joined   = "".join(current)
+        cur_tokens.append(token)
+        cur_syl += tok_syl
+        joined = _join_tokens(cur_tokens)
 
         # 다음 토큰이 조사면 여기서 끊지 않음
         next_tok = tokens[i + 1] if i + 1 < len(tokens) else ""
@@ -113,13 +137,15 @@ def split_script_to_lines(script_text: str) -> list[str]:
 
         if _SENTENCE_END.search(joined):
             lines.append(joined)
-            current = []; cur_len = 0
-        elif _CLAUSE_BREAK.search(joined) and cur_len >= MIN_CHARS:
+            cur_tokens = []; cur_syl = 0.0
+        elif _CLAUSE_BREAK.search(joined) and cur_syl >= MIN_CHARS:
             lines.append(joined)
-            current = []; cur_len = 0
+            cur_tokens = []; cur_syl = 0.0
 
-    if current:
-        lines.append("".join(current))
+    if cur_tokens:
+        line = _join_tokens(cur_tokens)
+        if line:
+            lines.append(line)
 
     return [l for l in lines if l.strip()]
 

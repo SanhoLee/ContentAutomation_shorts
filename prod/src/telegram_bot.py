@@ -19,6 +19,9 @@ STATE_PATH = Path(os.environ.get("TELEGRAM_STATE_PATH", BASE_DIR / "data" / "tel
 POLL_TIMEOUT = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "30"))
 MAX_TEXT_PREVIEW = int(os.environ.get("TELEGRAM_MAX_TEXT_PREVIEW", "3500"))
 POLL_ERROR_NOTIFY_INTERVAL = int(os.environ.get("TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL", "1800"))
+DEFAULT_CAPTION_FONT_SIZE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_FONT_SIZE", "22")
+DEFAULT_CAPTION_MARGIN_V = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_V", "60")
+
 
 if not TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN is required")
@@ -169,6 +172,21 @@ def save_state(state):
     with STATE_LOCK:
         tmp_path.write_text(payload, encoding="utf-8")
         os.replace(tmp_path, STATE_PATH)
+
+
+def clear_stale_busy_flags(state):
+    """Clear in-flight markers from a previous bot process.
+
+    Long-running stages run in background threads. Those threads do not survive
+    a systemd restart, but the persisted state file can still contain "busy".
+    If we keep that marker, the freshly started bot blocks every command as if
+    work were still running.
+    """
+    cleared = []
+    for chat_id, job in state.get("chats", {}).items():
+        if isinstance(job, dict) and job.pop("busy", None):
+            cleared.append(chat_id)
+    return cleared
 
 
 def chat_state(state, chat_id):
@@ -336,17 +354,17 @@ def send_broll(chat_id, job_id):
 
 
 def send_render_ready(chat_id, job):
-    font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20"))
-    margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "55"))
+    font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE))
+    margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V))
     send_action_message(
         chat_id,
         "렌더 설정 확인 단계입니다.\n"
         f"현재값: font_size={font_size}, margin_v={margin_v}\n"
-        "값 조정 후 렌더: /render font_size=22 margin_v=55",
+        "값 조정 후 렌더: /render font_size=22 margin_v=60",
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
-            [button("font 22 / margin 180", "render:await_render_config:22:180"), button("font 24 / margin 160", "render:await_render_config:24:160")],
+            [button("font 22 기본", "render:await_render_config:22:60"), button("font 24 여유", "render:await_render_config:24:80")],
             [button("전체 취소", "cancel_all")],
         ],
     )
@@ -459,8 +477,8 @@ def start_render_progress(chat_id, job_id, stop_event):
 def run_render(chat_id, job):
     job_id = job["job_id"]
     args = [str(BASE_DIR / "sh" / "2_render.sh")]
-    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20")))
-    margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "55")))
+    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
+    margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V)))
     args += ["--font-size", font_size, "--margin-v", margin_v]
     send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}")
     stop_progress = threading.Event()
@@ -815,7 +833,7 @@ def help_text():
         "/retry 오메가3 기억력",
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
-        "/render font_size=22 margin_v=55",
+        "/render font_size=22 margin_v=60",
         "/run_auto 오메가3가 정말 뇌에 좋을까?",
         "/status",
         "/cancel",
@@ -926,6 +944,10 @@ def poll_updates(offset):
 
 def main():
     state = load_state()
+    stale_busy_chats = clear_stale_busy_flags(state)
+    if stale_busy_chats:
+        save_state(state)
+        print(f"[INFO] cleared stale busy flags on startup: {stale_busy_chats}", flush=True)
     send_to = ALLOWED_CHAT_ID
     signal.signal(signal.SIGTERM, request_shutdown)
     signal.signal(signal.SIGINT, request_shutdown)

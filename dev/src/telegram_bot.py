@@ -19,6 +19,11 @@ STATE_PATH = Path(os.environ.get("TELEGRAM_STATE_PATH", BASE_DIR / "data" / "tel
 POLL_TIMEOUT = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "30"))
 MAX_TEXT_PREVIEW = int(os.environ.get("TELEGRAM_MAX_TEXT_PREVIEW", "3500"))
 POLL_ERROR_NOTIFY_INTERVAL = int(os.environ.get("TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL", "1800"))
+DEFAULT_CAPTION_FONT_SIZE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_FONT_SIZE", "22")
+DEFAULT_CAPTION_MARGIN_V = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_V", "60")
+DEFAULT_CAPTION_MARGIN_H = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_H", "10")
+DEFAULT_WEB_RESEARCH = os.environ.get("TELEGRAM_DEFAULT_WEB_RESEARCH", "true").lower() not in ("off", "0", "false", "no")
+
 
 if not TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN is required")
@@ -169,6 +174,21 @@ def save_state(state):
     with STATE_LOCK:
         tmp_path.write_text(payload, encoding="utf-8")
         os.replace(tmp_path, STATE_PATH)
+
+
+def clear_stale_busy_flags(state):
+    """Clear in-flight markers from a previous bot process.
+
+    Long-running stages run in background threads. Those threads do not survive
+    a systemd restart, but the persisted state file can still contain "busy".
+    If we keep that marker, the freshly started bot blocks every command as if
+    work were still running.
+    """
+    cleared = []
+    for chat_id, job in state.get("chats", {}).items():
+        if isinstance(job, dict) and job.pop("busy", None):
+            cleared.append(chat_id)
+    return cleared
 
 
 def chat_state(state, chat_id):
@@ -336,17 +356,23 @@ def send_broll(chat_id, job_id):
 
 
 def send_render_ready(chat_id, job):
-    font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20"))
-    margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "55"))
+    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
+    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
+    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
+    msg = (
+        "렌더 설정 확인\n"
+        "현재: font=" + font_size + ", margin_v=" + margin_v + ", margin_h=" + margin_h + "\n"
+        "조정: /render font_size=22 margin_v=60 margin_h=12\n"
+        "또는 /set 으로 저장 후 재렌더"
+    )
     send_action_message(
         chat_id,
-        "렌더 설정 확인 단계입니다.\n"
-        f"현재값: font_size={font_size}, margin_v={margin_v}\n"
-        "값 조정 후 렌더: /render font_size=22 margin_v=55",
+        msg,
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
-            [button("font 22 / margin 180", "render:await_render_config:22:180"), button("font 24 / margin 160", "render:await_render_config:24:160")],
+            [button("font 22 기본",  "render:await_render_config:22:60"),
+             button("font 22 여유",  "render:await_render_config:22:100")],
             [button("전체 취소", "cancel_all")],
         ],
     )
@@ -392,6 +418,100 @@ def positive_int(value, name):
     if not str(value).isdigit() or int(value) <= 0:
         raise ValueError(f"{name}은 양의 정수로 입력하세요: {value}")
     return str(value)
+
+
+# ── 설정 키: /set 으로 저장, run_auto 실행 시 자동 적용
+_PRESERVED_KEYS = {
+    "caption_font_size", "caption_margin_v", "caption_margin_h",
+    "tts_voice", "web_research",
+}
+
+
+def _preserve_settings(job):
+    return {k: v for k, v in job.items() if k in _PRESERVED_KEYS}
+
+
+def _build_extra_env(job):
+    env = {}
+    if "caption_font_size" in job:
+        env["CAPTION_FONT_SIZE"] = str(job["caption_font_size"])
+    if "caption_margin_v" in job:
+        env["CAPTION_MARGIN_V"] = str(job["caption_margin_v"])
+    if "caption_margin_h" in job:
+        env["CAPTION_MARGIN_H"] = str(job["caption_margin_h"])
+    if "tts_voice" in job:
+        env["TTS_VOICE"] = str(job["tts_voice"])
+    if "web_research" in job:
+        env["ENABLE_WEB_RESEARCH"] = "true" if job.get("web_research") else "false"
+    return env
+
+
+def _settings_summary(job):
+    parts = []
+    if "caption_font_size" in job:
+        parts.append("font=" + str(job["caption_font_size"]))
+    if "caption_margin_v" in job:
+        parts.append("margin_v=" + str(job["caption_margin_v"]))
+    if "caption_margin_h" in job:
+        parts.append("margin_h=" + str(job["caption_margin_h"]))
+    if "tts_voice" in job:
+        parts.append("voice=" + str(job["tts_voice"]))
+    if "web_research" in job:
+        parts.append("web=" + ("on" if job["web_research"] else "off"))
+    return "설정: " + (", ".join(parts) if parts else "기본값")
+
+
+def handle_set(chat_id, job, text):
+    if text.strip().lower() in ("/set reset", "/set clear"):
+        for k in list(_PRESERVED_KEYS):
+            job.pop(k, None)
+        send_message(chat_id, "설정 초기화 완료. 이후 실행은 기본값을 사용합니다.")
+        return
+
+    values = parse_key_values(text)
+    if not values:
+        cur = {k: v for k, v in job.items() if k in _PRESERVED_KEYS}
+        cur_text = json.dumps(cur, ensure_ascii=False, indent=2) if cur else "없음 (기본값 사용)"
+        lines = [
+            "현재 저장된 설정:",
+            cur_text,
+            "",
+            "사용법:",
+            "  /set font_size=22 margin_v=60 margin_h=12",
+            "  /set voice=F2 web=off",
+            "  /set reset  <- 초기화",
+        ]
+        send_message(chat_id, "\n".join(lines))
+        return
+
+    changed = []
+    try:
+        if "font_size" in values:
+            job["caption_font_size"] = positive_int(values["font_size"], "font_size")
+            changed.append("font_size=" + job["caption_font_size"])
+        if "margin_v" in values:
+            job["caption_margin_v"] = positive_int(values["margin_v"], "margin_v")
+            changed.append("margin_v=" + job["caption_margin_v"])
+        if "margin_h" in values:
+            job["caption_margin_h"] = positive_int(values["margin_h"], "margin_h")
+            changed.append("margin_h=" + job["caption_margin_h"])
+        if "voice" in values:
+            job["tts_voice"] = values["voice"].upper()
+            changed.append("voice=" + job["tts_voice"])
+        web_val = values.get("web") or values.get("web_research")
+        if web_val is not None:
+            job["web_research"] = web_val.lower() not in ("off", "0", "false", "no")
+            changed.append("web=" + ("on" if job["web_research"] else "off"))
+    except ValueError as exc:
+        send_message(chat_id, "설정 오류: " + str(exc))
+        return
+
+    if changed:
+        send_message(chat_id,
+            "설정 저장:\n" + "\n".join("  " + c for c in changed) +
+            "\n\n/run_auto 실행 시 자동 적용됩니다.")
+    else:
+        send_message(chat_id, "변경할 설정이 없습니다.\n사용법: /set font_size=22 margin_v=60")
 
 
 
@@ -456,17 +576,22 @@ def start_render_progress(chat_id, job_id, stop_event):
     thread.start()
     return thread
 
+
 def run_render(chat_id, job):
-    job_id = job["job_id"]
-    args = [str(BASE_DIR / "sh" / "2_render.sh")]
-    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", "20")))
-    margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", "55")))
-    args += ["--font-size", font_size, "--margin-v", margin_v]
-    send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}")
-    stop_progress = threading.Event()
+    job_id    = job["job_id"]
+    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
+    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
+    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
+    args      = [str(BASE_DIR / "sh" / "2_render.sh"),
+                 "--font-size", font_size, "--margin-v", margin_v]
+    extra_env = {"CAPTION_MARGIN_H": margin_h}
+    send_message(chat_id,
+        "렌더링 시작: font=" + font_size +
+        ", margin_v=" + margin_v + ", margin_h=" + margin_h)
+    stop_progress   = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:
-        run_command(args, job_id, job.get("topic"))
+        run_command(args, job_id, job.get("topic"), extra_env=extra_env)
     finally:
         stop_progress.set()
         if progress_thread:
@@ -474,6 +599,26 @@ def run_render(chat_id, job):
     send_message(chat_id, "렌더링 진행률: 완료")
     job["stage"] = "await_render_approval"
     send_rendered_video(chat_id, job_id)
+
+
+def _run_render_silent(chat_id, job, extra_env=None):
+    """승인 프롬프트 없이 렌더링만 실행 (run_auto 전용)."""
+    job_id    = job["job_id"]
+    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
+    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
+    env       = dict(extra_env or {})
+    env.setdefault("CAPTION_MARGIN_H",
+        str(job.get("caption_margin_h", os.environ.get("CAPTION_MARGIN_H", DEFAULT_CAPTION_MARGIN_H))))
+    args = [str(BASE_DIR / "sh" / "2_render.sh"),
+            "--font-size", font_size, "--margin-v", margin_v]
+    stop_progress   = threading.Event()
+    progress_thread = start_render_progress(chat_id, job_id, stop_progress)
+    try:
+        run_command(args, job_id, job.get("topic"), extra_env=env)
+    finally:
+        stop_progress.set()
+        if progress_thread:
+            progress_thread.join(timeout=1)
 
 
 def run_next_stage(chat_id, job):
@@ -533,18 +678,66 @@ def run_script_generation(chat_id, job, args):
 def handle_run_auto(chat_id, job, text):
     topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
     if not topic:
-        send_message(chat_id, "주제를 입력하세요. 예: /run_auto 오메가3가 정말 뇌에 좋을까?")
+        send_message(chat_id,
+            "주제를 입력하세요.\n"
+            "예: /run_auto 치매 초기증상과 건망증 차이\n\n"
+            "기본 설정: font_size=22 margin_v=60 web=on\n"
+            "실행 전 변경: /set font_size=22 margin_v=60 margin_h=12 web=off"
+        )
         return
-    job_id = new_job_id("auto")
-    busy = job.get("busy")
+
+    job_id   = new_job_id("auto")
+    settings = _preserve_settings(job)
+    busy     = job.get("busy")
     job.clear()
-    job.update({"job_id": job_id, "topic": topic, "approval_required": False, "stage": "running_auto"})
+    job.update({
+        "job_id": job_id, "topic": topic,
+        "approval_required": False, "stage": "running_auto",
+        "caption_font_size": DEFAULT_CAPTION_FONT_SIZE,
+        "caption_margin_v": DEFAULT_CAPTION_MARGIN_V,
+        "caption_margin_h": DEFAULT_CAPTION_MARGIN_H,
+        "web_research": DEFAULT_WEB_RESEARCH,
+    })
+    job.update(settings)
     if busy:
         job["busy"] = busy
-    send_message(chat_id, f"자동 실행 시작: JOB_ID={job_id}")
-    run_command([str(BASE_DIR / "run.sh"), topic, job_id], job_id, topic)
+
+    extra_env = _build_extra_env(job)
+    send_message(chat_id,
+        "자동 실행 시작\n"
+        "JOB_ID: " + job_id + "\n"
+        "주제: " + topic + "\n" +
+        _settings_summary(job)
+    )
+
+    send_message(chat_id, "1/5 스크립트 생성 중...")
+    run_command(
+        [str(BASE_DIR / "sh" / "0_script.sh"), "--allow-no-pubmed", topic],
+        job_id, topic, extra_env=extra_env,
+    )
+    send_message(chat_id, "1/5 스크립트 완료")
+
+    send_message(chat_id, "2/5 TTS 음성 생성 중...")
+    run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
+    send_message(chat_id, "2/5 TTS 완료")
+
+    send_message(chat_id, "3/5 자막 생성 중...")
+    run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
+    send_message(chat_id, "3/5 자막 완료")
+
+    send_message(chat_id, "4/5 B-roll 수집 중...")
+    run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
+    send_message(chat_id, "4/5 B-roll 완료")
+
+    send_message(chat_id, "5/5 렌더링 중...")
+    _run_render_silent(chat_id, job, extra_env)
+    send_message(chat_id, "5/5 렌더링 완료")
+
+    send_message(chat_id, "업로드 중...")
+    run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic)
+
     job["stage"] = "done"
-    send_message(chat_id, "자동 실행 완료. YouTube Studio에서 비공개 영상을 확인하세요.")
+    send_message(chat_id, "완료! YouTube Studio에서 비공개 영상을 확인하세요.")
 
 def handle_run(chat_id, job, text, trend=False):
     topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
@@ -554,7 +747,13 @@ def handle_run(chat_id, job, text, trend=False):
     job_id = new_job_id("trend" if trend else "tg")
     busy = job.get("busy")
     job.clear()
-    job.update({"job_id": job_id, "topic": topic, "approval_required": True})
+    job.update({
+        "job_id": job_id, "topic": topic, "approval_required": True,
+        "caption_font_size": DEFAULT_CAPTION_FONT_SIZE,
+        "caption_margin_v": DEFAULT_CAPTION_MARGIN_V,
+        "caption_margin_h": DEFAULT_CAPTION_MARGIN_H,
+        "web_research": DEFAULT_WEB_RESEARCH,
+    })
     if busy:
         job["busy"] = busy
     if trend:
@@ -768,6 +967,8 @@ def handle_render(chat_id, job, text):
         job["caption_font_size"] = positive_int(values["font_size"], "font_size")
     if "margin_v" in values:
         job["caption_margin_v"] = positive_int(values["margin_v"], "margin_v")
+    if "margin_h" in values:
+        job["caption_margin_h"] = positive_int(values["margin_h"], "margin_h")
     run_render(chat_id, job)
 
 
@@ -781,6 +982,7 @@ def handle_status(chat_id, job):
 def command_specs():
     return [
         ("run", "승인형 파이프라인 시작"),
+        ("set", "실행 전 렌더/음성/웹 설정 저장 (/set font_size=22 web=off)"),
         ("run_auto", "승인 없이 전체 파이프라인 실행"),
         ("trend", "트렌드 후보 조회"),
         ("pick", "트렌드 후보 선택"),
@@ -815,8 +1017,11 @@ def help_text():
         "/retry 오메가3 기억력",
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
-        "/render font_size=22 margin_v=55",
-        "/run_auto 오메가3가 정말 뇌에 좋을까?",
+        "/render font_size=22 margin_v=60",
+        "/set font_size=22 margin_v=60 margin_h=12  <- 실행 전 설정",
+    "/set web=off voice=F2  <- web_search 끄기 / 목소리 변경",
+    "/set  <- 현재 설정 확인  |  /set reset  <- 초기화",
+    "/run_auto 오메가3가 정말 뇌에 좋을까?",
         "/status",
         "/cancel",
         "",
@@ -844,6 +1049,9 @@ def handle_message(state, message):
             send_message(chat_id, help_text())
         elif text.startswith("/start") or text.startswith("/help"):
             send_message(chat_id, help_text())
+        elif text.startswith("/set"):
+            handle_set(chat_id, job, text)
+            save_state(state)
         elif text.startswith("/run_auto "):
             start_background_task(state, chat_id, job, "자동 실행", lambda: handle_run_auto(chat_id, job, text))
         elif text.startswith("/run "):
@@ -926,6 +1134,10 @@ def poll_updates(offset):
 
 def main():
     state = load_state()
+    stale_busy_chats = clear_stale_busy_flags(state)
+    if stale_busy_chats:
+        save_state(state)
+        print(f"[INFO] cleared stale busy flags on startup: {stale_busy_chats}", flush=True)
     send_to = ALLOWED_CHAT_ID
     signal.signal(signal.SIGTERM, request_shutdown)
     signal.signal(signal.SIGINT, request_shutdown)

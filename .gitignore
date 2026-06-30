@@ -9,6 +9,10 @@ config/*/secrets*.sh
 data/work/
 data/output/
 data/backups/
+/dev/data/telegram_state.json
+/dev/data/telegram_state.json.tmp
+/prod/data/telegram_state.json
+/prod/data/telegram_state.json.tmp
 *.mp4
 *.wav
 *.srt
@@ -26,7 +30,6 @@ venv/
 *.log
 logs/
 *.tmp
-*.json  # work/ 안 json만 (assets/ json은 필요시 제외)
 
 # OS & Editor
 .DS_Store

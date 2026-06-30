@@ -5,6 +5,7 @@ import re
 import sys
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 
@@ -17,11 +18,18 @@ CHARS_PER_SEC = float(os.environ.get("CHARS_PER_SEC", "4.66"))
 TREND_CANDIDATE_COUNT = int(os.environ.get("TREND_CANDIDATE_COUNT", "5"))
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "20"))
 CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "180"))
-CLAUDE_RETRIES = int(os.environ.get("CLAUDE_RETRIES", "2"))
+CLAUDE_HTTP_RETRIES = int(os.environ.get("CLAUDE_HTTP_RETRIES", os.environ.get("CLAUDE_RETRIES", "2")))
 PUBMED_QUERY_TIMEOUT = int(os.environ.get("PUBMED_QUERY_TIMEOUT", "60"))
+PUBMED_RETMAX = int(os.environ.get("PUBMED_RETMAX", "3"))
+PUBMED_ABSTRACT_CHAR_LIMIT = int(os.environ.get("PUBMED_ABSTRACT_CHAR_LIMIT", "7000"))
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+CLAUDE_QUERY_MODEL = os.environ.get("CLAUDE_QUERY_MODEL", CLAUDE_MODEL)
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "2600"))
 
 TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
 PUBMED_STATUS_PATH = os.path.join(WORK_DIR, "pubmed_status.json")
+CLAUDE_USAGE_PATH = os.path.join(WORK_DIR, "claude_usage.jsonl")
+CLAUDE_TRANSIENT_STATUSES = (429, 500, 502, 503, 504)
 
 total_chars = int(TARGET_DURATION_SEC * ATEMPO * CHARS_PER_SEC)
 prompt_target_chars = int(total_chars * 1.15)
@@ -83,6 +91,79 @@ def request_text(url, params=None, headers=None):
             charset = response.headers.get_content_charset() or "utf-8"
             return response.read().decode(charset, errors="replace")
 
+
+def record_claude_usage(stage, model, response):
+    usage = response.get("usage") or {}
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "stage": stage,
+        "model": model,
+        "response_id": response.get("id"),
+        "request_id": response.get("_request_id"),
+        "stop_reason": response.get("stop_reason"),
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+    }
+    with open(CLAUDE_USAGE_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def call_claude_api(payload, timeout, label, stage):
+    import requests
+
+    headers = {
+        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    attempts = CLAUDE_HTTP_RETRIES + 1
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            print(f"{label} 호출 시도 {attempt}/{attempts} (timeout={timeout}s)")
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+            )
+            if res.status_code in CLAUDE_TRANSIENT_STATUSES:
+                last_error = requests.HTTPError(f"Claude transient status {res.status_code}: {res.text[:500]}")
+                if attempt <= CLAUDE_HTTP_RETRIES:
+                    print(f"{label} 일시 오류 {res.status_code}. 재시도합니다.")
+                    time.sleep(min(10 * attempt, 30))
+                    continue
+            res.raise_for_status()
+            data = res.json()
+            data["_request_id"] = (
+                res.headers.get("request-id")
+                or res.headers.get("anthropic-request-id")
+                or res.headers.get("x-request-id")
+            )
+            record_claude_usage(stage, payload.get("model", ""), data)
+            return data
+        except requests.ReadTimeout as exc:
+            raise RuntimeError(
+                f"{label} 응답 대기 시간이 초과되었습니다. 이미 서버에서 처리 중일 수 있어 "
+                "자동 재시도하지 않습니다. 같은 JOB을 바로 재시작하면 중복 과금될 수 있습니다."
+            ) from exc
+        except (requests.ConnectTimeout, requests.ConnectionError, requests.Timeout) as exc:
+            raise RuntimeError(
+                f"{label} 네트워크 타임아웃/연결 오류가 발생했습니다. 중복 과금 방지를 위해 "
+                "자동 재시도하지 않습니다."
+            ) from exc
+
+    raise RuntimeError(f"{label} 호출이 실패했습니다. 마지막 오류: {last_error}")
+
+
+def limit_pubmed_abstracts(text):
+    if PUBMED_ABSTRACT_CHAR_LIMIT <= 0 or len(text) <= PUBMED_ABSTRACT_CHAR_LIMIT:
+        return text
+    clipped = text[:PUBMED_ABSTRACT_CHAR_LIMIT].rsplit("\n\n", 1)[0].strip()
+    if not clipped:
+        clipped = text[:PUBMED_ABSTRACT_CHAR_LIMIT].strip()
+    return clipped + "\n\n[입력 토큰 안정화를 위해 PubMed 초록 일부를 생략했습니다.]"
 def fetch_google_suggestions(seed):
     data = request_json(
         "https://suggestqueries.google.com/complete/search",
@@ -228,10 +309,8 @@ def translate_pubmed_query(topic):
     if not contains_korean(topic):
         return clean_pubmed_query(topic) or topic
 
-    import requests
-
     payload = {
-        "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+        "model": CLAUDE_QUERY_MODEL,
         "max_tokens": 120,
         "messages": [{
             "role": "user",
@@ -243,45 +322,15 @@ def translate_pubmed_query(topic):
             ),
         }],
     }
-    headers = {
-        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-
-    last_error = None
-    for attempt in range(1, CLAUDE_RETRIES + 2):
-        try:
-            print(f"PubMed 검색어 영어 변환 시도 {attempt}/{CLAUDE_RETRIES + 1} (timeout={PUBMED_QUERY_TIMEOUT}s)")
-            res = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                json=payload,
-                timeout=PUBMED_QUERY_TIMEOUT,
-            )
-            if res.status_code in (429, 500, 502, 503, 504):
-                last_error = requests.HTTPError(f"Claude transient status {res.status_code}: {res.text[:500]}")
-                if attempt <= CLAUDE_RETRIES:
-                    time.sleep(min(5 * attempt, 15))
-                    continue
-            res.raise_for_status()
-            translated = clean_pubmed_query(res.json()["content"][0]["text"])
-            if translated and not contains_korean(translated):
-                print(f"PubMed 검색어: {topic} -> {translated}")
-                return translated
-            last_error = RuntimeError(f"invalid translated query: {translated}")
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            last_error = exc
-            print(f"PubMed 검색어 변환 실패: {type(exc).__name__}: {exc}")
-        except requests.HTTPError as exc:
-            last_error = exc
-            status = exc.response.status_code if exc.response is not None else None
-            if status not in (429, 500, 502, 503, 504):
-                raise
-        if attempt <= CLAUDE_RETRIES:
-            time.sleep(min(5 * attempt, 15))
-
-    print(f"PubMed 검색어 영어 변환 실패. 원문으로 검색합니다: {last_error}")
+    try:
+        response = call_claude_api(payload, PUBMED_QUERY_TIMEOUT, "PubMed 검색어 영어 변환", "pubmed_query")
+        translated = clean_pubmed_query(response["content"][0]["text"])
+        if translated and not contains_korean(translated):
+            print(f"PubMed 검색어: {topic} -> {translated}")
+            return translated
+        print(f"PubMed 검색어 영어 변환 결과가 부적절합니다. 원문으로 검색합니다: {translated}")
+    except RuntimeError as exc:
+        print(f"PubMed 검색어 영어 변환 실패. 원문으로 검색합니다: {exc}")
     return topic
 
 
@@ -289,7 +338,7 @@ def fetch_pubmed_abstracts(topic):
     pubmed_query = translate_pubmed_query(topic)
     search = request_json(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-        params={"db": "pubmed", "term": pubmed_query, "retmax": 5, "sort": "relevance", "retmode": "json"},
+        params={"db": "pubmed", "term": pubmed_query, "retmax": PUBMED_RETMAX, "sort": "relevance", "retmode": "json"},
     )
     pmids = search.get("esearchresult", {}).get("idlist", [])
 
@@ -302,6 +351,7 @@ def fetch_pubmed_abstracts(topic):
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
         params={"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "text"},
     )
+    text = limit_pubmed_abstracts(text)
     write_pubmed_status(topic, pmids, "ok", "PubMed 초록을 찾았습니다.", text, pubmed_query=pubmed_query)
     return text
 
@@ -387,53 +437,12 @@ YouTube 업로드용 메타데이터도 함께 작성하세요.
 
 
 def call_claude(prompt):
-    import requests
-
     payload = {
-        "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
-        "max_tokens": int(os.environ.get("MAX_TOKENS", "4000")),
+        "model": CLAUDE_MODEL,
+        "max_tokens": MAX_TOKENS,
         "messages": [{"role": "user", "content": prompt}],
     }
-    headers = {
-        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    last_error = None
-    for attempt in range(1, CLAUDE_RETRIES + 2):
-        try:
-            print(f"Claude 호출 시도 {attempt}/{CLAUDE_RETRIES + 1} (timeout={CLAUDE_TIMEOUT}s)")
-            res = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                json=payload,
-                timeout=CLAUDE_TIMEOUT,
-            )
-            if res.status_code in (429, 500, 502, 503, 504):
-                last_error = requests.HTTPError(f"Claude transient status {res.status_code}: {res.text[:500]}")
-                if attempt <= CLAUDE_RETRIES:
-                    time.sleep(min(10 * attempt, 30))
-                    continue
-            res.raise_for_status()
-            return res.json()
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            last_error = exc
-            print(f"Claude 호출 실패: {type(exc).__name__}: {exc}")
-            if attempt <= CLAUDE_RETRIES:
-                time.sleep(min(10 * attempt, 30))
-                continue
-        except requests.HTTPError as exc:
-            last_error = exc
-            status = exc.response.status_code if exc.response is not None else None
-            if status in (429, 500, 502, 503, 504) and attempt <= CLAUDE_RETRIES:
-                print(f"Claude 일시 오류 {status}. 재시도합니다.")
-                time.sleep(min(10 * attempt, 30))
-                continue
-            raise
-    raise RuntimeError(
-        f"Claude API 호출이 {CLAUDE_RETRIES + 1}회 실패했습니다. "
-        f"CLAUDE_TIMEOUT={CLAUDE_TIMEOUT}s. 마지막 오류: {last_error}"
-    )
+    return call_claude_api(payload, CLAUDE_TIMEOUT, "Claude 대본 생성", "script")
 
 
 def parse_claude_json(response):

@@ -25,6 +25,11 @@ DEFAULT_CAPTION_MARGIN_H = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_H", "
 DEFAULT_WEB_RESEARCH = os.environ.get("TELEGRAM_DEFAULT_WEB_RESEARCH", "true").lower() not in ("off", "0", "false", "no")
 
 
+def env_value(key, default="-"):
+    value = os.environ.get(key)
+    return default if value in (None, "") else value
+
+
 if not TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN is required")
 
@@ -461,6 +466,41 @@ def _settings_summary(job):
     return "설정: " + (", ".join(parts) if parts else "기본값")
 
 
+def config_summary(job):
+    effective_font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE))
+    effective_margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V))
+    effective_margin_h = job.get("caption_margin_h", os.environ.get("CAPTION_MARGIN_H", DEFAULT_CAPTION_MARGIN_H))
+    effective_voice = job.get("tts_voice", os.environ.get("TTS_VOICE", "F1"))
+    effective_web = job.get("web_research")
+    if effective_web is None:
+        env_web = os.environ.get("ENABLE_WEB_RESEARCH")
+        effective_web = DEFAULT_WEB_RESEARCH if env_web in (None, "") else env_web.lower() not in ("off", "0", "false", "no")
+
+    saved = _preserve_settings(job)
+    saved_text = json.dumps(saved, ensure_ascii=False, indent=2) if saved else "없음"
+    return "\n".join([
+        "현재 주요 컨피그:",
+        f"ENV_NAME={env_value('ENV_NAME')}",
+        f"CLAUDE_MODEL={env_value('CLAUDE_MODEL', 'claude-sonnet-4-6')}",
+        f"MAX_TOKENS={env_value('MAX_TOKENS', '2600')}",
+        f"CLAUDE_HTTP_RETRIES={env_value('CLAUDE_HTTP_RETRIES', '1')}",
+        f"PUBMED_RETMAX={env_value('PUBMED_RETMAX', '3')}",
+        f"PUBMED_ABSTRACT_CHAR_LIMIT={env_value('PUBMED_ABSTRACT_CHAR_LIMIT', '7000')}",
+        f"LOG_LEVEL={env_value('LOG_LEVEL')}",
+        f"ATEMPO={env_value('ATEMPO', '1.0')}",
+        f"TARGET_DURATION_SEC={env_value('TARGET_DURATION_SEC', '60')}",
+        f"CHARS_PER_SEC={env_value('CHARS_PER_SEC', '4.66')}",
+        f"CAPTION_FONT_SIZE={effective_font_size}",
+        f"CAPTION_MARGIN_V={effective_margin_v}",
+        f"CAPTION_MARGIN_H={effective_margin_h}",
+        f"TTS_VOICE={effective_voice}",
+        "ENABLE_WEB_RESEARCH=" + ("on" if effective_web else "off"),
+        "",
+        "/set 저장 override:",
+        saved_text,
+    ])
+
+
 def handle_set(chat_id, job, text):
     if text.strip().lower() in ("/set reset", "/set clear"):
         for k in list(_PRESERVED_KEYS):
@@ -470,11 +510,8 @@ def handle_set(chat_id, job, text):
 
     values = parse_key_values(text)
     if not values:
-        cur = {k: v for k, v in job.items() if k in _PRESERVED_KEYS}
-        cur_text = json.dumps(cur, ensure_ascii=False, indent=2) if cur else "없음 (기본값 사용)"
         lines = [
-            "현재 저장된 설정:",
-            cur_text,
+            config_summary(job),
             "",
             "사용법:",
             "  /set font_size=22 margin_v=60 margin_h=12",

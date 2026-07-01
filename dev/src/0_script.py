@@ -25,6 +25,20 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLAUDE_QUERY_MODEL = os.environ.get("CLAUDE_QUERY_MODEL", CLAUDE_MODEL)
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "2600"))
 
+
+def script_length_targets(target_duration_sec, atempo, chars_per_sec):
+    total = int(target_duration_sec * atempo * chars_per_sec)
+    prompt_target = int(total * 1.15)
+    min_scenes = max(8, prompt_target // 28)
+    return total, prompt_target, min_scenes
+
+
+total_chars, prompt_target_chars, min_scenes_estimate = script_length_targets(
+    TARGET_DURATION_SEC,
+    ATEMPO,
+    CHARS_PER_SEC,
+)
+
 TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
 PUBMED_STATUS_PATH = os.path.join(WORK_DIR, "pubmed_status.json")
 CLAUDE_USAGE_PATH = os.path.join(WORK_DIR, "claude_usage.jsonl")

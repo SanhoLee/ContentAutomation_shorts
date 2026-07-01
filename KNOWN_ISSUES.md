@@ -1,7 +1,7 @@
 # Known Issues and Risk Register
 
-Last updated: 2026-06-22
-Branch: `codex/lightsail-stability`
+Last updated: 2026-07-02
+Current base branch: `main`
 
 ## Active / Watch Items
 
@@ -21,75 +21,59 @@ Current handling:
 - They are printed to server logs as warnings and retried with backoff.
 - Unknown polling errors are rate-limited by `TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL`, default 1800 seconds.
 
-Risk:
-
-- If Telegram API is unreachable for a long period, bot command handling is delayed.
-
-Recommended follow-up:
-
-- Consider external uptime monitoring if the user wants off-server alerts when the whole server/bot is down.
-
 ### 2. Background thread state persistence
 
 Status: improved.
 
-The Telegram bot runs long tasks in background threads and also polls messages in the main loop. This created a risk that `data/telegram_state.json` could be written concurrently.
-
-Current handling:
-
 - `STATE_LOCK` protects state writes.
 - State is written to a temporary file and atomically replaced via `os.replace`.
-
-Remaining risk:
-
-- The in-memory `state` dict is still shared between main thread and background task. Current usage is simple, but a more robust future design could use a queue or a single state manager.
+- The in-memory `state` dict is still shared between main thread and background tasks; current usage is simple but a queue/single state manager would be safer if workflows become more complex.
 
 ### 3. `/approve` text command has no stage token
 
-Status: acceptable but less strict than inline buttons.
+Status: acceptable.
 
-Inline buttons now carry stage tokens and reject stale buttons. Text command `/approve` still approves whatever current stage is in `job["stage"]`.
+Inline buttons carry stage tokens and reject stale buttons. Text command `/approve` still approves whatever current stage is in `job["stage"]`. This is intentional as an explicit current-stage command.
 
-Reason:
+### 4. Stage 0 runtime settings can regress if scattered again
 
-- `/approve` is an explicit current-stage command.
-- Stale button accidents were the main issue.
+Status: recently refactored.
 
-Future option:
+Recent failures included missing `total_chars` and `ENABLE_WEB_RESEARCH`. The fix is `dev/src/script_runtime.py`, which centralizes Stage 0 env defaults and derived values. Avoid reintroducing new global env parsing directly in `dev/src/0_script.py`; add new runtime knobs to `script_runtime.py` instead.
 
-- Remove `/approve` or make it require `/approve await_caption_approval` if stricter behavior is desired.
+### 5. web_search cost and timeout behavior
 
-### 4. Render progress is based on ffmpeg progress file
+Status: bounded.
+
+Current defaults:
+
+```bash
+ENABLE_WEB_RESEARCH=true
+WEB_RESEARCH_TIMEOUT=60
+WEB_RESEARCH_MAX_USES=3
+WEB_RESEARCH_MAX_TOKENS=900
+WEB_RESEARCH_MAX_TOOL_TURNS=2
+```
+
+web_search is optional. Timeout/tool errors return an empty supplement and script generation continues. It should not retry automatically after timeout because the request may already be processing server-side, creating duplicate cost risk.
+
+### 6. Caption timing may still need empirical tuning
+
+Status: improved, watch in rendered output.
+
+`dev/src/2_caption.py` now uses sequential Whisper word timestamp consumption and `CAPTION_OFFSET_SEC=-0.15`. If captions still lag, try a slightly more negative offset such as `-0.20`. If captions appear early, move toward `0`. This is a perceptual tuning knob, not a render margin/font setting.
+
+### 7. Render progress is based on ffmpeg progress file
 
 Status: implemented.
 
-`2_render.sh` writes `render_progress.txt` via ffmpeg `-progress`. Telegram reads it and sends checkpoints: start, 25%, 50%, 75%, complete.
+`2_render.sh` writes `render_progress.txt` via ffmpeg `-progress`. Telegram reads it and sends checkpoints: start, 25%, 50%, 75%, complete. Very short renders may skip intermediate checkpoints.
 
-Risks:
-
-- Very short renders may skip intermediate checkpoints before completion.
-- If `ffmpeg` changes progress field format, ratio parsing may need adjustment.
-- Shell syntax could not be validated locally because WSL/bash was unavailable in the Windows Codex environment. Python validation and `git diff --check` passed.
-
-### 5. TTS CLI path under systemd
+### 8. TTS CLI path under systemd
 
 Status: mitigated.
 
-Observed error:
-
-```text
-FileNotFoundError: [Errno 2] No such file or directory: 'supertonic'
-```
-
-Cause:
-
-- `supertonic` existed at `/home/ubuntu/.local/bin/supertonic`, but systemd PATH did not include that directory.
-
-Current handling:
-
-- `config.sh` prepends `$HOME/.local/bin:/usr/local/bin` to PATH.
-- `1_tts.py` checks `TTS_BIN`, `SUPERTONIC_BIN`, PATH, and common bin directories.
-- Clear error message is shown if the executable is still missing.
+`config.sh` prepends `$HOME/.local/bin:/usr/local/bin` to PATH. `1_tts.py` checks `TTS_BIN`, `SUPERTONIC_BIN`, PATH, and common bin directories.
 
 Recommended server setting:
 
@@ -97,53 +81,23 @@ Recommended server setting:
 export TTS_BIN=/home/ubuntu/.local/bin/supertonic
 ```
 
-Put it in `dev/secrets.sh` or `prod/secrets.sh`.
-
-### 6. PubMed no-result topics
+### 9. PubMed no-result topics
 
 Status: handled.
 
-If PubMed returns no direct hits, generation continues. Claude is instructed not to fabricate paper-specific numbers/results and to use cautious general medical information.
+If PubMed returns no direct hits, generation continues. Claude is instructed not to fabricate paper-specific numbers/results and to use cautious general medical information. Telegram can show `pubmed_status.json`; user may `/retry new topic`.
 
-Risk:
-
-- Content may be less evidence-specific.
-
-Recommended user flow:
-
-- Telegram shows PubMed status and `pubmed_status.json`.
-- User may `/retry new topic` if topic is too broad, too specific, or consumer-search oriented.
-
-### 7. Claude API read timeout
+### 10. Claude API read timeout
 
 Status: mitigated.
 
-Original issue:
+- `CLAUDE_TIMEOUT`, default 180 seconds; server tuning often uses 300.
+- HTTP 429/5xx may retry inside `CLAUDE_HTTP_RETRIES`.
+- Read/connect timeout is not automatically retried to reduce duplicate cost risk.
 
-- Claude response could exceed 20 seconds and fail because general `REQUEST_TIMEOUT` was used.
-
-Current handling:
-
-- `CLAUDE_TIMEOUT`, default 180 seconds.
-- `CLAUDE_RETRIES`, default 2.
-- 429/5xx/timeouts retry.
-
-Recommended server tuning:
-
-```bash
-export CLAUDE_TIMEOUT=300
-```
-
-### 8. Telegram file editing UX limitations
+### 11. Telegram file editing UX limitations
 
 Status: pragmatic workaround.
-
-Telegram does not let a bot make its sent message directly editable by the user as a file editor. Current workflow:
-
-1. Bot sends original file.
-2. User edits file locally/mobile-supported editor or sends full replacement text.
-3. User uploads edited file or sends text message.
-4. Bot overwrites the relevant artifact.
 
 Editable artifacts:
 
@@ -151,22 +105,25 @@ Editable artifacts:
 - `subs.srt`
 - `video_meta.json`
 
-### 9. YouTube upload final state
+The bot sends files; the user uploads replacement text/file to overwrite the relevant artifact.
+
+### 12. YouTube upload final state
 
 Status: not heavily exercised in recent local testing.
 
-Upload is only expected after final metadata approval. It should upload as private according to existing upload script behavior. Cloud thread should inspect `src/4_upload.py` before modifying upload behavior.
+Upload is expected after final metadata approval. Inspect `src/4_upload.py` before changing upload behavior.
 
-### 10. Encoding in Windows terminal output
+### 13. Encoding in Windows terminal output
 
 Status: local display issue.
 
-Some Korean text appears mojibake in PowerShell command output, but files are UTF-8. Use `PYTHONIOENCODING=utf-8` or read files in an editor before assuming source text is corrupt.
+Some Korean text can appear mojibake or fail to print under Windows console encodings. Use `PYTHONIOENCODING=utf-8` or inspect files directly before assuming source corruption.
 
-## Bugs to Watch For in Next Testing Session
+## Bugs To Watch For In Next Testing Session
 
 - Duplicate welcome/bye messages during rapid systemd restart.
 - Missing bye message if process is killed with SIGKILL or server shuts down hard.
 - Old Telegram buttons after service restart should still be rejected if stage mismatch.
-- If busy flag is left stuck after a hard process kill, `/status` may show `busy`. Restart normally should load state; if stuck, `/cancel` clears the job.
+- If busy flag is left stuck after a hard process kill, `/status` may show `busy`; `/cancel` clears the job.
 - Progress messages for very short render jobs may only show start and complete.
+- Caption sync should be reviewed on real rendered output after PR #38; tune `CAPTION_OFFSET_SEC` if needed.

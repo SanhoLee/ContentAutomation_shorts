@@ -1,93 +1,43 @@
 # Environment Capture
 
-Last updated: 2026-06-22
+Last updated: 2026-07-02
 
-## Local Codex Desktop Environment
+## Codex Workspace Notes
 
-This capture comes from the local Codex desktop thread, not the AWS Lightsail server.
+This capture is for Codex-hosted work, not the AWS Lightsail server itself.
 
-Workspace/repo used during most recent work:
+The practical working checkout used for recent PRs:
 
 ```text
 C:\Users\stlsh\AppData\Local\Temp\short_pipeline_work\repo
 ```
 
-Original writable workspace root reported by Codex:
+The originally reported writable workspace root may be mostly empty except `.git`/agent metadata:
 
 ```text
 C:\Users\stlsh\Documents\short_pipeline
 ```
 
-Branch:
+Current source of truth branch:
 
 ```text
-codex/lightsail-stability
+main
 ```
 
-Python executable used for local validation:
-
-```text
-C:\Users\stlsh\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe
-```
-
-Git executable available in Codex runtime:
-
-```text
-C:\Users\stlsh\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\git\cmd\git.exe
-```
-
-Node executable available in Codex runtime:
-
-```text
-C:\Users\stlsh\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe
-```
-
-Local Windows environment did not have usable WSL/bash during the last checks, so shell syntax validation with `bash -n` could not be completed locally.
-
-## Local pip freeze
-
-Captured with:
+Use feature branches from `origin/main`, for example:
 
 ```bash
-python -m pip freeze
+git fetch origin main
+git switch -c codex/some-fix origin/main
 ```
 
-Output:
+## Recent Local Tooling Facts
 
-```text
-annotated-types==0.7.0
-artifact_tool_v2 @ file:///D:/a/openai/openai/lib/agent/tools/artifact_tool_v2
-cffi==2.0.0
-charset-normalizer==3.4.7
-cryptography==49.0.0
-et_xmlfile==2.0.0
-lxml==6.0.2
-numpy==2.3.5
-openpyxl==3.1.5
-packaging==26.2
-pandas==3.0.1
-pdf2image==1.17.0
-pdfminer.six==20251230
-pdfplumber==0.11.9
-pillow==12.2.0
-pycparser==3.0
-pydantic==2.13.4
-pydantic_core==2.46.4
-pyhumps==3.8.0
-pypdf==6.10.0
-pypdfium2==5.9.0
-python-dateutil==2.9.0.post0
-python-docx==1.2.0
-python-pptx==1.0.2
-reportlab==4.4.9
-setuptools==82.0.1
-six==1.17.0
-typing-inspection==0.4.2
-typing_extensions==4.15.0
-tzdata==2026.2
-wheel==0.47.0
-xlsxwriter==3.2.9
-```
+- Windows PowerShell is the local shell.
+- GitHub CLI may be installed but auth can be expired; use the GitHub app connector for PR creation when possible.
+- Local Python may not have all production dependencies such as `faster_whisper`.
+- For Korean output in Windows console tests, set `PYTHONIOENCODING=utf-8`.
+- WSL/bash may not be available locally; run `bash -n` in Cloud/Linux when shell scripts are touched.
 
 ## Lightsail Runtime Facts Observed From User Logs
 
@@ -103,26 +53,13 @@ Expected project path:
 /home/ubuntu/brain50
 ```
 
-Observed Python version in traceback:
+Observed Python version in tracebacks:
 
 ```text
 /usr/lib/python3.10
 ```
 
 Observed TTS binary:
-
-```text
-/home/ubuntu/.local/bin/supertonic
-```
-
-Commands user ran successfully:
-
-```bash
-which supertonic
-ls ~/.local/bin/supertonic
-```
-
-Both returned:
 
 ```text
 /home/ubuntu/.local/bin/supertonic
@@ -141,14 +78,20 @@ export TTS_BIN=/home/ubuntu/.local/bin/supertonic
 export CLAUDE_TIMEOUT=300
 ```
 
-Optional:
+Current optional/tuning variables:
 
 ```bash
 export TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL=1800
 export TTS_VOICE=M2
+export ENABLE_WEB_RESEARCH=true
+export WEB_RESEARCH_TIMEOUT=60
+export WEB_RESEARCH_MAX_USES=3
+export WEB_RESEARCH_MAX_TOKENS=900
+export WEB_RESEARCH_MAX_TOOL_TURNS=2
+export CAPTION_OFFSET_SEC=-0.15
 ```
 
-## Expected System Packages / Binaries on Lightsail
+## Expected System Packages / Binaries On Lightsail
 
 ```bash
 python3
@@ -159,21 +102,25 @@ supertonic
 git
 ```
 
-For YouTube upload, the existing project may require Google/YouTube credentials configured outside the committed repo. Inspect `src/4_upload.py` and any untracked server-side credential files before changing upload behavior.
+The caption stage requires faster-whisper and its runtime dependencies. YouTube upload may require Google/YouTube credential files outside the committed repo.
 
 ## Useful Validation Commands
 
-On a Linux/Cloud environment:
+On Linux/Cloud:
 
 ```bash
-python3 -m py_compile dev/src/*.py prod/src/*.py
+python3 -m compileall -q dev/src
+python3 -m compileall -q prod/src
 bash -n dev/sh/*.sh prod/sh/*.sh deploy/lightsail/*.sh
 git diff --check
 ```
 
-On the previous Windows Codex environment, use explicit file expansion for Python:
+On Windows Codex, prefer explicit paths:
 
 ```powershell
-$files = git ls-files 'dev/src/*.py' 'prod/src/*.py'
-python -m py_compile $files
+python -m py_compile dev\src\0_script.py dev\src\telegram_bot.py
+python -m py_compile dev\src\2_caption.py
+git diff --check
 ```
+
+For tests that import modules requiring unavailable production dependencies, use narrow mocks only for pure logic tests, and clearly report that full runtime execution was not performed.

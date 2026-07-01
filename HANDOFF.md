@@ -1,77 +1,44 @@
 # Cloud Thread Handoff
 
-Last updated: 2026-06-22
-Current branch: `codex/lightsail-stability`
-Latest pushed commit at handoff time: `3c0b6b1 fix: suppress transient telegram polling noise`
+Last updated: 2026-07-02
+Current base branch: `main`
+Repository: `SanhoLee/ContentAutomation_shorts`
+Primary runtime: AWS Lightsail at `~/brain50`
 
 ## Immediate Context
 
-The user is migrating from a local Codex desktop thread to a cloud thread and wants context preserved. Continue from this branch unless the user explicitly asks to switch branches.
+This project is a Lightsail-hosted Korean Shorts automation pipeline controlled through Telegram. The current priority is production stability: `/run_auto` and the staged Telegram workflow should keep moving unless a required production step truly cannot continue.
 
-The project is a Lightsail-hosted Korean Shorts automation pipeline controlled through Telegram. Recent work has focused on making the pipeline stable enough for step-by-step human approval.
+Start new Codex Cloud work from `main` unless the user explicitly names another branch. Create short-lived branches as `codex/{description}` and open draft PRs by default.
 
-## What Was Recently Built
+## Recent Stabilization PRs To Know
 
-### Environment and artifacts
+- PR #34 `Show telegram config summary`: `/set` now prints major runtime config instead of only saying defaults are used. Dev config was tuned for longer output.
+- PR #35 `Restore dev script length targets`: restored `total_chars`, `prompt_target_chars`, and `min_scenes_estimate` so Stage 0 does not fail before generation.
+- PR #36 `Centralize dev script runtime settings`: added `dev/src/script_runtime.py` to centralize Stage 0 env defaults and missing globals.
+- PR #37 `Bound dev web research cost`: bounded web_search with `WEB_RESEARCH_TIMEOUT=60`, `WEB_RESEARCH_MAX_USES=3`, `WEB_RESEARCH_MAX_TOKENS=900`, `WEB_RESEARCH_MAX_TOOL_TURNS=2`; web_search failure continues without retry.
+- PR #38 `Improve caption timing alignment`: added `CAPTION_OFFSET_SEC=-0.15` and changed caption timing to sequentially consume Whisper word timestamps.
 
-- dev/prod directories are separated.
-- Work artifacts are under `data/work/{JOB_ID}/`.
-- Final outputs are under `data/output/`.
-- Stage scripts can be run independently using the same `JOB_ID`.
+## Current Production Flow
 
-### Prompt and script generation
+1. `dev/sh/0_script.sh` -> `dev/src/0_script.py`: topic strategy, PubMed, optional bounded web_search, script/meta generation.
+2. `dev/sh/1_tts.sh` -> `dev/src/1_tts.py`: TTS plus `tts_script.txt` and `caption_script.txt` generation.
+3. `dev/sh/1_caption.sh` -> `dev/src/2_caption.py`: faster-whisper word timestamps, sequential caption alignment, SRT output.
+4. `dev/sh/1_broll.sh` -> B-roll collection.
+5. `dev/sh/2_render.sh`: ffmpeg render with progress file.
+6. `dev/sh/3_upload.sh`: YouTube upload.
+7. `dev/src/telegram_bot.py`: Telegram workflow and `/run_auto` orchestration.
 
-- Korean prompt instructions were rewritten to be natural Korean.
-- Direct idea mode and trend candidate mode were added.
-- Trend mode checks Google/YouTube style suggestions and stores candidates in `trend_candidates.json`.
-- PubMed no-result handling now logs `pubmed_status.json` and continues generation with caution.
-- Claude timeout/retry was hardened.
-- Prompt no longer forces every number into Korean spelling.
-- Prompt asks for easier terms for older Korean viewers.
+Prod mirrors the same structure but recent stabilization has mostly targeted dev. Mirror dev/prod only when the user asks or when the behavior is clearly production-ready.
 
-### Telegram workflow
+## Server Commands
 
-- Telegram bot can start `/run`, `/trend`, `/pick` workflows.
-- Approval gates exist at script, TTS, caption, B-roll, render config, final render, metadata/upload.
-- Inline buttons are used for approve/edit/rerun/back/cancel actions.
-- Long-running work runs in background threads; while busy, other inputs are ignored except `/status`.
-- Buttons contain stage metadata to prevent stale buttons from approving the wrong current stage.
-- User can go back to previous stages and re-approve.
-- TTS approval stage can go back to script editing so the user can fix spacing/numbers/particles and regenerate TTS.
-- Text artifacts can be edited through `/edit` or `수정` button by uploading replacement files/text.
-
-### Lightsail systemd operation
-
-- Service files exist under `deploy/systemd/`.
-- Helper scripts exist under `deploy/lightsail/`:
-  - `install_telegram_service.sh`
-  - `restart_telegram_service.sh`
-  - `logs_telegram_service.sh`
-  - `stop_telegram_service.sh`
-- Bot sends welcome + help on startup.
-- Bot sends bye bye on SIGTERM/SIGINT.
-- Transient Telegram polling errors are suppressed from Telegram and logged server-side.
-
-### Render progress
-
-- `2_render.sh` now writes ffmpeg progress to `render_progress.txt`.
-- Telegram reads the progress file and sends start/25/50/75/complete messages.
-
-## Current Recommended Server Commands
-
-After pulling latest branch on Lightsail:
+After merging/pulling latest on Lightsail:
 
 ```bash
 cd ~/brain50
 git pull
 ./deploy/lightsail/restart_telegram_service.sh dev
-```
-
-If service was disabled with stop script:
-
-```bash
-cd ~/brain50
-./deploy/lightsail/install_telegram_service.sh dev
 ```
 
 Logs:
@@ -80,64 +47,68 @@ Logs:
 ./deploy/lightsail/logs_telegram_service.sh dev
 ```
 
-TTS path check:
+If service was disabled:
 
 ```bash
-which supertonic
-ls ~/.local/bin/supertonic
+./deploy/lightsail/install_telegram_service.sh dev
 ```
 
-If needed in `dev/secrets.sh`:
+## Important Files To Read First
 
-```bash
-export TTS_BIN=/home/ubuntu/.local/bin/supertonic
-```
-
-## Important Files
-
-Read these before changing behavior:
-
-- `dev/src/telegram_bot.py`
-- `prod/src/telegram_bot.py`
-- `dev/src/0_script.py`
-- `prod/src/0_script.py`
-- `dev/src/1_tts.py`
-- `prod/src/1_tts.py`
-- `dev/sh/2_render.sh`
-- `prod/sh/2_render.sh`
-- `docs/usage/telegram-bot.md`
-- `docs/usage/environment.md`
-- `KNOWN_ISSUES.md`
+1. `PROJECT_CONTEXT.md`
+2. `KNOWN_ISSUES.md`
+3. `ENVIRONMENT_CAPTURE.md`
+4. `README.md`
+5. `docs/usage/telegram-bot.md`
+6. `dev/src/telegram_bot.py`
+7. `dev/src/0_script.py`
+8. `dev/src/script_runtime.py`
+9. `dev/src/2_caption.py`
+10. `dev/src/1_tts.py`
 
 ## Current User Preferences
 
 - Korean responses preferred.
-- Keep changes practical and stability-first.
-- Do not over-automate approval flow yet; approval gates are intentional during development.
-- For frontend/UI-like Telegram workflows, use buttons where they reduce input mistakes.
-- Make error messages actionable and user-understandable.
+- Stability and production continuity beat theoretical cleanliness.
+- Avoid one-off patches that only reveal the next missing global or runtime error.
+- Do not let optional web_search block production.
+- Make Telegram errors actionable and concise.
 - Do not spam Telegram with transient internal errors.
-- Keep all changes mirrored in dev/prod unless intentionally environment-specific.
-- When changing behavior, update docs briefly.
+- Keep changes narrow, but refactor when scattered state is the root cause.
+- Update docs briefly when behavior or operational commands change.
 
-## How to Continue in Cloud
+## PR Workflow For Codex Cloud
 
-1. Confirm branch and latest commit.
-2. Pull remote state.
-3. Read `PROJECT_CONTEXT.md`, `KNOWN_ISSUES.md`, and this file.
-4. If debugging a user screenshot/log, identify whether the error is pipeline-stage failure, service/runtime issue, or transient Telegram/network issue.
-5. Prefer narrow fixes with `py_compile` and `git diff --check`.
-6. If shell scripts are touched, run `bash -n` on a Linux/WSL environment if available. Local Windows thread previously lacked WSL.
-7. Commit and push to `codex/lightsail-stability` unless user asks otherwise.
+1. `git fetch origin main`
+2. Start from `origin/main`: `git switch -c codex/{short-description} origin/main`
+3. Inspect scope with `git status -sb` and `git diff` before staging.
+4. Stage explicit files only.
+5. Commit with a terse message.
+6. Push the branch.
+7. Open a draft PR with: what changed, why, impact, validation.
 
-## Last Validation Performed Before Handoff
+`gh` auth may be expired in this environment. Prefer the GitHub app connector for PR creation when available.
 
-For recent changes, the following checks have been used repeatedly:
+## Validation Checklist
+
+Use the narrowest relevant checks first:
 
 ```bash
-python -m py_compile dev/src/*.py prod/src/*.py
-python -m py_compile dev/src/telegram_bot.py prod/src/telegram_bot.py
+python -m py_compile dev\src\0_script.py dev\src\telegram_bot.py
+python -m py_compile dev\src\2_caption.py
 git diff --check
 ```
 
-Note: In the local Windows Codex environment, wildcard expansion required passing explicit file lists or using `git ls-files`. `bash -n` could not run because WSL/bash was not available.
+For all dev Python:
+
+```bash
+python -m compileall -q dev\src
+```
+
+On Linux/Cloud, also validate shell scripts when touched:
+
+```bash
+bash -n dev/sh/*.sh prod/sh/*.sh deploy/lightsail/*.sh
+```
+
+On Windows Codex, wildcard expansion and console encoding can be awkward. Use explicit file lists and set `PYTHONIOENCODING=utf-8` for Korean output tests.

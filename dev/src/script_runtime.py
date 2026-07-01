@@ -54,6 +54,9 @@ class ScriptRuntimeSettings:
     max_tokens: int
     enable_web_research: bool
     web_research_timeout: int
+    web_research_max_uses: int
+    web_research_max_tokens: int
+    web_research_max_tool_turns: int
     strategy_path: str
     insights_path: str
     total_chars: int
@@ -92,7 +95,10 @@ def load_runtime_settings():
         claude_strategy_fallback_models=env_csv("CLAUDE_STRATEGY_FALLBACK_MODELS", ("claude-3-5-haiku-20241022",)),
         max_tokens=env_int("MAX_TOKENS", 2600),
         enable_web_research=env_bool("ENABLE_WEB_RESEARCH", True),
-        web_research_timeout=env_int("WEB_RESEARCH_TIMEOUT", 120),
+        web_research_timeout=env_int("WEB_RESEARCH_TIMEOUT", 60),
+        web_research_max_uses=env_int("WEB_RESEARCH_MAX_USES", 3),
+        web_research_max_tokens=env_int("WEB_RESEARCH_MAX_TOKENS", 900),
+        web_research_max_tool_turns=env_int("WEB_RESEARCH_MAX_TOOL_TURNS", 2),
         strategy_path=os.environ.get("STRATEGY_PATH", os.path.join(work_dir, "strategy.json")),
         insights_path=os.environ.get("FEEDBACK_INSIGHTS", os.path.join(data_dir, "feedback_insights.json")),
         total_chars=total_chars,

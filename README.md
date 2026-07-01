@@ -428,7 +428,10 @@ python 0_script.py "다음 주제"
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `ENABLE_WEB_RESEARCH` | `true` | web_search 보강 활성화 |
-| `WEB_RESEARCH_TIMEOUT` | `120` | web_search 타임아웃(초) |
+| `WEB_RESEARCH_TIMEOUT` | `60` | web_search 타임아웃(초). 실패 시 재시도하지 않고 PubMed 중심으로 계속 진행 |
+| `WEB_RESEARCH_MAX_USES` | `3` | 1회 요청당 web_search 검색 횟수 하드캡 |
+| `WEB_RESEARCH_MAX_TOKENS` | `900` | web_search 요약 응답 토큰 상한 |
+| `WEB_RESEARCH_MAX_TOOL_TURNS` | `2` | web_search 보조 호출 루프 상한 |
 
 ### 자막
 

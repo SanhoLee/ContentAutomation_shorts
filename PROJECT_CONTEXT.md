@@ -1,27 +1,19 @@
 # Project Context - ContentAutomation_shorts
 
-Last updated: 2026-06-22
-Branch: `codex/lightsail-stability`
+Last updated: 2026-07-02
+Current base branch: `main`
 Repository: `SanhoLee/ContentAutomation_shorts`
 Primary deployment target: AWS Lightsail, expected path `~/brain50`
 
 ## Purpose
 
-This repository is a Shorts automation pipeline for creating Korean YouTube Shorts with a staged human-approval workflow. The current product direction is stability first, especially for a Telegram-driven workflow that can run on Lightsail while the user's local machine is off.
+This repository creates Korean YouTube Shorts through a staged AI pipeline controlled from Telegram. The product direction is stability first: the user should be able to start production from Telegram and recover from non-critical failures without losing the whole job.
 
 The content target is older Korean viewers, often 50+. Generated scripts should avoid stiff expert language, explain medical/technical terms in plain Korean, and keep claims cautious when direct PubMed evidence is weak.
 
 ## High-Level Pipeline
 
-The pipeline is split into dev/prod environments with the same structure:
-
-- `dev/`: development runtime and data
-- `prod/`: production runtime and data
-- `deploy/systemd/`: systemd service unit files
-- `deploy/lightsail/`: service install/restart/log/stop helper scripts
-- `docs/usage/`: existing usage and operations documentation
-
-Main stages:
+The pipeline is split into `dev` and `prod` environments with the same shape:
 
 1. Script generation: `sh/0_script.sh` -> `src/0_script.py`
 2. TTS: `sh/1_tts.sh` -> `src/1_tts.py`
@@ -31,84 +23,68 @@ Main stages:
 6. YouTube upload: `sh/3_upload.sh` -> `src/4_upload.py`
 7. Telegram approval workflow: `src/telegram_bot.py`
 
-Outputs are job-scoped under:
+Outputs are job-scoped under `dev/data/work/{JOB_ID}/` and `prod/data/work/{JOB_ID}/`. Final videos go to each environment's configured output directory.
 
-- `dev/data/work/{JOB_ID}/`
-- `prod/data/work/{JOB_ID}/`
-- final videos in `data/output/output_{JOB_ID}.mp4`
+## Current Stabilization State
 
-## Current Branch State
+The main branch now includes the Lightsail/Telegram stabilization work plus newer fixes:
 
-The branch `codex/lightsail-stability` has accumulated the current stabilization work. Important recent commits include:
+- Telegram `/set` prints major runtime config and saved overrides.
+- Dev Stage 0 runtime config is centralized in `dev/src/script_runtime.py`.
+- Stage 0 script length targets are initialized before prompt/log/trim usage.
+- web_search is bounded and optional: failure/timeout logs and continues without retry.
+- Caption alignment uses sequential Whisper word timestamp consumption plus `CAPTION_OFFSET_SEC=-0.15`.
 
-- `3c0b6b1 fix: suppress transient telegram polling noise`
-- `06df009 feat: announce telegram bot lifecycle`
-- `410db2b feat: report render progress in telegram`
-- `9ae32a0 fix: enforce staged telegram approvals`
-- `f79398f feat: guard telegram actions while running`
-- `b672e34 fix: resolve tts binary in service environment`
-- `463d3fb feat: add editable telegram approvals`
-- `73915a5 fix: harden script generation failures`
-
-The branch was pushed to origin after each stabilization step.
+Recent relevant PRs: #34, #35, #36, #37, #38.
 
 ## Telegram Bot Workflow
 
-The Telegram bot supports an approval-first workflow. Long-running work is run in background threads while the bot keeps polling.
+The Telegram bot supports approval-first and automatic workflows.
 
-Important behavior:
+Useful commands:
 
-- While a stage is running, other buttons/commands are ignored except `/status`.
-- The user receives a `currently running` style message if they tap during work.
-- Inline buttons carry the stage they were created for, for example `approve:await_caption_approval`.
-- Old buttons from previous stages are rejected if they do not match the current `job["stage"]`.
-- Each approval stage can move back to a previous stage where it makes sense.
-- `전체 취소` means cancel the whole current job state.
-
-Useful Telegram commands:
-
-- `/run topic`: start approval-based pipeline from a direct topic
+- `/run topic`: approval-based pipeline from a direct topic
+- `/run_auto topic`: full pipeline without approval gates
 - `/trend keyword`: generate candidate topics
 - `/pick 1`: select a trend candidate
-- `/approve`: approve current stage from text command
+- `/set`: print current major runtime config
+- `/set font_size=22 margin_v=60 margin_h=12 web=off`: save runtime overrides
+- `/approve`: approve current stage
 - `/edit`: edit current text artifact when applicable
 - `/rerun tts|caption|broll`: regenerate a specific stage
-- `/render font_size=22 margin_v=180`: render with custom caption config
+- `/render font_size=22 margin_v=60`: render with custom caption config
 - `/status`: inspect current state
-- `/cancel`: cancel whole job state
+- `/cancel`: cancel current job state
 
-Editable artifacts:
-
-- `script.txt`: editable before TTS, and can be revisited from TTS approval
-- `subs.srt`: editable before render
-- `video_meta.json`: editable before YouTube upload
-
-Non-text stages use regeneration or stage-back buttons instead of direct edit.
+Long-running work runs in background threads. While a stage is running, other inputs are ignored except `/status`. Inline buttons carry stage tokens and stale buttons are rejected.
 
 ## Topic and Script Generation
 
-`src/0_script.py` supports:
+`src/0_script.py` supports direct topics, trend candidates, PubMed lookup, bounded web_search, feedback insights, and cautious fallback when PubMed has no direct result.
 
-- Direct topic input
-- Trend seed mode with Google/YouTube suggestions
-- Trend choice mode via `trend_candidates.json`
-- PubMed lookup and fallback handling
+Important settings in dev:
 
-Important prompt policy:
+- `MAX_TOKENS=4000`
+- `TARGET_DURATION_SEC=80`
+- `ATEMPO=1.10`
+- `CHARS_PER_SEC=4.5`
+- `ENABLE_WEB_RESEARCH=true`
+- `WEB_RESEARCH_TIMEOUT=60`
+- `WEB_RESEARCH_MAX_USES=3`
+- `WEB_RESEARCH_MAX_TOKENS=900`
+- `WEB_RESEARCH_MAX_TOOL_TURNS=2`
 
-- Do not force all numbers into Korean spelling.
-- Keep important research numbers as Arabic numerals when appropriate.
-- Adjust spacing/particles to avoid awkward TTS, e.g. `오메가3는`, `50대 이상은`, `퍼센트`.
-- Explain expert terms in simple language for older viewers.
-- If PubMed has no direct results, continue generation using reliable general medical knowledge, but do not invent study numbers, sample sizes, or exact results.
+web_search is a supplement, not a required production step. It should not retry on timeout because the server may already be processing the request and retrying can create duplicate cost.
 
-PubMed status is written to:
+## Caption Timing
 
-- `data/work/{JOB_ID}/pubmed_status.json`
+`dev/src/2_caption.py` uses `caption_script.txt` for display text and faster-whisper word timestamps from `voice.wav`. Current alignment consumes the word timeline sequentially rather than globally snapping every line by total syllable ratio. `CAPTION_OFFSET_SEC=-0.15` shifts generated SRT captions slightly earlier because captions were perceived as lagging the voice.
+
+If captions still lag, tune `CAPTION_OFFSET_SEC` more negative, for example `-0.20`. If captions appear too early, move toward `0`.
 
 ## Lightsail Runtime
 
-Expected path on server:
+Expected server path:
 
 ```bash
 ~/brain50
@@ -123,19 +99,6 @@ Service helpers:
 ./deploy/lightsail/stop_telegram_service.sh dev
 ```
 
-Systemd unit names:
-
-- `brain50-telegram-dev.service`
-- `brain50-telegram-prod.service`
-
-Bot startup behavior:
-
-- Sends a welcome message and help text to Telegram.
-- On SIGTERM/SIGINT, sends `bye bye` shutdown notice.
-- Transient Telegram polling errors are no longer sent to Telegram repeatedly; they are logged server-side.
-
-## Required Secrets
-
 Secrets are expected in `dev/secrets.sh` and/or `prod/secrets.sh`. Do not commit secrets.
 
 Typical variables:
@@ -146,9 +109,8 @@ export TELEGRAM_CHAT_ID="..."
 export ANTHROPIC_API_KEY="..."
 export PEXELS_API_KEY="..."
 export TTS_BIN=/home/ubuntu/.local/bin/supertonic
+export CLAUDE_TIMEOUT=300
 ```
-
-`TTS_BIN` is optional if `supertonic` is discoverable via PATH, but on systemd it is safer to set explicitly.
 
 ## External Tools
 
@@ -158,16 +120,18 @@ Expected on Lightsail:
 - `ffmpeg`
 - `ffprobe`
 - `supertonic` CLI, usually `/home/ubuntu/.local/bin/supertonic`
+- faster-whisper dependencies for caption timestamp extraction
 - network access to Telegram Bot API, Anthropic API, PubMed, Google/YouTube suggestion endpoints, Pexels, YouTube upload APIs
 
-## Key Files to Read First in a New Cloud Thread
+## Key Files To Read First In A New Cloud Thread
 
 1. `HANDOFF.md`
 2. `KNOWN_ISSUES.md`
-3. `PROJECT_CONTEXT.md`
-4. `ENVIRONMENT_CAPTURE.md`
+3. `ENVIRONMENT_CAPTURE.md`
+4. `README.md`
 5. `docs/usage/telegram-bot.md`
 6. `dev/src/telegram_bot.py`
 7. `dev/src/0_script.py`
-8. `dev/sh/2_render.sh`
-9. `dev/src/1_tts.py`
+8. `dev/src/script_runtime.py`
+9. `dev/src/2_caption.py`
+10. `dev/src/1_tts.py`

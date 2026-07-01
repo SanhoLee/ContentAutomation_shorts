@@ -28,6 +28,7 @@ WORK_DIR   = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"
 MAX_CHARS  = int(os.environ.get("CAPTION_MAX_CHARS", "13"))  # 한글 폰트 가로폭 기준 최적값
 MIN_CHARS  = int(os.environ.get("CAPTION_MIN_CHARS", "6"))
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
+CAPTION_OFFSET_SEC = float(os.environ.get("CAPTION_OFFSET_SEC", "-0.15"))
 
 
 # ─────────────────────────────────────────────
@@ -201,19 +202,29 @@ def get_whisper_words(audio_path: str, tts_script: str) -> list[dict]:
 # 3. 라인 ↔ 타임스탬프 매핑
 # ─────────────────────────────────────────────
 
-def _snap(target: float, words: list[dict], mode: str) -> float:
-    """target_time에 가장 가까운 단어 경계(start/end)로 스냅."""
-    if not words:
-        return target
-    key  = "start" if mode == "start" else "end"
-    best = min(words, key=lambda w: abs(w[key] - target))
-    return best[key]
+def apply_caption_offset(captions: list[dict], audio_end: float | None = None) -> list[dict]:
+    if CAPTION_OFFSET_SEC == 0:
+        return captions
+    shifted = []
+    prev_end = 0.0
+    for cap in captions:
+        start = max(0.0, cap["start"] + CAPTION_OFFSET_SEC)
+        end = cap["end"] + CAPTION_OFFSET_SEC
+        if audio_end is not None:
+            end = min(end, audio_end)
+        end = max(end, start + 0.3)
+        if shifted and start < prev_end:
+            start = prev_end
+            end = max(end, start + 0.3)
+        shifted.append({"text": cap["text"], "start": round(start, 3), "end": round(end, 3)})
+        prev_end = shifted[-1]["end"]
+    return shifted
 
 
 def align_lines_to_timestamps(lines: list[str], words: list[dict]) -> list[dict]:
     """
-    음절수 비율 기반으로 각 캡션 라인의 start/end 타임스탬프 추정 후
-    가장 가까운 단어 경계에 스냅.
+    Whisper 단어 타임라인을 순서대로 소비해 라인별 start/end를 잡는다.
+    음절수 비율은 단어 개수 배정에만 쓰고, 실제 시간은 배정된 단어 경계를 따른다.
     """
     if not words:
         print("⚠️  단어 없음 — 균등 분할 fallback")
@@ -222,46 +233,46 @@ def align_lines_to_timestamps(lines: list[str], words: list[dict]) -> list[dict]
         for line in lines:
             result.append({"text": line, "start": t, "end": t + 2.0})
             t += 2.0
-        return result
+        return apply_caption_offset(result)
 
-    audio_start  = words[0]["start"]
-    audio_end    = words[-1]["end"]
-    total_dur    = audio_end - audio_start
-    total_syl    = sum(_syllables(l) for l in lines) or 1.0
+    audio_end = words[-1]["end"]
+    total_line_syl = sum(_syllables(l) for l in lines) or 1.0
+    total_word_syl = sum(_syllables(w["word"]) for w in words) or total_line_syl
+    syl_ratio = total_word_syl / total_line_syl
 
-    result  = []
-    syl_cur = 0.0
+    result = []
+    word_idx = 0
 
     for line in lines:
-        syl_len = _syllables(line)
+        start_idx = min(word_idx, len(words) - 1)
+        target_syl = max(_syllables(line) * syl_ratio, 1.0)
+        acc = 0.0
 
-        raw_s = audio_start + (syl_cur / total_syl) * total_dur
-        raw_e = audio_start + ((syl_cur + syl_len) / total_syl) * total_dur
+        while word_idx < len(words) and acc < target_syl:
+            acc += max(_syllables(words[word_idx]["word"]), 0.5)
+            word_idx += 1
 
-        snapped_s = _snap(raw_s, words, "start")
-        snapped_e = _snap(raw_e, words, "end")
+        if word_idx <= start_idx:
+            word_idx = min(start_idx + 1, len(words))
 
-        # 최소 0.3초 보장
-        if snapped_e - snapped_s < 0.3:
-            snapped_e = min(snapped_s + 0.3, audio_end)
+        end_idx = max(word_idx - 1, start_idx)
+        start = words[start_idx]["start"]
+        end = words[end_idx]["end"]
 
-        # 이전 라인과 역전 방지
-        if result and snapped_s < result[-1]["end"]:
-            snapped_s = result[-1]["end"]
-            snapped_e = max(snapped_e, snapped_s + 0.3)
+        if end - start < 0.3:
+            end = min(start + 0.3, audio_end)
+        if result and start < result[-1]["end"]:
+            start = result[-1]["end"]
+            end = max(end, start + 0.3)
 
-        result.append({
-            "text":  line,
-            "start": round(snapped_s, 3),
-            "end":   round(snapped_e, 3),
-        })
-        syl_cur += syl_len
+        result.append({"text": line, "start": round(start, 3), "end": round(end, 3)})
 
     if result:
         result[-1]["end"] = round(audio_end, 3)
 
+    result = apply_caption_offset(result, audio_end)
+    print(f"  자막 오프셋 적용: {CAPTION_OFFSET_SEC:+.2f}s")
     return result
-
 
 # ─────────────────────────────────────────────
 # 4. SRT 출력

@@ -8,36 +8,35 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-WORK_DIR = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
+from script_runtime import load_runtime_settings
+
+SETTINGS = load_runtime_settings()
+WORK_DIR = SETTINGS.work_dir
 os.makedirs(WORK_DIR, exist_ok=True)
 
-ATEMPO               = float(os.environ.get("ATEMPO", "1.0"))
-TARGET_DURATION_SEC  = int(os.environ.get("TARGET_DURATION_SEC", "60"))
-CHARS_PER_SEC        = float(os.environ.get("CHARS_PER_SEC", "4.66"))
-TREND_CANDIDATE_COUNT = int(os.environ.get("TREND_CANDIDATE_COUNT", "5"))
-REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "20"))
-CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_TIMEOUT", "180"))
-CLAUDE_HTTP_RETRIES = int(os.environ.get("CLAUDE_HTTP_RETRIES", os.environ.get("CLAUDE_RETRIES", "2")))
-PUBMED_QUERY_TIMEOUT = int(os.environ.get("PUBMED_QUERY_TIMEOUT", "60"))
-PUBMED_RETMAX = int(os.environ.get("PUBMED_RETMAX", "3"))
-PUBMED_ABSTRACT_CHAR_LIMIT = int(os.environ.get("PUBMED_ABSTRACT_CHAR_LIMIT", "7000"))
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
-CLAUDE_QUERY_MODEL = os.environ.get("CLAUDE_QUERY_MODEL", CLAUDE_MODEL)
-MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "2600"))
-
-
-def script_length_targets(target_duration_sec, atempo, chars_per_sec):
-    total = int(target_duration_sec * atempo * chars_per_sec)
-    prompt_target = int(total * 1.15)
-    min_scenes = max(8, prompt_target // 28)
-    return total, prompt_target, min_scenes
-
-
-total_chars, prompt_target_chars, min_scenes_estimate = script_length_targets(
-    TARGET_DURATION_SEC,
-    ATEMPO,
-    CHARS_PER_SEC,
-)
+ATEMPO = SETTINGS.atempo
+TARGET_DURATION_SEC = SETTINGS.target_duration_sec
+CHARS_PER_SEC = SETTINGS.chars_per_sec
+TREND_CANDIDATE_COUNT = SETTINGS.trend_candidate_count
+REQUEST_TIMEOUT = SETTINGS.request_timeout
+CLAUDE_TIMEOUT = SETTINGS.claude_timeout
+CLAUDE_HTTP_RETRIES = SETTINGS.claude_http_retries
+PUBMED_QUERY_TIMEOUT = SETTINGS.pubmed_query_timeout
+PUBMED_RETMAX = SETTINGS.pubmed_retmax
+PUBMED_ABSTRACT_CHAR_LIMIT = SETTINGS.pubmed_abstract_char_limit
+CLAUDE_MODEL = SETTINGS.claude_model
+CLAUDE_SCRIPT_MODEL = SETTINGS.claude_script_model
+CLAUDE_QUERY_MODEL = SETTINGS.claude_query_model
+CLAUDE_STRATEGY_MODEL = SETTINGS.claude_strategy_model
+CLAUDE_STRATEGY_FALLBACK_MODELS = SETTINGS.claude_strategy_fallback_models
+MAX_TOKENS = SETTINGS.max_tokens
+ENABLE_WEB_RESEARCH = SETTINGS.enable_web_research
+WEB_RESEARCH_TIMEOUT = SETTINGS.web_research_timeout
+STRATEGY_PATH = SETTINGS.strategy_path
+INSIGHTS_PATH = SETTINGS.insights_path
+total_chars = SETTINGS.total_chars
+prompt_target_chars = SETTINGS.prompt_target_chars
+min_scenes_estimate = SETTINGS.min_scenes_estimate
 
 TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
 PUBMED_STATUS_PATH = os.path.join(WORK_DIR, "pubmed_status.json")

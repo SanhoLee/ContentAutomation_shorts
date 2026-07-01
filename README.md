@@ -440,6 +440,7 @@ python 0_script.py "다음 주제"
 | `WHISPER_MODEL` | `small` | faster-whisper 모델 크기 |
 | `CAPTION_MAX_CHARS` | `16` | 자막 한 라인 최대 글자수 |
 | `CAPTION_MIN_CHARS` | `6` | 자막 한 라인 최소 글자수 |
+| `CAPTION_OFFSET_SEC` | `-0.15` | 생성된 SRT 타임스탬프 전체 보정값. 음성보다 자막이 늦으면 음수로 앞당김 |
 | `CAPTION_FONT_SIZE` | `22` | 렌더 스크립트 기본 자막 폰트 크기 |
 | `CAPTION_MARGIN_V` | `60` | 렌더 스크립트 기본 자막 수직 위치 |
 | `TELEGRAM_DEFAULT_CAPTION_FONT_SIZE` | `22` | 텔레그램 실행 기본 자막 폰트 크기 |

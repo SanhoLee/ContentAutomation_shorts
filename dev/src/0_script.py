@@ -32,6 +32,9 @@ CLAUDE_STRATEGY_FALLBACK_MODELS = SETTINGS.claude_strategy_fallback_models
 MAX_TOKENS = SETTINGS.max_tokens
 ENABLE_WEB_RESEARCH = SETTINGS.enable_web_research
 WEB_RESEARCH_TIMEOUT = SETTINGS.web_research_timeout
+WEB_RESEARCH_MAX_USES = SETTINGS.web_research_max_uses
+WEB_RESEARCH_MAX_TOKENS = SETTINGS.web_research_max_tokens
+WEB_RESEARCH_MAX_TOOL_TURNS = SETTINGS.web_research_max_tool_turns
 STRATEGY_PATH = SETTINGS.strategy_path
 INSIGHTS_PATH = SETTINGS.insights_path
 total_chars = SETTINGS.total_chars
@@ -368,7 +371,7 @@ def fetch_pubmed_abstracts(topic):
 # Claude 공통 호출 (tool_use 멀티턴 루프)
 # ─────────────────────────────────────────────
 
-def _call_claude_loop(messages, tools=None, max_tokens=1500, model=None, timeout=None):
+def _call_claude_loop(messages, tools=None, max_tokens=1500, model=None, timeout=None, max_turns=10):
     import requests
     headers = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
                "anthropic-version": "2023-06-01", "content-type": "application/json"}
@@ -376,7 +379,7 @@ def _call_claude_loop(messages, tools=None, max_tokens=1500, model=None, timeout
     model   = model or CLAUDE_SCRIPT_MODEL
     current_messages = list(messages)
 
-    for _ in range(10):
+    for _ in range(max_turns):
         payload = {"model": model, "max_tokens": max_tokens, "messages": current_messages}
         if tools:
             payload["tools"] = tools
@@ -410,8 +413,27 @@ def _call_claude_loop(messages, tools=None, max_tokens=1500, model=None, timeout
 # web_search 보강
 # ─────────────────────────────────────────────
 
+def web_search_request_count(response):
+    return ((response.get("usage") or {}).get("server_tool_use") or {}).get("web_search_requests", 0)
+
+
+def web_search_error_codes(response):
+    errors = []
+    for block in response.get("content", []):
+        if block.get("type") != "web_search_tool_result":
+            continue
+        content = block.get("content")
+        if isinstance(content, dict) and content.get("type") == "web_search_tool_result_error":
+            errors.append(content.get("error_code", "unknown"))
+    return errors
+
+
 def fetch_web_research(topic, pubmed_query):
-    print(f"🔍 web_search 최신 영문 연구 자료 수집 중... (query: {pubmed_query})")
+    print(
+        "🔍 web_search 최신 영문 연구 자료 수집 중... "
+        f"max_uses={WEB_RESEARCH_MAX_USES}, timeout={WEB_RESEARCH_TIMEOUT}s, "
+        f"max_tokens={WEB_RESEARCH_MAX_TOKENS} (query: {pubmed_query})"
+    )
     messages = [{"role": "user", "content":
         f"Search for recent (2022-2026) research about: {pubmed_query}\n\n"
         "Prioritize: Nature Neuroscience, Neuron, Journal of Neuroscience, PNAS, "
@@ -419,17 +441,32 @@ def fetch_web_research(topic, pubmed_query):
         "NIH/NINDS, Harvard Picower, MIT Brain & Cognitive Sciences, UCSF, Stanford, UCL\n\n"
         "Find 2-3 findings for a Korean health video targeting adults 50+. "
         "Focus on specific stats, sample sizes, percentages, actionable insights.\n"
-        "Output: 4-6 bullet points in English with source name and year."}]
+        "Output: 4-6 concise bullet points in English with source name and year."}]
     try:
-        data = _call_claude_loop(messages,
-                                 tools=[{"type": "web_search_20250305", "name": "web_search"}],
-                                 max_tokens=1500, model=CLAUDE_SCRIPT_MODEL,
-                                 timeout=WEB_RESEARCH_TIMEOUT)
+        data = _call_claude_loop(
+            messages,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": WEB_RESEARCH_MAX_USES,
+            }],
+            max_tokens=WEB_RESEARCH_MAX_TOKENS,
+            model=CLAUDE_SCRIPT_MODEL,
+            timeout=WEB_RESEARCH_TIMEOUT,
+            max_turns=WEB_RESEARCH_MAX_TOOL_TURNS,
+        )
+        errors = web_search_error_codes(data)
+        if errors:
+            print(f"⚠️  web_search 도구 오류 (계속 진행): {', '.join(errors)}")
+            return ""
         result = "".join(b["text"] for b in data.get("content", []) if b.get("type") == "text").strip()
-        print(f"✅ web_search 완료 ({len(result)}자)")
+        if not result:
+            print("⚠️  web_search 결과 텍스트 없음 (계속 진행)")
+            return ""
+        print(f"✅ web_search 완료 ({len(result)}자, requests={web_search_request_count(data)})")
         return result
     except Exception as exc:
-        print(f"⚠️  web_search 실패 (계속 진행): {exc}")
+        print(f"⚠️  web_search 실패/타임아웃 (재시도 없이 계속 진행): {exc}")
         return ""
 
 

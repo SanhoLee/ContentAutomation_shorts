@@ -18,6 +18,7 @@
   → subs.srt / scenes_timed.json
 """
 
+import difflib
 import json
 import os
 import re
@@ -221,10 +222,91 @@ def apply_caption_offset(captions: list[dict], audio_end: float | None = None) -
     return shifted
 
 
-def align_lines_to_timestamps(lines: list[str], words: list[dict]) -> list[dict]:
+def _normalize_for_alignment(text: str) -> str:
+    """텍스트 매칭 전용 정규화: 공백/문장부호 차이를 제거한다."""
+    text = text.lower()
+    return "".join(re.findall(r"[0-9a-z가-힣]+", text))
+
+
+def _window_text(words: list[dict], start_idx: int, end_idx: int) -> str:
+    return _normalize_for_alignment("".join(w["word"] for w in words[start_idx:end_idx + 1]))
+
+
+def _similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    if a in b or b in a:
+        # 짧은 조사/어미 차이처럼 한쪽이 다른 쪽에 포함되면 보너스를 준다.
+        ratio = max(ratio, min(len(a), len(b)) / max(len(a), len(b)))
+    return ratio
+
+
+def _fallback_end_idx(words: list[dict], start_idx: int, target_syl: float) -> int:
+    idx = start_idx
+    acc = 0.0
+    while idx < len(words) and acc < target_syl:
+        acc += max(_syllables(words[idx]["word"]), 0.5)
+        idx += 1
+    return max(min(idx, len(words)) - 1, start_idx)
+
+
+def _find_best_word_window(words: list[dict], start_hint: int, target_text: str, target_syl: float) -> tuple[int, int, float]:
     """
-    Whisper 단어 타임라인을 순서대로 소비해 라인별 start/end를 잡는다.
-    음절수 비율은 단어 개수 배정에만 쓰고, 실제 시간은 배정된 단어 경계를 따른다.
+    현재 위치 주변에서 caption/tts 라인과 가장 비슷한 Whisper word 구간을 찾는다.
+
+    이전 구현은 라인 음절 수만큼 word_idx를 순차 소비했기 때문에 한 번 생긴
+    배정 오차가 뒤 라인까지 누적될 수 있었다. 여기서는 최초 구현의 장점처럼
+    실제 Whisper 단어 경계를 쓰되, 어떤 단어 구간이 현재 라인인지 텍스트
+    유사도로 재앵커링한다.
+    """
+    if not words:
+        return 0, 0, 0.0
+
+    target_norm = _normalize_for_alignment(target_text)
+    if not target_norm:
+        end_idx = _fallback_end_idx(words, start_hint, target_syl)
+        return start_hint, end_idx, 0.0
+
+    n = len(words)
+    start_min = max(0, start_hint - 2)
+    start_max = min(n - 1, start_hint + 8)
+    best = (start_hint, _fallback_end_idx(words, start_hint, target_syl), -1.0)
+
+    # 예상 음절량의 대략적인 범위 안에서 후보 end를 만든다.
+    for start_idx in range(start_min, start_max + 1):
+        acc = 0.0
+        for end_idx in range(start_idx, n):
+            acc += max(_syllables(words[end_idx]["word"]), 0.5)
+            if acc < max(1.0, target_syl * 0.45):
+                continue
+
+            window_norm = _window_text(words, start_idx, end_idx)
+            score = _similarity(target_norm, window_norm)
+
+            # start_hint에서 멀어질수록 약한 패널티를 줘서 단조 진행성을 유지한다.
+            score -= abs(start_idx - start_hint) * 0.015
+
+            if score > best[2]:
+                best = (start_idx, end_idx, score)
+
+            if acc >= target_syl * 1.8 or len(window_norm) > len(target_norm) * 2.2 + 8:
+                break
+
+    return best
+
+
+def align_lines_to_timestamps(
+    lines: list[str],
+    words: list[dict],
+    timing_lines: list[str] | None = None,
+) -> list[dict]:
+    """
+    caption 라인을 Whisper 단어 타임라인에 텍스트 앵커로 정렬한다.
+
+    표시 문자열은 caption_script 기반 lines를 유지하고, 타이밍 매칭은 가능하면
+    TTS가 실제로 읽은 timing_lines를 사용한다. 매칭 신뢰도가 낮은 라인은 기존
+    음절수 순차 소비 방식을 fallback으로 사용한다.
     """
     if not words:
         print("⚠️  단어 없음 — 균등 분할 fallback")
@@ -235,27 +317,40 @@ def align_lines_to_timestamps(lines: list[str], words: list[dict]) -> list[dict]
             t += 2.0
         return apply_caption_offset(result)
 
+    if timing_lines and len(timing_lines) != len(lines):
+        print(
+            "⚠️  표시용/발화용 라인 수 불일치 "
+            f"({len(lines)} vs {len(timing_lines)}) — 표시 라인 기준으로 정렬"
+        )
+        timing_lines = None
+
     audio_end = words[-1]["end"]
-    total_line_syl = sum(_syllables(l) for l in lines) or 1.0
+    reference_lines = timing_lines or lines
+    total_line_syl = sum(_syllables(l) for l in reference_lines) or 1.0
     total_word_syl = sum(_syllables(w["word"]) for w in words) or total_line_syl
     syl_ratio = total_word_syl / total_line_syl
 
     result = []
     word_idx = 0
+    anchor_hits = 0
+    fallback_hits = 0
 
-    for line in lines:
-        start_idx = min(word_idx, len(words) - 1)
-        target_syl = max(_syllables(line) * syl_ratio, 1.0)
-        acc = 0.0
+    for i, line in enumerate(lines):
+        timing_text = reference_lines[i] if i < len(reference_lines) else line
+        start_hint = min(word_idx, len(words) - 1)
+        target_syl = max(_syllables(timing_text) * syl_ratio, 1.0)
 
-        while word_idx < len(words) and acc < target_syl:
-            acc += max(_syllables(words[word_idx]["word"]), 0.5)
-            word_idx += 1
+        start_idx, end_idx, score = _find_best_word_window(words, start_hint, timing_text, target_syl)
 
-        if word_idx <= start_idx:
-            word_idx = min(start_idx + 1, len(words))
+        # 너무 낮은 매칭은 오히려 엉뚱한 곳으로 점프할 수 있으므로 기존 방식으로 fallback.
+        if score < 0.48:
+            start_idx = start_hint
+            end_idx = _fallback_end_idx(words, start_idx, target_syl)
+            fallback_hits += 1
+        else:
+            anchor_hits += 1
 
-        end_idx = max(word_idx - 1, start_idx)
+        word_idx = min(end_idx + 1, len(words))
         start = words[start_idx]["start"]
         end = words[end_idx]["end"]
 
@@ -271,6 +366,7 @@ def align_lines_to_timestamps(lines: list[str], words: list[dict]) -> list[dict]
         result[-1]["end"] = round(audio_end, 3)
 
     result = apply_caption_offset(result, audio_end)
+    print(f"  텍스트 앵커 정렬: anchor={anchor_hits}, fallback={fallback_hits}")
     print(f"  자막 오프셋 적용: {CAPTION_OFFSET_SEC:+.2f}s")
     return result
 
@@ -370,7 +466,10 @@ def main():
     # ── Step 1: 자막 라인 분할 (caption 텍스트 기준)
     print("✂️  자막 라인 분할 (한국어 문법 기반)...")
     lines = split_script_to_lines(caption_text)
-    print(f"  {len(lines)}개 라인 생성")
+    timing_lines = split_script_to_lines(tts_text) if tts_text != caption_text else lines
+    print(f"  표시용 {len(lines)}개 라인 생성")
+    if timing_lines is not lines:
+        print(f"  발화용 {len(timing_lines)}개 라인 생성")
     for i, l in enumerate(lines[:5]):
         print(f"  [{i:02d}] {l}")
     if len(lines) > 5:
@@ -379,9 +478,9 @@ def main():
     # ── Step 2: Whisper 타임스탬프 (tts_script 기준 initial_prompt)
     words = get_whisper_words(audio_path, tts_text)
 
-    # ── Step 3: 음절수 비율 매핑
-    print("🔗 타임스탬프 정렬 (음절수 비율 기반)...")
-    captions = align_lines_to_timestamps(lines, words)
+    # ── Step 3: 텍스트 앵커 기반 매핑
+    print("🔗 타임스탬프 정렬 (텍스트 앵커 + 음절 fallback)...")
+    captions = align_lines_to_timestamps(lines, words, timing_lines)
 
     # ── Step 4: SRT 출력
     write_srt(captions, srt_path)

@@ -395,7 +395,7 @@ def build_prompt(topic, abstracts, trend_context=None):
 4-5. 비유와 예시: 일상생활에 빗대어 쉽게 설명
 6-7. 의외의 세부 내용: 사람들이 잘 모르는 포인트나 추가 수치
 8-9. 공감 상황: "이런 적 있으시죠?"처럼 시청자가 자기 경험으로 받아들이게 하기
-10. 행동 제안: 오늘 밤이나 내일 아침 바로 할 수 있는 한 가지 행동. 마지막 장면은 반드시 실천 팁이어야 합니다.
+10. 행동 제안: 처음 던진 훅과 연결해서 오늘 밤이나 내일 아침 바로 할 수 있는 한 가지 행동을 제안하세요. 마지막 장면은 근거 → 쉬운 해석 → 실천 → 희망의 순서로 끝나야 합니다.
 
 문체와 한국어 표현:
 - 전체 대본은 한국어로 작성하세요.
@@ -405,6 +405,7 @@ def build_prompt(topic, abstracts, trend_context=None):
 - 숫자를 무조건 한글로 바꾸지 마세요. 연구 수치, 연령, 비율, 시간처럼 정확성이 중요한 숫자는 아라비아 숫자를 그대로 써도 됩니다.
 - 다만 TTS가 어색하게 읽을 수 있는 표현은 띄어쓰기나 조사만 자연스럽게 다듬으세요. 예: "오메가3은"보다 "오메가3는", "50+는"보다 "50대 이상은", "%"보다 "퍼센트".
 - 어르신 시청자가 바로 이해할 수 있게 전문용어는 쉬운 말로 먼저 풀어 쓰고, 꼭 필요한 용어만 괄호나 짧은 설명으로 덧붙이세요. 예: "인지기능"은 "기억하고 판단하는 힘", "혈중 지질"은 "피 속 기름 성분"처럼 설명하세요.
+- 어려운 연구 용어를 여러 개 나열하지 말고, 한 장면에는 핵심 용어 1개 이하로 제한하세요.
 - 문장은 짧고 분명하게 쓰고, 병원 강의처럼 딱딱한 표현보다 가족에게 설명하듯 편안한 존댓말을 사용하세요.
 - {pace_instruction()}
 
@@ -412,15 +413,17 @@ def build_prompt(topic, abstracts, trend_context=None):
 - 초록에서 확인 가능한 구체적 숫자나 통계가 있으면 최소 3개 포함하세요.
 - PubMed 초록이 없거나 근거가 부족한 경우 숫자, 표본 수, 논문 결과를 지어내지 마세요.
 - PubMed 초록이 없는 경우 Claude가 자체 지식 범위에서 신빙성 높은 일반 의학 정보와 콘텐츠 가치가 있는 생활 맥락을 구성하되, 단정 대신 "가능성이 있습니다", "도움이 될 수 있습니다"처럼 표현하세요.
-- 마지막 장면은 반드시 실천 가능한 행동 제안이어야 합니다.
+- 처음의 훅, 본문 근거, 마지막 해결법이 하나의 이야기로 이어져야 합니다. 겁만 주고 끝내지 말고 시청자가 "지금부터 바꿀 수 있겠다"는 희망을 느끼게 하세요.
+- 마지막 장면은 반드시 실천 가능한 행동 제안이어야 합니다. 시간, 횟수, 양 중 하나 이상을 구체적으로 넣으세요.
 
 각 장면마다 Pexels 영상 검색용 "visual_query"도 작성하세요. visual_query는 2~4개의 영어 키워드로만 작성하세요.
 
 YouTube 업로드용 메타데이터도 함께 작성하세요.
-- "title": 본문 핵심과 맞는 한국어 Shorts 제목. 15~25자 권장. 낚시성 과장은 피하고 클릭하고 싶게 쓰세요.
+- "title": 본문 핵심과 훅, 해결 약속을 자연스럽게 대표하는 한국어 Shorts 제목. 15~28자 권장. 사용자가 넘긴 주제문을 그대로 복사하거나 어순만 바꾸지 말고, 낚시성 과장은 피하되 클릭하고 싶게 쓰세요.
 - "summary": 영상 내용을 2~3문장으로 요약하세요. description 상단에 들어갈 문장입니다.
 - "hashtags": 이 영상 주제에 맞는 한국어 해시태그 3~5개. #brain50, #뇌건강처럼 고정 채널 태그만 반복하지 마세요.
-- "description": 부모님께 보내는 아들이 영상 보기 전에 짧게 소개하는 느낌의 한국어 설명문. 3~5문장, 따뜻한 존댓말로 쓰세요. 대본을 그대로 반복하지 말고 별도 소개글로 쓰세요.
+- "thumbnail_text": 썸네일에 넣을 짧은 문구 후보 1~2개. 각 8~14자, 약간 자극적이되 사실 기반으로 쓰세요.
+- "description": 부모님께 보내는 아들이 영상 보기 전에 짧게 소개하는 느낌의 한국어 설명문. 3~5문장, 따뜻한 존댓말로 쓰세요. 대본을 그대로 반복하지 말고 별도 소개글로 쓰세요. 마지막에 "썸네일 문구 후보: 문구1 / 문구2"를 넣으세요.
 
 반드시 아래 JSON 객체만 출력하세요. 설명, 마크다운 코드블록, 주석은 출력하지 마세요.
 
@@ -428,7 +431,8 @@ YouTube 업로드용 메타데이터도 함께 작성하세요.
   "title": "제목 텍스트",
   "summary": "요약 텍스트",
   "hashtags": "#태그1 #태그2 #태그3",
-  "description": "설명란 인트로 텍스트",
+  "thumbnail_text": ["썸네일 문구 1", "썸네일 문구 2"],
+  "description": "설명란 인트로 텍스트\n\n썸네일 문구 후보: 문구1 / 문구2",
   "scenes": [
     {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}}
   ]
@@ -510,7 +514,17 @@ def write_outputs(result, topic, trend_context=None):
     video_title = result["title"]
     video_summary = result.get("summary", "")
     video_hashtags = result["hashtags"]
+    thumbnail_text = result.get("thumbnail_text", [])
+    if isinstance(thumbnail_text, str):
+        thumbnail_items = [thumbnail_text]
+    else:
+        thumbnail_items = [str(item) for item in thumbnail_text if item]
     video_description = result["description"]
+    if thumbnail_items and "썸네일 문구" not in video_description:
+        video_description = (
+            f"{video_description.rstrip()}\n\n"
+            f"썸네일 문구 후보: {' / '.join(thumbnail_items[:2])}"
+        ).strip()
 
     with open(os.path.join(WORK_DIR, "script.txt"), "w", encoding="utf-8") as f:
         f.write(full_text)
@@ -523,6 +537,7 @@ def write_outputs(result, topic, trend_context=None):
         "title": video_title,
         "summary": video_summary,
         "hashtags": video_hashtags,
+        "thumbnail_text": thumbnail_items,
         "description": video_description,
     }
     if trend_context:

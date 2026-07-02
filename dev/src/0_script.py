@@ -511,14 +511,14 @@ main_keyword : YouTube에서 실제 검색할 핵심 키워드 (공백 포함 12
 sub_keywords : 연관 검색어 2~3개 (배열)
 search_intent: 이 키워드를 검색하는 사람의 상황/걱정 (20자 이내)
 hook_type    : 두려움형 / 반전형 / 숫자충격형 / 공감형 중 하나
-title        : 아래 4가지 검색형 공식 중 하나를 선택해 작성
-               - 질문형: "[키워드], 정말 ~일까?"
-               - 비교형: "[A]와 [B] 차이"
-               - 체크리스트형: "[대상]이 ~할 때 보는 N가지"
-               - 생활습관형: "[습관]이 뇌에 미치는 영향"
-               ※ 제목 앞 15자 이내에 main_keyword 반드시 포함
-search_title_format: 위 4가지 중 선택한 것 (질문형/비교형/체크리스트형/생활습관형)
+title        : 영상 본문과 훅을 자연스럽게 대표하는 한국어 제목 (15~28자 권장)
+               - 사용자가 입력한 주제문을 그대로 복사하거나 어순만 바꾸지 말 것
+               - main_keyword는 가능하면 앞쪽에 넣되, 억지스럽거나 기계적인 제목 금지
+               - 실제 영상에서 밝혀지는 긴장/반전/해결 약속이 제목에 드러나야 함
+               - 과장·공포 조장 대신 "궁금해서 누르게 되는" 생활형 문장으로 작성
+search_title_format: 제목 성격 (질문형/비교형/체크리스트형/생활습관형/반전형/공감형 중 하나)
 core_message : 시청자가 이 영상에서 가져갈 딱 한 문장 (30자 이내)
+thumbnail_text: 썸네일용 짧은 문구 후보 1~2개 (배열, 각 8~14자, 약간 자극적이되 사실 기반)
 cta_next     : 다음 영상 예고 주제 (파생 주제, 20자 이내)
 
 JSON만 출력. 설명·주석·마크다운 없이.
@@ -531,6 +531,7 @@ JSON만 출력. 설명·주석·마크다운 없이.
   "title": "",
   "search_title_format": "",
   "core_message": "",
+  "thumbnail_text": [],
   "cta_next": ""
 }}"""
 
@@ -564,6 +565,7 @@ JSON만 출력. 설명·주석·마크다운 없이.
                 print(f"  ✅ hook_type       : {strategy.get('hook_type')}")
                 print(f"  ✅ search_format   : {strategy.get('search_title_format')}")
                 print(f"  ✅ core_message    : {strategy.get('core_message')}")
+                print(f"  ✅ thumbnail_text  : {strategy.get('thumbnail_text')}")
 
                 with open(STRATEGY_PATH, "w", encoding="utf-8") as f:
                     json.dump(strategy, f, ensure_ascii=False, indent=2)
@@ -602,6 +604,11 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
     cta_next       = strategy.get("cta_next", "")
     topic          = strategy.get("topic", main_keyword)
     search_format  = strategy.get("search_title_format", "")
+    thumbnail_text = strategy.get("thumbnail_text", [])
+    if isinstance(thumbnail_text, list):
+        thumbnail_hint = " / ".join(str(item) for item in thumbnail_text if item)
+    else:
+        thumbnail_hint = str(thumbnail_text or "")
 
     # ── 트렌드 블록
     trend_block = ""
@@ -627,18 +634,19 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
 === PubMed 초록 ===
 {abstracts}
 {web_block}{feedback_block}{trend_block}
-=== 확정된 콘텐츠 전략 (Stage 1 결과 — 변경 불가) ===
+=== 콘텐츠 전략 (Stage 1 결과) ===
 main_keyword       : {main_keyword}
 검색 의도          : {search_intent}
-제목               : {title}  ← 이 제목을 그대로 사용하세요
-제목 공식          : {search_format}
+제목 후보          : {title}
+제목 성격          : {search_format}
 훅 유형            : {hook_type}
-핵심 메시지        : {core_message}  ← 이 한 가지만 전달하면 됩니다
+핵심 메시지        : {core_message}  ← 이 한 가지를 끝까지 유지하세요
+썸네일 문구 후보   : {thumbnail_hint}
 다음 영상 예고     : {cta_next}
 ===
 
 당신은 위 전략을 실행하는 대본 작가입니다.
-전략(제목·훅 유형·핵심 메시지)은 이미 확정됐으니, 감정 여정과 문장 품질에만 집중하세요.
+main_keyword·훅 유형·핵심 메시지는 유지하되, 최종 제목은 대본 내용과 훅을 가장 자연스럽게 대표하도록 다듬어도 됩니다.
 
 ─── 길이 조건 ───
 - 한국어 글자 기준 최소 {prompt_target_chars}자 이상.
@@ -649,7 +657,8 @@ main_keyword       : {main_keyword}
 ① Scene 1 첫 문장에 "{main_keyword}" 반드시 포함.
   나쁜 예: "혹시 이런 경험 있으세요?"
   좋은 예: "{main_keyword}은(는) ~합니다."
-② 제목은 위 전략의 제목을 그대로 JSON title 필드에 출력.
+② 제목은 사용자가 넘긴 주제문을 그대로 복사하지 말고, 본문 내용·훅·해결 약속을 자연스럽게 담아 JSON title 필드에 출력.
+   제목 후보보다 더 자연스러운 문장이 있으면 개선하세요. 단, 낚시성 과장이나 의학적 공포 조장은 금지.
 
 ─── 감정 여정 구조 ───
 정보 나열이 아니라, 시청자의 감정이 아래 곡선을 따르도록 설계하세요.
@@ -672,9 +681,11 @@ main_keyword       : {main_keyword}
   Scene 9: 공감 후 "그래서 이게 중요한 거예요" 전환
 
 [Scene 10] 행동 + 예고 — 목표 감정: 희망 + 실천의지
-  (a) 오늘 바로 할 수 있는 실천 팁 1가지. 시간/횟수/양 구체적으로.
+  (a) 처음 던진 훅과 연결해서 "그래서 나는 무엇을 하면 되는지"가 분명해야 함.
+  (b) 오늘 바로 할 수 있는 실천 팁 1가지. 시간/횟수/양을 구체적으로.
+  (c) 근거 → 쉬운 해석 → 실천 → 희망의 순서로 마무리. 겁만 주고 끝내지 말 것.
       핵심 메시지 "{core_message}"를 자연스럽게 담아 마무리.
-  (b) "{cta_next}"로 이어지는 다음 영상 예고.
+  (d) "{cta_next}"로 이어지는 다음 영상 예고.
       "다음에는 ~도 알려드릴게요" 형식으로 따뜻하게 끝.
 
 ─── 댓글 트리거 (Scene 8 또는 9에 포함) ───
@@ -689,7 +700,10 @@ main_keyword       : {main_keyword}
 ─── 문체 ───
 - 전체 한국어, 존댓말, 강의체 금지.
 - 아라비아 숫자 유지 (연구 수치, 연령).
-- 전문용어는 쉬운 말로 먼저 풀기.
+- 전문용어는 쉬운 말로 먼저 풀고, 꼭 필요한 용어만 짧게 붙이기.
+  예: "인지기능" → "기억하고 판단하는 힘", "염증 반응" → "몸속 경보가 오래 켜진 상태".
+- 어려운 연구 용어를 여러 개 나열하지 말고, 한 장면에는 핵심 용어 1개 이하로 제한.
+- 거짓말·과장 금지. 근거가 약하면 "가능성이 있습니다", "도움이 될 수 있습니다"로 표현.
 - {pace_instruction()}
 
 ─── TTS 발음 최적화 규칙 (필수) ───
@@ -716,8 +730,9 @@ main_keyword       : {main_keyword}
      ❌ 30 퍼센트   ✅ 30퍼센트
 
 ─── 내용 규칙 ───
-- 근거 있는 수치 최소 3개 포함.
+- 근거 있는 수치 최소 3개 포함. 단, 자료에 직접 근거가 없으면 억지로 만들지 말 것.
 - 근거 없는 수치·논문 결과 지어내기 금지.
+- 연구 결과는 "무슨 뜻인지"를 생활 언어로 풀어서 설명하고, 시청자가 죄책감보다 희망을 느끼게 연결.
 - 불확실한 내용: "가능성이 있습니다", "도움이 될 수 있습니다".
 
 ─── visual_query 작성 규칙 ───
@@ -733,13 +748,14 @@ main_keyword       : {main_keyword}
 반드시 아래 JSON 객체만 출력. 마크다운·설명·주석 없이.
 
 {{
-  "title": "{title}",
+  "title": "본문과 훅을 자연스럽게 대표하는 최종 제목",
   "hook_type": "{hook_type}",
   "main_keyword": "{main_keyword}",
   "search_title_format": "{search_format}",
   "summary": "요약 텍스트",
   "hashtags": "#태그1 #태그2 #태그3",
-  "description": "설명란 인트로 텍스트",
+  "thumbnail_text": ["썸네일 문구 1", "썸네일 문구 2"],
+  "description": "설명란 인트로 텍스트\n\n썸네일 문구 후보: 문구1 / 문구2",
   "scenes": [
     {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}}
   ]
@@ -805,6 +821,17 @@ def trim_scenes(scenes):
 def write_outputs(result, strategy, trend_context=None):
     scenes = trim_scenes(result["scenes"])
     full_text = "\n\n".join(s["text"] for s in scenes)
+    thumbnail_text = result.get("thumbnail_text", strategy.get("thumbnail_text", []))
+    if isinstance(thumbnail_text, str):
+        thumbnail_items = [thumbnail_text]
+    else:
+        thumbnail_items = [str(item) for item in thumbnail_text if item]
+    description = result.get("description", "")
+    if thumbnail_items and "썸네일 문구" not in description:
+        description = (
+            f"{description.rstrip()}\n\n"
+            f"썸네일 문구 후보: {' / '.join(thumbnail_items[:2])}"
+        ).strip()
 
     with open(os.path.join(WORK_DIR, "script.txt"), "w", encoding="utf-8") as f:
         f.write(full_text)
@@ -821,7 +848,8 @@ def write_outputs(result, strategy, trend_context=None):
         "hook_type":           result.get("hook_type", strategy.get("hook_type", "")),
         "summary":             result.get("summary", ""),
         "hashtags":            result.get("hashtags", ""),
-        "description":         result.get("description", ""),
+        "thumbnail_text":      thumbnail_items,
+        "description":         description,
     }
     if trend_context:
         meta["trend_context"] = trend_context

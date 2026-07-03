@@ -43,6 +43,11 @@ topic_hashtags = video_meta["hashtags"]
 intro_description = video_meta["description"]
 summary = video_meta.get("summary", "")
 
+# YouTube Studio > 동영상 세부정보의 기본 언어/AI 사용 항목 자동 설정값
+YOUTUBE_VIDEO_LANGUAGE = "ko"
+YOUTUBE_TITLE_DESCRIPTION_LANGUAGE = "ko"
+YOUTUBE_CONTAINS_SYNTHETIC_MEDIA = False
+
 if len(title) > 100:
     title = title[:97] + "..."
 
@@ -72,11 +77,14 @@ body = {
         "title": title,
         "description": description,
         "categoryId": "27",  # 27 = Education
-        "tags": ["브레인피프티", "뇌건강", "Shorts"]
+        "tags": ["Shorts", "뇌건강", "브레인피프티"],
+        "defaultLanguage": YOUTUBE_TITLE_DESCRIPTION_LANGUAGE,
+        "defaultAudioLanguage": YOUTUBE_VIDEO_LANGUAGE
     },
     "status": {
         "privacyStatus": "private",  # 확인 후 public/unlisted로 변경
-        "selfDeclaredMadeForKids": False
+        "selfDeclaredMadeForKids": False,
+        "containsSyntheticMedia": YOUTUBE_CONTAINS_SYNTHETIC_MEDIA
     }
 }
 
@@ -96,4 +104,7 @@ print(f"제목: {title}")
 print(f"\n--- 설명란 인트로 ---\n{intro_description}")
 if summary:
     print(f"\n--- 요약 ---\n{summary}")
+print(f"\n동영상 언어: {YOUTUBE_VIDEO_LANGUAGE}")
+print(f"제목 및 설명 언어: {YOUTUBE_TITLE_DESCRIPTION_LANGUAGE}")
+print(f"AI 사용: {'예' if YOUTUBE_CONTAINS_SYNTHETIC_MEDIA else '아니요'}")
 print("\n상태: private (확인 후 YouTube Studio에서 공개 전환하세요)")

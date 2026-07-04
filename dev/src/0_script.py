@@ -536,7 +536,7 @@ JSON만 출력. 설명·주석·마크다운 없이.
   "search_title_format": "",
   "core_message": "",
   "thumbnail_text": [],
-  "frame_header": {"title": "", "subtitle": ""},
+  "frame_header": {{"title": "", "subtitle": ""}},
   "cta_next": ""
 }}"""
 
@@ -770,7 +770,7 @@ frame_header는 framed Shorts 상단 검정 여백에 들어갈 2줄 훅 텍스�
   "summary": "요약 텍스트",
   "hashtags": "#태그1 #태그2 #태그3",
   "thumbnail_text": ["썸네일 문구 1", "썸네일 문구 2"],
-  "frame_header": {"title": "대제목", "subtitle": "소제목"},
+  "frame_header": {{"title": "대제목", "subtitle": "소제목"}},
   "description": "설명란 인트로 텍스트\n\n썸네일 문구 후보: 문구1 / 문구2",
   "scenes": [
     {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}}

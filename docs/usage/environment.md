@@ -94,6 +94,54 @@ source ./config.sh
 ./sh/2_render.sh 10
 ```
 
+이미 만들어진 `data/work/{JOB_ID}`의 `voice.wav`, `subs.srt`, `broll.mp4`를 그대로 써서 자막 스타일만 10초 테스트하려면 스크립트 생성부터 다시 돌리지 말고 같은 `JOB_ID`로 렌더 단계만 실행합니다.
+
+```bash
+cd ~/brain50/prod
+export JOB_ID=이미_존재하는_JOB_ID
+source ./config.sh
+
+# 중앙 노란 자막 프리셋으로 10초 테스트
+./sh/2_render.sh --style center-yellow 10
+
+# 화면 정중앙 기준에서 120px 위로 올려 10초 테스트
+./sh/2_render.sh --style center-yellow --offset-y -120 10
+
+# 중앙 흰 자막 프리셋으로 10초 테스트
+./sh/2_render.sh --style center-white 10
+
+# 프리셋을 기준으로 폰트/여백만 덮어쓰기
+./sh/2_render.sh --style center-yellow --font-size 72 --margin-v 70 10
+```
+
+프리셋 이름의 `center`는 최종 1080×1920 쇼츠 화면 전체 기준 중앙 `(540, 960)`을 의미합니다. `center-*` 프리셋은 렌더 직전에 `subs.srt`를 `subs_styled.ass`로 변환하고 `\pos(540,960)` 기준 위치 태그를 넣어 화면 전체 중앙을 고정합니다. `--offset-x`, `--offset-y`는 이 중앙 기준 보정값이며, 예를 들어 `--offset-y -120`은 화면 중앙보다 120px 위입니다.
+
+단, `--font-size`, `--margin-v`, `--margin-h`를 CLI에서 넘기면 프리셋 값보다 우선 적용됩니다. 위치는 `--offset-x`, `--offset-y` 또는 프리셋 파일의 `OffsetX`, `OffsetY`로 조정하는 것을 권장합니다.
+
+프리셋 값은 `caption_styles.yaml`에서 조정합니다. 기본 `CAPTION_STYLE_FILE`은 현재 환경 디렉터리의 `caption_styles.yaml`이며, 필요하면 `CAPTION_STYLE_FILE=/path/to/caption_styles.yaml ./sh/2_render.sh 10`처럼 별도 파일을 지정할 수 있습니다.
+
+상하 검정 safe-zone 프레임을 두고 중앙 B-roll 영역만 사용하려면 `framed` 모드를 사용합니다. 캡션은 `subs_styled.ass`로 최종 캔버스 위에 별도 적용되므로 B-roll 프레임 배치와 독립적으로 유지됩니다.
+
+```bash
+# 상단 260px, 하단 360px 검정 여백 + 중앙 B-roll cover
+./sh/2_render.sh --frame-mode framed --broll-fit cover --style center-yellow 10
+
+# 원본 B-roll이 잘리지 않도록 중앙 영역 안에 contain
+./sh/2_render.sh --frame-mode framed --broll-fit contain --style center-yellow 10
+
+# 원본은 보존하고 남는 영역은 블러 배경으로 채우는 fallback
+./sh/2_render.sh --frame-mode framed --broll-fit blur-contain --style center-yellow 10
+
+# 상단 검정 여백에 고정 헤더 텍스트 추가
+./sh/2_render.sh --frame-mode framed --broll-fit cover --frame-header-text "Brain50" --style center-yellow 10
+
+# 한글 헤더는 drawtext 폰트를 명시합니다. 서버에 설치된 폰트 이름 또는 파일 경로를 사용할 수 있습니다.
+./sh/2_render.sh --frame-mode framed --frame-header-text "오늘의 뇌건강" --frame-header-font "Noto Sans CJK KR" --style center-yellow 10
+./sh/2_render.sh --frame-mode framed --frame-header-text "오늘의 뇌건강" --frame-header-font-file "$HOME/.local/share/fonts/NotoSansKR-Regular.ttf" --style center-yellow 10
+```
+
+헤더 텍스트는 FFmpeg `drawtext`로 렌더링되며, 캡션 ASS 프리셋의 `FontName`과 별도입니다. 한글이 `□□□`처럼 보이면 서버에 해당 한글 폰트가 없거나 `drawtext`가 기본 라틴 폰트를 선택한 상태입니다. `fc-match "Noto Sans CJK KR"`로 실제 매칭되는 폰트를 확인하고, 필요하면 `FRAME_HEADER_FONT_FILE` 또는 `--frame-header-font-file`로 `.ttf/.otf` 파일을 직접 지정하세요.
+
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
 
 ## 단계별 생성과 수동 보정

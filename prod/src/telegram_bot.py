@@ -21,6 +21,7 @@ MAX_TEXT_PREVIEW = int(os.environ.get("TELEGRAM_MAX_TEXT_PREVIEW", "3500"))
 POLL_ERROR_NOTIFY_INTERVAL = int(os.environ.get("TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL", "1800"))
 DEFAULT_CAPTION_FONT_SIZE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_FONT_SIZE", "22")
 DEFAULT_CAPTION_MARGIN_V = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_V", "60")
+DEFAULT_CAPTION_STYLE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_STYLE", os.environ.get("CAPTION_STYLE", "default"))
 
 
 if not TOKEN:
@@ -356,15 +357,16 @@ def send_broll(chat_id, job_id):
 def send_render_ready(chat_id, job):
     font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE))
     margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V))
+    caption_style = job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE))
     send_action_message(
         chat_id,
         "렌더 설정 확인 단계입니다.\n"
-        f"현재값: font_size={font_size}, margin_v={margin_v}\n"
-        "값 조정 후 렌더: /render font_size=22 margin_v=60",
+        f"현재값: font_size={font_size}, margin_v={margin_v}, style={caption_style}\n"
+        "값 조정 후 렌더: /render font_size=22 margin_v=60 style=center-yellow",
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
-            [button("font 22 기본", "render:await_render_config:22:60"), button("font 24 여유", "render:await_render_config:24:80")],
+            [button("기본 스타일", "render:await_render_config:22:60:default"), button("중앙 노랑", "render:await_render_config:30:0:center-yellow")],
             [button("전체 취소", "cancel_all")],
         ],
     )
@@ -410,6 +412,13 @@ def positive_int(value, name):
     if not str(value).isdigit() or int(value) <= 0:
         raise ValueError(f"{name}은 양의 정수로 입력하세요: {value}")
     return str(value)
+
+
+def safe_caption_style(value):
+    value = str(value).strip()
+    if not value or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in value):
+        raise ValueError(f"style은 영문/숫자/_/- 만 입력하세요: {value}")
+    return value
 
 
 
@@ -479,8 +488,9 @@ def run_render(chat_id, job):
     args = [str(BASE_DIR / "sh" / "2_render.sh")]
     font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
     margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V)))
-    args += ["--font-size", font_size, "--margin-v", margin_v]
-    send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}")
+    caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    args += ["--font-size", font_size, "--margin-v", margin_v, "--style", caption_style]
+    send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}, style={caption_style}")
     stop_progress = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:
@@ -713,12 +723,16 @@ def handle_callback(state, callback):
                 return
             go_back_to_stage(chat_id, job, target_stage)
         elif data.startswith("render:"):
-            _, expected_stage, font_size, margin_v = data.split(":")
+            parts = data.split(":")
+            _, expected_stage, font_size, margin_v = parts[:4]
+            caption_style = parts[4] if len(parts) > 4 else None
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
             job["caption_font_size"] = positive_int(font_size, "font_size")
             job["caption_margin_v"] = positive_int(margin_v, "margin_v")
+            if caption_style:
+                job["caption_style"] = safe_caption_style(caption_style)
             start_background_task(state, chat_id, job, "렌더링", lambda: run_render(chat_id, job))
         elif data.startswith("rerun:"):
             _, expected_stage, target = data.split(":", 2)
@@ -786,6 +800,10 @@ def handle_render(chat_id, job, text):
         job["caption_font_size"] = positive_int(values["font_size"], "font_size")
     if "margin_v" in values:
         job["caption_margin_v"] = positive_int(values["margin_v"], "margin_v")
+    if "style" in values:
+        job["caption_style"] = safe_caption_style(values["style"])
+    if "caption_style" in values:
+        job["caption_style"] = safe_caption_style(values["caption_style"])
     run_render(chat_id, job)
 
 

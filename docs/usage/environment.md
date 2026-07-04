@@ -94,6 +94,22 @@ source ./config.sh
 ./sh/2_render.sh 10
 ```
 
+이미 만들어진 `data/work/{JOB_ID}`의 `voice.wav`, `subs.srt`, `broll.mp4`를 그대로 써서 자막 스타일만 10초 테스트하려면 스크립트 생성부터 다시 돌리지 말고 같은 `JOB_ID`로 렌더 단계만 실행합니다.
+
+```bash
+cd ~/brain50/prod
+export JOB_ID=이미_존재하는_JOB_ID
+source ./config.sh
+
+# 중앙 노란 자막 프리셋으로 10초 테스트
+./sh/2_render.sh --style center-yellow --font-size 30 --margin-v 0 10
+
+# 중앙 흰 자막 프리셋으로 10초 테스트
+./sh/2_render.sh --style center-white --font-size 30 --margin-v 0 10
+```
+
+프리셋 값은 `caption_styles.yaml`에서 조정합니다. 기본 `CAPTION_STYLE_FILE`은 현재 환경 디렉터리의 `caption_styles.yaml`이며, 필요하면 `CAPTION_STYLE_FILE=/path/to/caption_styles.yaml ./sh/2_render.sh 10`처럼 별도 파일을 지정할 수 있습니다.
+
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
 
 ## 단계별 생성과 수동 보정

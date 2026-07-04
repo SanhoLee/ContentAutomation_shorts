@@ -130,6 +130,26 @@ source ./config.sh
 - 상단은 대제목(`title`)과 소제목(`subtitle`) 2줄을 지원하며, 여백 내 상하 5px 마진 기준으로 자동 크기를 계산합니다.
 - 하단은 상단 끝에서 10px 떨어진 위치에 채널명(`channel_name`, 기본 `브레인피프티`)을 표시합니다.
 
+### 스크립트 생성과 상단 프레임 헤더 자동 연계
+
+`0_script.py`는 대본 생성 결과에 `frame_header`를 함께 요청합니다. 이 값은 사용자가 입력한 주제어를 그대로 복사하는 문구가 아니라, 전체 대본의 맥락을 보고 만든 짧은 2줄 훅입니다.
+
+- `frame_header.title`: 상단 프레임 1줄째 대제목. 4~9자 권장, 최대 12자 가드레일.
+- `frame_header.subtitle`: 상단 프레임 2줄째 소제목. 5~12자 권장, 최대 16자 가드레일.
+- 생성 결과는 `video_meta.json` 안에 저장되고, 렌더가 바로 읽을 수 있도록 `frame_header.json`에도 별도로 저장됩니다.
+- `2_render.sh --frame-mode framed`는 `--top-title`/`--top-subtitle`이 명시되지 않은 경우 `data/work/{JOB_ID}/frame_header.json`을 자동으로 읽어 상단 프레임에 적용합니다.
+- 수동으로 테스트하거나 고정 문구를 강제하려면 기존처럼 `--top-title`, `--top-subtitle` 또는 `frame_top_styles.yaml` 프리셋을 사용하면 됩니다. CLI override가 자동 생성값보다 우선합니다.
+
+흐름은 아래와 같습니다.
+
+```text
+주제 입력
+→ 0_script.py가 대본 전체 맥락 기반 frame_header 생성
+→ data/work/{JOB_ID}/frame_header.json 저장
+→ 2_render.sh --frame-mode framed가 자동 로드
+→ 상단 검정 safe-zone에 대제목/소제목 렌더링
+```
+
 ```bash
 # 상단/하단 default 프리셋 + 중앙 B-roll cover
 ./sh/2_render.sh --frame-mode framed --broll-fit cover --style center-yellow 10

@@ -456,6 +456,18 @@ python 0_script.py "다음 주제"
 | `TELEGRAM_DEFAULT_CAPTION_STYLE` | `default` | 텔레그램 실행 기본 자막 스타일 프리셋 |
 | `TELEGRAM_DEFAULT_WEB_RESEARCH` | `true` | 텔레그램 실행 기본 web_search 사용 여부 |
 
+### 프레임 헤더 자동 생성
+
+스크립트 생성 단계(`0_script.py`)는 상단 검정 safe-zone에 들어갈 2줄 훅 `frame_header`를 함께 생성합니다. 이 문구는 원본 주제어를 그대로 쓰지 않고, 전체 대본 맥락을 압축한 대제목/소제목으로 설계됩니다. 생성된 값은 `data/work/{JOB_ID}/video_meta.json`과 `data/work/{JOB_ID}/frame_header.json`에 저장되며, `2_render.sh --frame-mode framed` 실행 시 `--top-title`/`--top-subtitle`이 없으면 자동으로 적용됩니다.
+
+```bash
+# 자동 생성된 frame_header를 상단 프레임에 적용
+./sh/2_render.sh --frame-mode framed --style center-yellow 10
+
+# 자동 생성값 대신 수동 문구를 강제
+./sh/2_render.sh --frame-mode framed --top-title "기억력경고" --top-subtitle "오늘의뇌건강" --style center-yellow 10
+```
+
 ### 피드백
 
 | 변수 | 기본값 | 설명 |

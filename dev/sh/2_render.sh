@@ -185,6 +185,20 @@ drawtext_font_option() {
 }
 
 if [ "$FRAME_MODE" = "framed" ]; then
+    FRAME_HEADER_JSON="$WORK_DIR/frame_header.json"
+    if [ -f "$FRAME_HEADER_JSON" ] && { [ -z "$FRAME_TOP_TITLE" ] || [ -z "$FRAME_TOP_SUBTITLE" ]; }; then
+        FRAME_HEADER_EXPORTS="$(FRAME_HEADER_JSON="$FRAME_HEADER_JSON" python3 - <<'PY'
+import json, os, shlex
+with open(os.environ["FRAME_HEADER_JSON"], "r", encoding="utf-8") as f:
+    data = json.load(f)
+for env_key, json_key in (("FRAME_TOP_TITLE", "title"), ("FRAME_TOP_SUBTITLE", "subtitle")):
+    value = str(data.get(json_key, "")).strip()
+    if value:
+        print(f"export {env_key}={shlex.quote(value)}")
+PY
+)"
+        eval "$FRAME_HEADER_EXPORTS"
+    fi
     FRAME_ARGS=(
         --top-file "$FRAME_TOP_STYLE_FILE"
         --top-preset "$FRAME_TOP_PRESET"

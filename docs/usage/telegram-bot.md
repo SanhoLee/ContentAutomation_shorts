@@ -103,6 +103,14 @@ export TELEGRAM_CHAT_ID="..."
 `frame=framed`를 사용하면 상단/하단 검정 safe-zone 프레임을 만들고, B-roll은 중앙 영역에 배치됩니다. `broll_fit=cover`는 중앙 영역을 꽉 채우고 일부를 crop하며, `contain`은 원본을 보존하고 검정 여백을 두며, `blur-contain`은 원본을 보존하면서 남는 영역을 블러 배경으로 채웁니다.
 상단/하단 프레임은 `frame_top_styles.yaml`, `frame_bottom_styles.yaml` 프리셋으로 관리하며, `top_pct`/`bottom_pct`는 최종 1080×1920 화면 전체 높이 기준 비율입니다. 텔레그램 key-value 파서는 공백 기준이므로 `top_title`, `top_subtitle`, `channel` 값에는 공백을 넣지 않는 것을 권장합니다.
 
+스크립트 생성 단계에서 `frame_header.json`이 만들어진 작업물은 `/render frame=framed ...` 실행 시 상단 대제목/소제목이 자동 적용됩니다. 텔레그램에서 `top_title` 또는 `top_subtitle`을 직접 넘기면 자동 생성값보다 수동 입력값이 우선합니다. 따라서 일반 운영 흐름은 아래처럼 단순화할 수 있습니다.
+
+```text
+/render frame=framed style=center-yellow broll_fit=cover
+```
+
+자동 헤더 품질을 확인하려면 해당 작업의 `video_meta.json` 또는 `frame_header.json`에서 `frame_header.title`, `frame_header.subtitle`를 확인하세요. 이후 텔레그램 quick setting으로 `top_preset`, `top_pct`, `bottom_pct`, `broll_fit`을 조정하고, 문구만 교체할 때는 `top_title`, `top_subtitle`을 사용합니다.
+
 ## Lightsail 상시 실행
 
 `./sh/telegram_bot.sh`를 SSH나 VSCode 터미널에서 직접 실행하면 해당 터미널 세션이 끊길 때 같이 종료될 수 있습니다. 노트북을 끄거나 VSCode를 닫아도 계속 실행하려면 Lightsail 서버에서 `systemd` 서비스로 등록하세요.

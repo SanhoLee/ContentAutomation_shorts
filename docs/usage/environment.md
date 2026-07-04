@@ -94,6 +94,86 @@ source ./config.sh
 ./sh/2_render.sh 10
 ```
 
+이미 만들어진 `data/work/{JOB_ID}`의 `voice.wav`, `subs.srt`, `broll.mp4`를 그대로 써서 자막 스타일만 10초 테스트하려면 스크립트 생성부터 다시 돌리지 말고 같은 `JOB_ID`로 렌더 단계만 실행합니다.
+
+```bash
+cd ~/brain50/prod
+export JOB_ID=이미_존재하는_JOB_ID
+source ./config.sh
+
+# 중앙 노란 자막 프리셋으로 10초 테스트
+./sh/2_render.sh --style center-yellow 10
+
+# 화면 정중앙 기준에서 120px 위로 올려 10초 테스트
+./sh/2_render.sh --style center-yellow --offset-y -120 10
+
+# 중앙 흰 자막 프리셋으로 10초 테스트
+./sh/2_render.sh --style center-white 10
+
+# 프리셋을 기준으로 폰트/여백만 덮어쓰기
+./sh/2_render.sh --style center-yellow --font-size 72 --margin-v 70 10
+```
+
+프리셋 이름의 `center`는 최종 1080×1920 쇼츠 화면 전체 기준 중앙 `(540, 960)`을 의미합니다. `center-*` 프리셋은 렌더 직전에 `subs.srt`를 `subs_styled.ass`로 변환하고 `\pos(540,960)` 기준 위치 태그를 넣어 화면 전체 중앙을 고정합니다. `--offset-x`, `--offset-y`는 이 중앙 기준 보정값이며, 예를 들어 `--offset-y -120`은 화면 중앙보다 120px 위입니다.
+
+단, `--font-size`, `--margin-v`, `--margin-h`를 CLI에서 넘기면 프리셋 값보다 우선 적용됩니다. 위치는 `--offset-x`, `--offset-y` 또는 프리셋 파일의 `OffsetX`, `OffsetY`로 조정하는 것을 권장합니다.
+
+프리셋 값은 `caption_styles.yaml`에서 조정합니다. 기본 `CAPTION_STYLE_FILE`은 현재 환경 디렉터리의 `caption_styles.yaml`이며, 필요하면 `CAPTION_STYLE_FILE=/path/to/caption_styles.yaml ./sh/2_render.sh 10`처럼 별도 파일을 지정할 수 있습니다.
+
+상하 검정 safe-zone 프레임을 두고 중앙 B-roll 영역만 사용하려면 `framed` 모드를 사용합니다. 캡션은 `subs_styled.ass`로 최종 캔버스 위에 별도 적용되므로 B-roll 프레임 배치와 독립적으로 유지됩니다.
+
+프레임은 상단/하단 설정 파일로 분리되어 있습니다.
+
+- 상단 여백 프리셋: `frame_top_styles.yaml`
+- 하단 여백 프리셋: `frame_bottom_styles.yaml`
+- 높이는 최종 1080×1920 캔버스 전체 높이 기준 비율(`height_pct`)로 지정하고, 렌더 직전에 px로 계산됩니다.
+- 상단은 대제목(`title`)과 소제목(`subtitle`) 2줄을 지원하며, 여백 내 상하 5px 마진 기준으로 자동 크기를 계산합니다.
+- 하단은 상단 끝에서 10px 떨어진 위치에 채널명(`channel_name`, 기본 `브레인피프티`)을 표시합니다.
+
+### 스크립트 생성과 상단 프레임 헤더 자동 연계
+
+`0_script.py`는 대본 생성 결과에 `frame_header`를 함께 요청합니다. 이 값은 사용자가 입력한 주제어를 그대로 복사하는 문구가 아니라, 전체 대본의 맥락을 보고 만든 짧은 2줄 훅입니다.
+
+- `frame_header.title`: 상단 프레임 1줄째 대제목. 4~9자 권장, 최대 12자 가드레일.
+- `frame_header.subtitle`: 상단 프레임 2줄째 소제목. 5~12자 권장, 최대 16자 가드레일.
+- 생성 결과는 `video_meta.json` 안에 저장되고, 렌더가 바로 읽을 수 있도록 `frame_header.json`에도 별도로 저장됩니다.
+- `2_render.sh --frame-mode framed`는 `--top-title`/`--top-subtitle`이 명시되지 않은 경우 `data/work/{JOB_ID}/frame_header.json`을 자동으로 읽어 상단 프레임에 적용합니다.
+- 수동으로 테스트하거나 고정 문구를 강제하려면 기존처럼 `--top-title`, `--top-subtitle` 또는 `frame_top_styles.yaml` 프리셋을 사용하면 됩니다. CLI override가 자동 생성값보다 우선합니다.
+
+흐름은 아래와 같습니다.
+
+```text
+주제 입력
+→ 0_script.py가 대본 전체 맥락 기반 frame_header 생성
+→ data/work/{JOB_ID}/frame_header.json 저장
+→ 2_render.sh --frame-mode framed가 자동 로드
+→ 상단 검정 safe-zone에 대제목/소제목 렌더링
+```
+
+스크립트 장면 수는 B-roll 전환 빈도에 직접 영향을 줍니다. 생성 모델이 목표 글자수를 크게 초과하면 `0_script.py`가 먼저 목표 길이에 맞게 트리밍하고, 트리밍 결과가 너무 적은 장면으로 줄어들면 긴 장면을 문장 단위로 다시 나눠 기본적으로 8~10개 장면에 가깝게 보정합니다. 이 보정은 대본 텍스트를 새로 쓰는 것이 아니라 기존 문장을 분할해 `scenes.json`의 B-roll 단위를 늘리는 방식입니다.
+
+```bash
+# 상단/하단 default 프리셋 + 중앙 B-roll cover
+./sh/2_render.sh --frame-mode framed --broll-fit cover --style center-yellow 10
+
+# 상단 brain50 프리셋 + 하단 default 프리셋
+./sh/2_render.sh --frame-mode framed --frame-top-preset brain50 --frame-bottom-preset default --style center-yellow 10
+
+# 전체 높이 기준 비율 override
+./sh/2_render.sh --frame-mode framed --frame-top-pct 14 --frame-bottom-pct 18 --style center-yellow 10
+
+# 원본 B-roll이 잘리지 않도록 중앙 영역 안에 contain
+./sh/2_render.sh --frame-mode framed --broll-fit contain --style center-yellow 10
+
+# 원본은 보존하고 남는 영역은 블러 배경으로 채우는 fallback
+./sh/2_render.sh --frame-mode framed --broll-fit blur-contain --style center-yellow 10
+
+# 상단 대제목/소제목, 하단 채널명 override
+./sh/2_render.sh --frame-mode framed --top-title "브레인피프티" --top-subtitle "오늘의 뇌건강" --bottom-channel-name "브레인피프티" --style center-yellow 10
+```
+
+프레임 텍스트는 FFmpeg `drawtext`로 렌더링되며, 캡션 ASS 프리셋의 `FontName`과 별도입니다. 한글이 `□□□`처럼 보이면 서버에 해당 한글 폰트가 없거나 `drawtext`가 기본 라틴 폰트를 선택한 상태입니다. `fc-match "Noto Sans CJK KR"`로 실제 매칭되는 폰트를 확인하고, 필요하면 상단/하단 프리셋의 `font_file` 또는 `channel_font_file`에 `.ttf/.otf` 파일을 직접 지정하세요.
+
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
 
 ## 단계별 생성과 수동 보정

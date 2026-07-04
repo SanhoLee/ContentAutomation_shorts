@@ -519,6 +519,10 @@ title        : 영상 본문과 훅을 자연스럽게 대표하는 한국어 �
 search_title_format: 제목 성격 (질문형/비교형/체크리스트형/생활습관형/반전형/공감형 중 하나)
 core_message : 시청자가 이 영상에서 가져갈 딱 한 문장 (30자 이내)
 thumbnail_text: 썸네일용 짧은 문구 후보 1~2개 (배열, 각 8~14자, 약간 자극적이되 사실 기반)
+frame_header : 상단 프레임용 2줄 훅 후보. 대본 맥락을 압축한 추상적이지만 이해 가능한 문구
+               - title 4~9자, subtitle 5~12자 권장
+               - 사용자가 입력한 주제어를 그대로 복사하지 말 것
+               - 호기심·반전·해결 약속이 느껴지게 작성
 cta_next     : 다음 영상 예고 주제 (파생 주제, 20자 이내)
 
 JSON만 출력. 설명·주석·마크다운 없이.
@@ -532,6 +536,7 @@ JSON만 출력. 설명·주석·마크다운 없이.
   "search_title_format": "",
   "core_message": "",
   "thumbnail_text": [],
+  "frame_header": {{"title": "", "subtitle": ""}},
   "cta_next": ""
 }}"""
 
@@ -697,6 +702,16 @@ main_keyword·훅 유형·핵심 메시지는 유지하되, 최종 제목은 대
 "부모님께 이 영상 공유해드리세요." 또는 "소중한 분께 알려주세요."
 자연스럽게 붙이세요.
 
+─── 상단 프레임 헤더 작성 규칙 (필수) ───
+frame_header는 framed Shorts 상단 검정 여백에 들어갈 2줄 훅 텍스트입니다.
+렌더링 시 대제목(title)과 소제목(subtitle)으로 자동 연결되므로, 고정 safe-zone 안에서 한눈에 읽히는 짧은 문구여야 합니다.
+- 사용자가 입력한 주제어·검색어를 그대로 복사하지 말고, 전체 대본의 맥락·반전·해결 약속을 압축하세요.
+- title은 대제목입니다. 4~9자 권장, 최대 12자 이내. 예: "수면의 비밀", "기억력 경고", "혈관의 신호"
+- subtitle은 소제목입니다. 5~12자 권장, 최대 16자 이내. 예: "오늘의 뇌건강", "놓치기 쉬운 습관"
+- 너무 추상적이라 뜻을 알 수 없는 단어 조합은 금지합니다.
+- 공포 조장보다 호기심, 공감, 해결 가능성의 느낌을 우선합니다.
+- title과 subtitle은 같은 말을 반복하지 말고 역할을 나누세요.
+
 ─── 문체 ───
 - 전체 한국어, 존댓말, 강의체 금지.
 - 아라비아 숫자 유지 (연구 수치, 연령).
@@ -755,6 +770,7 @@ main_keyword·훅 유형·핵심 메시지는 유지하되, 최종 제목은 대
   "summary": "요약 텍스트",
   "hashtags": "#태그1 #태그2 #태그3",
   "thumbnail_text": ["썸네일 문구 1", "썸네일 문구 2"],
+  "frame_header": {{"title": "대제목", "subtitle": "소제목"}},
   "description": "설명란 인트로 텍스트\n\n썸네일 문구 후보: 문구1 / 문구2",
   "scenes": [
     {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}}
@@ -798,6 +814,53 @@ def parse_claude_json(response):
 def korean_char_count(text):
     return len(re.sub(r"[^\uAC00-\uD7A3]", "", text))
 
+def target_scene_count():
+    return max(8, min(10, min_scenes_estimate))
+
+def split_scene_sentences(text):
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
+    return parts if len(parts) > 1 else []
+
+def ensure_scene_count(scenes, min_count):
+    """Keep B-roll pacing near 8~10 scenes by splitting long generated scenes."""
+    if len(scenes) >= min_count:
+        return scenes
+
+    scenes = [dict(scene) for scene in scenes]
+    while len(scenes) < min_count:
+        candidates = [
+            (idx, split_scene_sentences(scene.get("text", "")), korean_char_count(scene.get("text", "")))
+            for idx, scene in enumerate(scenes)
+        ]
+        candidates = [(idx, parts, count) for idx, parts, count in candidates if len(parts) >= 2]
+        if not candidates:
+            break
+
+        idx, parts, _ = max(candidates, key=lambda item: item[2])
+        mid = max(1, len(parts) // 2)
+        original = scenes[idx]
+        left = {**original, "text": " ".join(parts[:mid])}
+        right = {**original, "text": " ".join(parts[mid:])}
+        scenes[idx:idx + 1] = [left, right]
+
+    return scenes
+
+def normalize_frame_header(result, strategy, thumbnail_items):
+    raw = result.get("frame_header") or strategy.get("frame_header") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    title = str(raw.get("title") or "").strip()
+    subtitle = str(raw.get("subtitle") or "").strip()
+
+    if not title:
+        title = (thumbnail_items[0] if thumbnail_items else result.get("title") or strategy.get("title") or "브레인피프티").strip()
+    if not subtitle:
+        subtitle = "오늘의 뇌건강"
+
+    title = re.sub(r"\s+", " ", title)[:12]
+    subtitle = re.sub(r"\s+", " ", subtitle)[:16]
+    return {"title": title, "subtitle": subtitle}
+
 def trim_scenes(scenes):
     total = sum(korean_char_count(s["text"]) for s in scenes)
     print(f"\n생성된 글자수: {total}자 (목표: {total_chars}자)")
@@ -816,6 +879,8 @@ def trim_scenes(scenes):
         print(f"트리밍 후: {sum(korean_char_count(s['text']) for s in scenes)}자, {len(scenes)}개 장면")
     else:
         print(f"트리밍 불필요, {len(scenes)}개 장면")
+    scenes = ensure_scene_count(scenes, target_scene_count())
+    print(f"장면 수 보정 후: {len(scenes)}개 장면 (목표: {target_scene_count()}개)")
     return scenes
 
 def write_outputs(result, strategy, trend_context=None):
@@ -826,6 +891,7 @@ def write_outputs(result, strategy, trend_context=None):
         thumbnail_items = [thumbnail_text]
     else:
         thumbnail_items = [str(item) for item in thumbnail_text if item]
+    frame_header = normalize_frame_header(result, strategy, thumbnail_items)
     description = result.get("description", "")
     if thumbnail_items and "썸네일 문구" not in description:
         description = (
@@ -849,6 +915,7 @@ def write_outputs(result, strategy, trend_context=None):
         "summary":             result.get("summary", ""),
         "hashtags":            result.get("hashtags", ""),
         "thumbnail_text":      thumbnail_items,
+        "frame_header":        frame_header,
         "description":         description,
     }
     if trend_context:
@@ -856,11 +923,15 @@ def write_outputs(result, strategy, trend_context=None):
     with open(os.path.join(WORK_DIR, "video_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
+    with open(os.path.join(WORK_DIR, "frame_header.json"), "w", encoding="utf-8") as f:
+        json.dump(frame_header, f, ensure_ascii=False, indent=2)
+
     print("\n=== 생성된 대본 (TTS용) ==="); print(full_text)
     print(f"\n제목      : {meta['title']}")
     print(f"훅 유형   : {meta['hook_type']}")
     print(f"검색 공식 : {meta['search_title_format']}")
     print(f"핵심 메시지: {meta['core_message']}")
+    print(f"프레임 헤더: {frame_header['title']} / {frame_header['subtitle']}")
     print(f"해시태그  : {meta['hashtags']}")
     print("\n=== 장면별 영상 검색어 ===")
     for i, s in enumerate(scenes):

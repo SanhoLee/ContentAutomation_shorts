@@ -22,6 +22,8 @@ ALIASES = {
     "title_font_size": "title_font_size",
     "subtitle_font_size": "subtitle_font_size",
     "margin_y": "margin_y",
+    "margin_top_pct": "margin_top_pct",
+    "margin_x_pct": "margin_x_pct",
     "channel_name": "channel_name",
     "channel_font_name": "channel_font_name",
     "channel_font_file": "channel_font_file",
@@ -90,16 +92,49 @@ def int_value(data, key, default):
     return int(round(float(value)))
 
 
+def text_width_units(text):
+    units = 0.0
+    for char in str(text or ""):
+        if char.isspace():
+            units += 0.35
+        elif ord(char) < 128:
+            units += 0.55
+        else:
+            units += 1.0
+    return max(units, 1.0)
+
+
+def fit_equal_font_size(title, subtitle, requested_size, max_width, max_height):
+    width_units = max(text_width_units(title), text_width_units(subtitle))
+    width_limited = int(max_width / width_units)
+    # Two equal-height text lines plus an inter-line gap around 35% of the font size.
+    height_limited = int(max_height / 2.35)
+    return max(1, min(int(requested_size), width_limited, height_limited))
+
+
 def resolve_top(data):
     h = int_value(data, "height_px", None) if data.get("height_px") else int_from_pct(data.get("height_pct", "13.5"), CANVAS_H)
     margin = int_value(data, "margin_y", 5)
+    margin_top = int_from_pct(data.get("margin_top_pct", "0"), h)
+    margin_x = int_from_pct(data.get("margin_x_pct", "0"), CANVAS_W)
     usable = max(h - margin * 2, 1)
-    title_size = int_value(data, "title_font_size", usable * 0.48)
-    subtitle_size = int_value(data, "subtitle_font_size", usable * 0.30)
-    total_text_h = title_size + subtitle_size
-    gap = max(int(round(usable * 0.08)), 4)
-    title_y = margin + max((usable - total_text_h - gap) // 2, 0)
+    requested_size = int_value(data, "font_size", usable * 0.36)
+    if data.get("title_font_size") or data.get("subtitle_font_size"):
+        requested_size = min(
+            int_value(data, "title_font_size", requested_size),
+            int_value(data, "subtitle_font_size", requested_size),
+        )
+    max_text_w = max(CANVAS_W - margin_x * 2, 1)
+    text_top = margin + margin_top
+    max_text_h = max(h - text_top - margin, 1)
+    font_size = fit_equal_font_size(data.get("title", ""), data.get("subtitle", ""), requested_size, max_text_w, max_text_h)
+    title_size = font_size
+    subtitle_size = font_size
+    gap = max(0, int(round(font_size * 0.35)))
+    total_text_h = title_size + subtitle_size + gap
+    title_y = min(max(text_top, margin), max(h - total_text_h - margin, margin))
     subtitle_y = title_y + title_size + gap
+    x_expr = f"{margin_x}+((w-{margin_x * 2})-text_w)/2" if margin_x else "(w-text_w)/2"
     return {
         "height_px": h,
         "bg_color": data.get("bg_color", "black"),
@@ -112,7 +147,12 @@ def resolve_top(data):
         "subtitle_font_size": subtitle_size,
         "title_y": title_y,
         "subtitle_y": subtitle_y,
+        "text_x": x_expr,
         "margin_y": margin,
+        "margin_top_pct": data.get("margin_top_pct", "0"),
+        "margin_x_pct": data.get("margin_x_pct", "0"),
+        "margin_top_px": margin_top,
+        "margin_x_px": margin_x,
     }
 
 
@@ -148,6 +188,8 @@ def main():
     parser.add_argument("--channel-name")
     parser.add_argument("--top-height-pct")
     parser.add_argument("--bottom-height-pct")
+    parser.add_argument("--top-margin-pct")
+    parser.add_argument("--top-margin-x-pct")
     parser.add_argument("--shell", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -166,6 +208,10 @@ def main():
     if args.bottom_height_pct is not None:
         bottom["height_pct"] = args.bottom_height_pct
         bottom.pop("height_px", None)
+    if args.top_margin_pct is not None:
+        top["margin_top_pct"] = args.top_margin_pct
+    if args.top_margin_x_pct is not None:
+        top["margin_x_pct"] = args.top_margin_x_pct
 
     top_resolved = resolve_top(top)
     bottom_resolved = resolve_bottom(bottom)
@@ -186,6 +232,7 @@ def main():
         "FRAME_TOP_SUBTITLE_FONT_SIZE": top_resolved["subtitle_font_size"],
         "FRAME_TOP_TITLE_Y": top_resolved["title_y"],
         "FRAME_TOP_SUBTITLE_Y": top_resolved["subtitle_y"],
+        "FRAME_TOP_TEXT_X": top_resolved["text_x"],
         "FRAME_BOTTOM_CHANNEL_NAME": bottom_resolved["channel_name"],
         "FRAME_BOTTOM_FONT_NAME": bottom_resolved["channel_font_name"],
         "FRAME_BOTTOM_FONT_FILE": bottom_resolved["channel_font_file"],

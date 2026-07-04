@@ -418,11 +418,22 @@ def build_prompt(topic, abstracts, trend_context=None):
 
 각 장면마다 Pexels 영상 검색용 "visual_query"도 작성하세요. visual_query는 2~4개의 영어 키워드로만 작성하세요.
 
+상단 프레임 헤더 작성 규칙:
+- "frame_header"는 framed Shorts 상단 검정 여백에 들어갈 2줄 훅 텍스트입니다.
+- 렌더링 시 대제목(title)과 소제목(subtitle)으로 자동 연결되므로, 고정 safe-zone 안에서 한눈에 읽히는 짧은 문구여야 합니다.
+- 사용자가 입력한 주제어·검색어를 그대로 복사하지 말고, 전체 대본의 맥락·반전·해결 약속을 압축하세요.
+- title은 대제목입니다. 4~9자 권장, 최대 12자 이내. 예: "수면의 비밀", "기억력 경고", "혈관의 신호"
+- subtitle은 소제목입니다. 5~12자 권장, 최대 16자 이내. 예: "오늘의 뇌건강", "놓치기 쉬운 습관"
+- 너무 추상적이라 뜻을 알 수 없는 단어 조합은 금지합니다.
+- 공포 조장보다 호기심, 공감, 해결 가능성의 느낌을 우선합니다.
+- title과 subtitle은 같은 말을 반복하지 말고 역할을 나누세요.
+
 YouTube 업로드용 메타데이터도 함께 작성하세요.
 - "title": 본문 핵심과 훅, 해결 약속을 자연스럽게 대표하는 한국어 Shorts 제목. 15~28자 권장. 사용자가 넘긴 주제문을 그대로 복사하거나 어순만 바꾸지 말고, 낚시성 과장은 피하되 클릭하고 싶게 쓰세요.
 - "summary": 영상 내용을 2~3문장으로 요약하세요. description 상단에 들어갈 문장입니다.
 - "hashtags": 이 영상 주제에 맞는 한국어 해시태그 3~5개. #brain50, #뇌건강처럼 고정 채널 태그만 반복하지 마세요.
 - "thumbnail_text": 썸네일에 넣을 짧은 문구 후보 1~2개. 각 8~14자, 약간 자극적이되 사실 기반으로 쓰세요.
+- "frame_header": framed Shorts 상단 검정 여백에 넣을 2줄 훅 텍스트입니다. 사용자가 넘긴 주제어를 그대로 복사하지 말고, 전체 대본의 맥락을 압축한 추상적이지만 이해 가능한 개념어로 쓰세요. 관심 유발이 최우선이며 너무 길면 안 됩니다. title은 대제목 4~9자, subtitle은 소제목 5~12자 권장. 공포 조장/과장 대신 호기심, 반전, 해결 약속의 느낌을 주세요.
 - "description": 부모님께 보내는 아들이 영상 보기 전에 짧게 소개하는 느낌의 한국어 설명문. 3~5문장, 따뜻한 존댓말로 쓰세요. 대본을 그대로 반복하지 말고 별도 소개글로 쓰세요. 마지막에 "썸네일 문구 후보: 문구1 / 문구2"를 넣으세요.
 
 반드시 아래 JSON 객체만 출력하세요. 설명, 마크다운 코드블록, 주석은 출력하지 마세요.
@@ -432,6 +443,7 @@ YouTube 업로드용 메타데이터도 함께 작성하세요.
   "summary": "요약 텍스트",
   "hashtags": "#태그1 #태그2 #태그3",
   "thumbnail_text": ["썸네일 문구 1", "썸네일 문구 2"],
+  "frame_header": {{"title": "대제목", "subtitle": "소제목"}},
   "description": "설명란 인트로 텍스트\n\n썸네일 문구 후보: 문구1 / 문구2",
   "scenes": [
     {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}}
@@ -507,6 +519,25 @@ def trim_scenes(scenes):
     return scenes
 
 
+
+def normalize_frame_header(result, video_title, thumbnail_items):
+    raw = result.get("frame_header") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    title = str(raw.get("title") or "").strip()
+    subtitle = str(raw.get("subtitle") or "").strip()
+
+    # Fallbacks keep framed rendering useful even if the model omits frame_header.
+    if not title:
+        title = (thumbnail_items[0] if thumbnail_items else video_title).strip()
+    if not subtitle:
+        subtitle = "오늘의 뇌건강"
+
+    # Hard limits are guardrails for the fixed top safe-zone frame.
+    title = re.sub(r"\s+", " ", title)[:12]
+    subtitle = re.sub(r"\s+", " ", subtitle)[:16]
+    return {"title": title, "subtitle": subtitle}
+
 def write_outputs(result, topic, trend_context=None):
     scenes = trim_scenes(result["scenes"])
     full_text = "\n\n".join(s["text"] for s in scenes)
@@ -519,6 +550,7 @@ def write_outputs(result, topic, trend_context=None):
         thumbnail_items = [thumbnail_text]
     else:
         thumbnail_items = [str(item) for item in thumbnail_text if item]
+    frame_header = normalize_frame_header(result, video_title, thumbnail_items)
     video_description = result["description"]
     if thumbnail_items and "썸네일 문구" not in video_description:
         video_description = (
@@ -538,6 +570,7 @@ def write_outputs(result, topic, trend_context=None):
         "summary": video_summary,
         "hashtags": video_hashtags,
         "thumbnail_text": thumbnail_items,
+        "frame_header": frame_header,
         "description": video_description,
     }
     if trend_context:
@@ -546,8 +579,12 @@ def write_outputs(result, topic, trend_context=None):
     with open(os.path.join(WORK_DIR, "video_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
+    with open(os.path.join(WORK_DIR, "frame_header.json"), "w", encoding="utf-8") as f:
+        json.dump(frame_header, f, ensure_ascii=False, indent=2)
+
     print("=== 생성된 대본 (TTS용) ===")
     print(full_text)
+    print(f"\n=== 프레임 헤더 ===\n{frame_header['title']} / {frame_header['subtitle']}")
     print(f"\n=== 제목 ===\n{video_title}")
     print(f"\n=== 요약 ===\n{video_summary}")
     print(f"\n=== 해시태그 ===\n{video_hashtags}")

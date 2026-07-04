@@ -91,10 +91,14 @@ export TELEGRAM_CHAT_ID="..."
 /render font_size=72 margin_v=0 style=center-yellow
 /render font_size=72 margin_v=0 style=center-white
 /render style=center-yellow offset_y=-120
+/render style=center-yellow frame=framed broll_fit=cover
+/render style=center-yellow frame=framed broll_fit=blur-contain
 ```
 
 프리셋은 `caption_styles.yaml`의 `presets` 아래에서 수정합니다. 기본 제공 프리셋은 `default`, `center-outline`, `center-yellow`, `center-white`입니다.
 프리셋 이름의 `center`는 최종 1080×1920 쇼츠 화면 전체 기준 중앙 `(540, 960)`을 의미합니다. `offset_x`, `offset_y`는 이 중앙 기준 보정값이며, 예를 들어 `offset_y=-120`은 화면 중앙보다 120px 위입니다. 다만 `/render`에서 `margin_v`를 같이 넘기면 해당 값이 프리셋의 `MarginV`보다 우선합니다.
+
+`frame=framed`를 사용하면 상단/하단 검정 safe-zone 프레임을 만들고, B-roll은 중앙 영역에 배치됩니다. `broll_fit=cover`는 중앙 영역을 꽉 채우고 일부를 crop하며, `contain`은 원본을 보존하고 검정 여백을 두며, `blur-contain`은 원본을 보존하면서 남는 영역을 블러 배경으로 채웁니다.
 
 ## Lightsail 상시 실행
 

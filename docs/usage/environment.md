@@ -120,6 +120,22 @@ source ./config.sh
 
 프리셋 값은 `caption_styles.yaml`에서 조정합니다. 기본 `CAPTION_STYLE_FILE`은 현재 환경 디렉터리의 `caption_styles.yaml`이며, 필요하면 `CAPTION_STYLE_FILE=/path/to/caption_styles.yaml ./sh/2_render.sh 10`처럼 별도 파일을 지정할 수 있습니다.
 
+상하 검정 safe-zone 프레임을 두고 중앙 B-roll 영역만 사용하려면 `framed` 모드를 사용합니다. 캡션은 `subs_styled.ass`로 최종 캔버스 위에 별도 적용되므로 B-roll 프레임 배치와 독립적으로 유지됩니다.
+
+```bash
+# 상단 260px, 하단 360px 검정 여백 + 중앙 B-roll cover
+./sh/2_render.sh --frame-mode framed --broll-fit cover --style center-yellow 10
+
+# 원본 B-roll이 잘리지 않도록 중앙 영역 안에 contain
+./sh/2_render.sh --frame-mode framed --broll-fit contain --style center-yellow 10
+
+# 원본은 보존하고 남는 영역은 블러 배경으로 채우는 fallback
+./sh/2_render.sh --frame-mode framed --broll-fit blur-contain --style center-yellow 10
+
+# 상단 검정 여백에 고정 헤더 텍스트 추가
+./sh/2_render.sh --frame-mode framed --broll-fit cover --frame-header-text "Brain50" --style center-yellow 10
+```
+
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
 
 ## 단계별 생성과 수동 보정

@@ -360,15 +360,17 @@ def send_render_ready(chat_id, job):
     caption_style = job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE))
     offset_x = job.get("caption_offset_x")
     offset_y = job.get("caption_offset_y")
+    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
+    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
     send_action_message(
         chat_id,
         "렌더 설정 확인 단계입니다.\n"
-        f"현재값: font_size={font_size}, margin_v={margin_v}, style={caption_style}, offset_x={offset_x}, offset_y={offset_y}\n"
-        "값 조정 후 렌더: /render font_size=62 margin_v=60 style=center-yellow offset_y=-120",
+        f"현재값: font_size={font_size}, margin_v={margin_v}, style={caption_style}, offset_x={offset_x}, offset_y={offset_y}, frame={frame_mode}, broll_fit={broll_fit}\n"
+        "값 조정 후 렌더: /render style=center-yellow frame=framed broll_fit=cover offset_y=-120",
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
-            [button("기본 스타일", "render:await_render_config:22:60:default"), button("중앙 노랑", "render:await_render_config:30:0:center-yellow")],
+            [button("기본 스타일", "render:await_render_config:62:60:default"), button("중앙 노랑", "render:await_render_config:72:0:center-yellow")],
             [button("전체 취소", "cancel_all")],
         ],
     )
@@ -431,6 +433,13 @@ def safe_caption_style(value):
     value = str(value).strip()
     if not value or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in value):
         raise ValueError(f"style은 영문/숫자/_/- 만 입력하세요: {value}")
+    return value
+
+
+def safe_choice(value, name, choices):
+    value = str(value).strip()
+    if value not in choices:
+        raise ValueError(f"{name}은 {', '.join(choices)} 중 하나여야 합니다: {value}")
     return value
 
 
@@ -504,12 +513,17 @@ def run_render(chat_id, job):
     caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
     offset_x = job.get("caption_offset_x")
     offset_y = job.get("caption_offset_y")
-    args += ["--font-size", font_size, "--margin-v", margin_v, "--style", caption_style]
+    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
+    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
+    frame_header_text = job.get("frame_header_text", os.environ.get("FRAME_HEADER_TEXT", ""))
+    args += ["--font-size", font_size, "--margin-v", margin_v, "--style", caption_style, "--frame-mode", frame_mode, "--broll-fit", broll_fit]
     if offset_x not in (None, ""):
         args += ["--offset-x", str(offset_x)]
     if offset_y not in (None, ""):
         args += ["--offset-y", str(offset_y)]
-    send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}, style={caption_style}, offset_x={offset_x}, offset_y={offset_y}")
+    if frame_header_text:
+        args += ["--frame-header-text", str(frame_header_text)]
+    send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}, style={caption_style}, offset_x={offset_x}, offset_y={offset_y}, frame={frame_mode}, broll_fit={broll_fit}")
     stop_progress = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:
@@ -827,6 +841,14 @@ def handle_render(chat_id, job, text):
         job["caption_offset_x"] = signed_int(values["offset_x"], "offset_x")
     if "offset_y" in values:
         job["caption_offset_y"] = signed_int(values["offset_y"], "offset_y")
+    frame_value = values.get("frame") or values.get("frame_mode")
+    if frame_value is not None:
+        job["frame_mode"] = safe_choice(frame_value, "frame", ("full", "framed"))
+    broll_fit = values.get("broll_fit") or values.get("broll_fit_mode")
+    if broll_fit is not None:
+        job["broll_fit_mode"] = safe_choice(broll_fit, "broll_fit", ("cover", "contain", "blur-contain"))
+    if "header" in values:
+        job["frame_header_text"] = values["header"]
     run_render(chat_id, job)
 
 

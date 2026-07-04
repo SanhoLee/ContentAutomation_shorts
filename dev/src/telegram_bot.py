@@ -368,10 +368,12 @@ def send_render_ready(chat_id, job):
     caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
     offset_x = job.get("caption_offset_x")
     offset_y = job.get("caption_offset_y")
+    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
+    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
     msg = (
         "렌더 설정 확인\n"
-        "현재: font=" + font_size + ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style + ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y) + "\n"
-        "조정: /render font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120\n"
+        "현재: font=" + font_size + ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style + ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y) + ", frame=" + str(frame_mode) + ", broll_fit=" + str(broll_fit) + "\n"
+        "조정: /render style=center-yellow frame=framed broll_fit=cover offset_y=-120\n"
         "또는 /set 으로 저장 후 재렌더"
     )
     send_action_message(
@@ -380,8 +382,8 @@ def send_render_ready(chat_id, job):
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
-            [button("기본 스타일",  "render:await_render_config:22:60:default"),
-             button("중앙 노랑",  "render:await_render_config:30:0:center-yellow")],
+            [button("기본 스타일",  "render:await_render_config:62:60:default"),
+             button("중앙 노랑",  "render:await_render_config:72:0:center-yellow")],
             [button("전체 취소", "cancel_all")],
         ],
     )
@@ -447,9 +449,16 @@ def safe_caption_style(value):
     return value
 
 
+def safe_choice(value, name, choices):
+    value = str(value).strip()
+    if value not in choices:
+        raise ValueError(f"{name}은 {', '.join(choices)} 중 하나여야 합니다: {value}")
+    return value
+
+
 # ── 설정 키: /set 으로 저장, run_auto 실행 시 자동 적용
 _PRESERVED_KEYS = {
-    "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y",
+    "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y", "frame_mode", "broll_fit_mode", "frame_header_text",
     "tts_voice", "web_research",
 }
 
@@ -472,6 +481,12 @@ def _build_extra_env(job):
         env["CAPTION_OFFSET_X"] = str(job["caption_offset_x"])
     if "caption_offset_y" in job:
         env["CAPTION_OFFSET_Y"] = str(job["caption_offset_y"])
+    if "frame_mode" in job:
+        env["FRAME_MODE"] = str(job["frame_mode"])
+    if "broll_fit_mode" in job:
+        env["BROLL_FIT_MODE"] = str(job["broll_fit_mode"])
+    if "frame_header_text" in job:
+        env["FRAME_HEADER_TEXT"] = str(job["frame_header_text"])
     if "tts_voice" in job:
         env["TTS_VOICE"] = str(job["tts_voice"])
     if "web_research" in job:
@@ -493,6 +508,10 @@ def _settings_summary(job):
         parts.append("offset_x=" + str(job["caption_offset_x"]))
     if "caption_offset_y" in job:
         parts.append("offset_y=" + str(job["caption_offset_y"]))
+    if "frame_mode" in job:
+        parts.append("frame=" + str(job["frame_mode"]))
+    if "broll_fit_mode" in job:
+        parts.append("broll_fit=" + str(job["broll_fit_mode"]))
     if "tts_voice" in job:
         parts.append("voice=" + str(job["tts_voice"]))
     if "web_research" in job:
@@ -505,6 +524,8 @@ def config_summary(job):
     effective_margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V))
     effective_margin_h = job.get("caption_margin_h", os.environ.get("CAPTION_MARGIN_H", DEFAULT_CAPTION_MARGIN_H))
     effective_caption_style = job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE))
+    effective_frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
+    effective_broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
     effective_voice = job.get("tts_voice", os.environ.get("TTS_VOICE", "F1"))
     effective_web = job.get("web_research")
     if effective_web is None:
@@ -529,6 +550,8 @@ def config_summary(job):
         f"CAPTION_MARGIN_V={effective_margin_v}",
         f"CAPTION_MARGIN_H={effective_margin_h}",
         f"CAPTION_STYLE={effective_caption_style}",
+        f"FRAME_MODE={effective_frame_mode}",
+        f"BROLL_FIT_MODE={effective_broll_fit}",
         f"TTS_VOICE={effective_voice}",
         "ENABLE_WEB_RESEARCH=" + ("on" if effective_web else "off"),
         "",
@@ -550,7 +573,7 @@ def handle_set(chat_id, job, text):
             config_summary(job),
             "",
             "사용법:",
-            "  /set font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120",
+            "  /set font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120 frame=framed broll_fit=cover",
             "  /set voice=F2 web=off",
             "  /set reset  <- 초기화",
         ]
@@ -580,6 +603,17 @@ def handle_set(chat_id, job, text):
         if "offset_y" in values:
             job["caption_offset_y"] = signed_int(values["offset_y"], "offset_y")
             changed.append("offset_y=" + job["caption_offset_y"])
+        frame_value = values.get("frame") or values.get("frame_mode")
+        if frame_value is not None:
+            job["frame_mode"] = safe_choice(frame_value, "frame", ("full", "framed"))
+            changed.append("frame=" + job["frame_mode"])
+        broll_fit = values.get("broll_fit") or values.get("broll_fit_mode")
+        if broll_fit is not None:
+            job["broll_fit_mode"] = safe_choice(broll_fit, "broll_fit", ("cover", "contain", "blur-contain"))
+            changed.append("broll_fit=" + job["broll_fit_mode"])
+        if "header" in values:
+            job["frame_header_text"] = values["header"]
+            changed.append("header=" + job["frame_header_text"])
         if "voice" in values:
             job["tts_voice"] = values["voice"].upper()
             changed.append("voice=" + job["tts_voice"])
@@ -670,16 +704,26 @@ def run_render(chat_id, job):
     caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
     offset_x = job.get("caption_offset_x")
     offset_y = job.get("caption_offset_y")
+    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
+    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
+    frame_header_text = job.get("frame_header_text", os.environ.get("FRAME_HEADER_TEXT", ""))
     args      = [str(BASE_DIR / "sh" / "2_render.sh"),
-                 "--font-size", font_size, "--margin-v", margin_v, "--style", caption_style]
+                 "--font-size", font_size, "--margin-v", margin_v, "--style", caption_style,
+                 "--frame-mode", frame_mode, "--broll-fit", broll_fit]
     if offset_x not in (None, ""):
         args += ["--offset-x", str(offset_x)]
     if offset_y not in (None, ""):
         args += ["--offset-y", str(offset_y)]
+    if frame_header_text:
+        args += ["--frame-header-text", str(frame_header_text)]
     extra_env = {"CAPTION_MARGIN_H": margin_h}
-    send_message(chat_id,
+    send_message(
+        chat_id,
         "렌더링 시작: font=" + font_size +
-        ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style + ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y))
+        ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style +
+        ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y) +
+        ", frame=" + str(frame_mode) + ", broll_fit=" + str(broll_fit),
+    )
     stop_progress   = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:
@@ -1073,6 +1117,14 @@ def handle_render(chat_id, job, text):
         job["caption_offset_x"] = signed_int(values["offset_x"], "offset_x")
     if "offset_y" in values:
         job["caption_offset_y"] = signed_int(values["offset_y"], "offset_y")
+    frame_value = values.get("frame") or values.get("frame_mode")
+    if frame_value is not None:
+        job["frame_mode"] = safe_choice(frame_value, "frame", ("full", "framed"))
+    broll_fit = values.get("broll_fit") or values.get("broll_fit_mode")
+    if broll_fit is not None:
+        job["broll_fit_mode"] = safe_choice(broll_fit, "broll_fit", ("cover", "contain", "blur-contain"))
+    if "header" in values:
+        job["frame_header_text"] = values["header"]
     run_render(chat_id, job)
 
 

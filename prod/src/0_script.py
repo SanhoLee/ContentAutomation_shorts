@@ -33,7 +33,7 @@ CLAUDE_TRANSIENT_STATUSES = (429, 500, 502, 503, 504)
 
 total_chars = int(TARGET_DURATION_SEC * ATEMPO * CHARS_PER_SEC)
 prompt_target_chars = int(total_chars * 1.15)
-min_scenes_estimate = max(8, prompt_target_chars // 28)
+min_scenes_estimate = max(8, min(10, prompt_target_chars // 55))
 
 
 def parse_args():
@@ -492,6 +492,40 @@ def korean_char_count(text):
     return len(re.sub(r"[^\uAC00-\uD7A3]", "", text))
 
 
+def target_scene_count():
+    return max(8, min(10, min_scenes_estimate))
+
+
+def split_scene_sentences(text):
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
+    return parts if len(parts) > 1 else []
+
+
+def ensure_scene_count(scenes, min_count):
+    """Keep B-roll pacing near 8~10 scenes by splitting long generated scenes."""
+    if len(scenes) >= min_count:
+        return scenes
+
+    scenes = [dict(scene) for scene in scenes]
+    while len(scenes) < min_count:
+        candidates = [
+            (idx, split_scene_sentences(scene.get("text", "")), korean_char_count(scene.get("text", "")))
+            for idx, scene in enumerate(scenes)
+        ]
+        candidates = [(idx, parts, count) for idx, parts, count in candidates if len(parts) >= 2]
+        if not candidates:
+            break
+
+        idx, parts, _ = max(candidates, key=lambda item: item[2])
+        mid = max(1, len(parts) // 2)
+        original = scenes[idx]
+        left = {**original, "text": " ".join(parts[:mid])}
+        right = {**original, "text": " ".join(parts[mid:])}
+        scenes[idx:idx + 1] = [left, right]
+
+    return scenes
+
+
 def trim_scenes(scenes):
     total_actual = sum(korean_char_count(s["text"]) for s in scenes)
     print(f"\n생성된 글자수: {total_actual}자 (실제 목표: {total_chars}자)")
@@ -516,6 +550,8 @@ def trim_scenes(scenes):
     else:
         print(f"트리밍 불필요, 장면 {len(scenes)}개")
 
+    scenes = ensure_scene_count(scenes, target_scene_count())
+    print(f"장면 수 보정 후: {len(scenes)}개 장면 (목표: {target_scene_count()}개)")
     return scenes
 
 

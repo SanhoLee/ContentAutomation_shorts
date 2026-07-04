@@ -56,7 +56,10 @@ def expand(value):
     return value
 
 for key in list(merged.keys()):
-    merged[key] = expand(merged[key])
+    if os.environ.get(key, "") != "":
+        merged[key] = os.environ[key]
+    else:
+        merged[key] = expand(merged[key])
 
 for key, value in merged.items():
     print(f"export {key}={shlex.quote(str(value))}")

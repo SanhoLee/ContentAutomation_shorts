@@ -756,11 +756,39 @@ def _run_render_silent(chat_id, job, extra_env=None):
     job_id    = job["job_id"]
     font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
     margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
+    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
+    caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    offset_x = job.get("caption_offset_x")
+    offset_y = job.get("caption_offset_y")
+    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
+    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
+    frame_top_preset = job.get("frame_top_preset", os.environ.get("FRAME_TOP_PRESET", "default"))
+    frame_bottom_preset = job.get("frame_bottom_preset", os.environ.get("FRAME_BOTTOM_PRESET", "default"))
+    frame_top_pct = job.get("frame_top_pct")
+    frame_bottom_pct = job.get("frame_bottom_pct")
+    frame_top_title = job.get("frame_top_title", job.get("frame_header_text", ""))
+    frame_top_subtitle = job.get("frame_top_subtitle", "")
+    frame_bottom_channel = job.get("frame_bottom_channel_name", "")
     env       = dict(extra_env or {})
-    env.setdefault("CAPTION_MARGIN_H",
-        str(job.get("caption_margin_h", os.environ.get("CAPTION_MARGIN_H", DEFAULT_CAPTION_MARGIN_H))))
+    env.setdefault("CAPTION_MARGIN_H", margin_h)
     args = [str(BASE_DIR / "sh" / "2_render.sh"),
-            "--font-size", font_size, "--margin-v", margin_v]
+            "--font-size", font_size, "--margin-v", margin_v, "--margin-h", margin_h,
+            "--style", caption_style, "--frame-mode", frame_mode, "--broll-fit", broll_fit,
+            "--frame-top-preset", frame_top_preset, "--frame-bottom-preset", frame_bottom_preset]
+    if offset_x not in (None, ""):
+        args += ["--offset-x", str(offset_x)]
+    if offset_y not in (None, ""):
+        args += ["--offset-y", str(offset_y)]
+    if frame_top_pct not in (None, ""):
+        args += ["--frame-top-pct", str(frame_top_pct)]
+    if frame_bottom_pct not in (None, ""):
+        args += ["--frame-bottom-pct", str(frame_bottom_pct)]
+    if frame_top_title:
+        args += ["--top-title", str(frame_top_title)]
+    if frame_top_subtitle:
+        args += ["--top-subtitle", str(frame_top_subtitle)]
+    if frame_bottom_channel:
+        args += ["--bottom-channel-name", str(frame_bottom_channel)]
     stop_progress   = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:

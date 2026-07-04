@@ -150,6 +150,8 @@ source ./config.sh
 → 상단 검정 safe-zone에 대제목/소제목 렌더링
 ```
 
+스크립트 장면 수는 B-roll 전환 빈도에 직접 영향을 줍니다. 생성 모델이 목표 글자수를 크게 초과하면 `0_script.py`가 먼저 목표 길이에 맞게 트리밍하고, 트리밍 결과가 너무 적은 장면으로 줄어들면 긴 장면을 문장 단위로 다시 나눠 기본적으로 8~10개 장면에 가깝게 보정합니다. 이 보정은 대본 텍스트를 새로 쓰는 것이 아니라 기존 문장을 분할해 `scenes.json`의 B-roll 단위를 늘리는 방식입니다.
+
 ```bash
 # 상단/하단 default 프리셋 + 중앙 B-roll cover
 ./sh/2_render.sh --frame-mode framed --broll-fit cover --style center-yellow 10

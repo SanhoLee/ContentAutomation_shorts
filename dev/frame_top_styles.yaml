@@ -1,7 +1,7 @@
 # Top safe-zone frame presets. height_pct is based on the full 1080x1920 canvas height.
 presets:
   default:
-    height_pct: 13.5
+    height_pct: 25.5
     bg_color: black
     title: ""
     subtitle: ""

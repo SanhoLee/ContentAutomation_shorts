@@ -706,8 +706,13 @@ def run_render(chat_id, job):
     offset_y = job.get("caption_offset_y")
     frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
     broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
-    frame_header_text = job.get("frame_header_text", os.environ.get("FRAME_HEADER_TEXT", ""))
-    frame_header_font = job.get("frame_header_font", os.environ.get("FRAME_HEADER_FONT_NAME", "Noto Sans CJK KR"))
+    frame_top_preset = job.get("frame_top_preset", os.environ.get("FRAME_TOP_PRESET", "default"))
+    frame_bottom_preset = job.get("frame_bottom_preset", os.environ.get("FRAME_BOTTOM_PRESET", "default"))
+    frame_top_pct = job.get("frame_top_pct")
+    frame_bottom_pct = job.get("frame_bottom_pct")
+    frame_top_title = job.get("frame_top_title", job.get("frame_header_text", ""))
+    frame_top_subtitle = job.get("frame_top_subtitle", "")
+    frame_bottom_channel = job.get("frame_bottom_channel_name", "")
     args      = [str(BASE_DIR / "sh" / "2_render.sh"),
                  "--font-size", font_size, "--margin-v", margin_v, "--style", caption_style,
                  "--frame-mode", frame_mode, "--broll-fit", broll_fit]
@@ -715,8 +720,16 @@ def run_render(chat_id, job):
         args += ["--offset-x", str(offset_x)]
     if offset_y not in (None, ""):
         args += ["--offset-y", str(offset_y)]
-    if frame_header_text:
-        args += ["--frame-header-text", str(frame_header_text), "--frame-header-font", str(frame_header_font)]
+    if frame_top_pct not in (None, ""):
+        args += ["--frame-top-pct", str(frame_top_pct)]
+    if frame_bottom_pct not in (None, ""):
+        args += ["--frame-bottom-pct", str(frame_bottom_pct)]
+    if frame_top_title:
+        args += ["--top-title", str(frame_top_title)]
+    if frame_top_subtitle:
+        args += ["--top-subtitle", str(frame_top_subtitle)]
+    if frame_bottom_channel:
+        args += ["--bottom-channel-name", str(frame_bottom_channel)]
     extra_env = {"CAPTION_MARGIN_H": margin_h}
     send_message(
         chat_id,
@@ -1125,9 +1138,21 @@ def handle_render(chat_id, job, text):
     if broll_fit is not None:
         job["broll_fit_mode"] = safe_choice(broll_fit, "broll_fit", ("cover", "contain", "blur-contain"))
     if "header" in values:
-        job["frame_header_text"] = values["header"]
-    if "header_font" in values:
-        job["frame_header_font"] = values["header_font"]
+        job["frame_top_title"] = values["header"]
+    if "top_title" in values:
+        job["frame_top_title"] = values["top_title"]
+    if "top_subtitle" in values:
+        job["frame_top_subtitle"] = values["top_subtitle"]
+    if "channel" in values:
+        job["frame_bottom_channel_name"] = values["channel"]
+    if "top_preset" in values:
+        job["frame_top_preset"] = safe_caption_style(values["top_preset"])
+    if "bottom_preset" in values:
+        job["frame_bottom_preset"] = safe_caption_style(values["bottom_preset"])
+    if "top_pct" in values:
+        job["frame_top_pct"] = values["top_pct"]
+    if "bottom_pct" in values:
+        job["frame_bottom_pct"] = values["bottom_pct"]
     run_render(chat_id, job)
 
 

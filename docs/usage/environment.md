@@ -122,9 +122,23 @@ source ./config.sh
 
 상하 검정 safe-zone 프레임을 두고 중앙 B-roll 영역만 사용하려면 `framed` 모드를 사용합니다. 캡션은 `subs_styled.ass`로 최종 캔버스 위에 별도 적용되므로 B-roll 프레임 배치와 독립적으로 유지됩니다.
 
+프레임은 상단/하단 설정 파일로 분리되어 있습니다.
+
+- 상단 여백 프리셋: `frame_top_styles.yaml`
+- 하단 여백 프리셋: `frame_bottom_styles.yaml`
+- 높이는 최종 1080×1920 캔버스 전체 높이 기준 비율(`height_pct`)로 지정하고, 렌더 직전에 px로 계산됩니다.
+- 상단은 대제목(`title`)과 소제목(`subtitle`) 2줄을 지원하며, 여백 내 상하 5px 마진 기준으로 자동 크기를 계산합니다.
+- 하단은 상단 끝에서 10px 떨어진 위치에 채널명(`channel_name`, 기본 `브레인피프티`)을 표시합니다.
+
 ```bash
-# 상단 260px, 하단 360px 검정 여백 + 중앙 B-roll cover
+# 상단/하단 default 프리셋 + 중앙 B-roll cover
 ./sh/2_render.sh --frame-mode framed --broll-fit cover --style center-yellow 10
+
+# 상단 brain50 프리셋 + 하단 default 프리셋
+./sh/2_render.sh --frame-mode framed --frame-top-preset brain50 --frame-bottom-preset default --style center-yellow 10
+
+# 전체 높이 기준 비율 override
+./sh/2_render.sh --frame-mode framed --frame-top-pct 14 --frame-bottom-pct 18 --style center-yellow 10
 
 # 원본 B-roll이 잘리지 않도록 중앙 영역 안에 contain
 ./sh/2_render.sh --frame-mode framed --broll-fit contain --style center-yellow 10
@@ -132,15 +146,11 @@ source ./config.sh
 # 원본은 보존하고 남는 영역은 블러 배경으로 채우는 fallback
 ./sh/2_render.sh --frame-mode framed --broll-fit blur-contain --style center-yellow 10
 
-# 상단 검정 여백에 고정 헤더 텍스트 추가
-./sh/2_render.sh --frame-mode framed --broll-fit cover --frame-header-text "Brain50" --style center-yellow 10
-
-# 한글 헤더는 drawtext 폰트를 명시합니다. 서버에 설치된 폰트 이름 또는 파일 경로를 사용할 수 있습니다.
-./sh/2_render.sh --frame-mode framed --frame-header-text "오늘의 뇌건강" --frame-header-font "Noto Sans CJK KR" --style center-yellow 10
-./sh/2_render.sh --frame-mode framed --frame-header-text "오늘의 뇌건강" --frame-header-font-file "$HOME/.local/share/fonts/NotoSansKR-Regular.ttf" --style center-yellow 10
+# 상단 대제목/소제목, 하단 채널명 override
+./sh/2_render.sh --frame-mode framed --top-title "브레인피프티" --top-subtitle "오늘의 뇌건강" --bottom-channel-name "브레인피프티" --style center-yellow 10
 ```
 
-헤더 텍스트는 FFmpeg `drawtext`로 렌더링되며, 캡션 ASS 프리셋의 `FontName`과 별도입니다. 한글이 `□□□`처럼 보이면 서버에 해당 한글 폰트가 없거나 `drawtext`가 기본 라틴 폰트를 선택한 상태입니다. `fc-match "Noto Sans CJK KR"`로 실제 매칭되는 폰트를 확인하고, 필요하면 `FRAME_HEADER_FONT_FILE` 또는 `--frame-header-font-file`로 `.ttf/.otf` 파일을 직접 지정하세요.
+프레임 텍스트는 FFmpeg `drawtext`로 렌더링되며, 캡션 ASS 프리셋의 `FontName`과 별도입니다. 한글이 `□□□`처럼 보이면 서버에 해당 한글 폰트가 없거나 `drawtext`가 기본 라틴 폰트를 선택한 상태입니다. `fc-match "Noto Sans CJK KR"`로 실제 매칭되는 폰트를 확인하고, 필요하면 상단/하단 프리셋의 `font_file` 또는 `channel_font_file`에 `.ttf/.otf` 파일을 직접 지정하세요.
 
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
 

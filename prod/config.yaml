@@ -22,9 +22,10 @@ dev:
   CAPTION_MARGIN_V: 55
   CAPTION_STYLE: "default"
   FRAME_MODE: "full"
-  FRAME_TOP_H: 260
-  FRAME_BOTTOM_H: 360
-  FRAME_HEADER_FONT_NAME: "Noto Sans CJK KR"
+  FRAME_TOP_STYLE_FILE: "${BASE_DIR}/frame_top_styles.yaml"
+  FRAME_BOTTOM_STYLE_FILE: "${BASE_DIR}/frame_bottom_styles.yaml"
+  FRAME_TOP_PRESET: "default"
+  FRAME_BOTTOM_PRESET: "default"
   BROLL_FIT_MODE: "cover"
 
 prod:
@@ -47,7 +48,8 @@ prod:
   CAPTION_MARGIN_V: 55
   CAPTION_STYLE: "default"
   FRAME_MODE: "full"
-  FRAME_TOP_H: 260
-  FRAME_BOTTOM_H: 360
-  FRAME_HEADER_FONT_NAME: "Noto Sans CJK KR"
+  FRAME_TOP_STYLE_FILE: "${BASE_DIR}/frame_top_styles.yaml"
+  FRAME_BOTTOM_STYLE_FILE: "${BASE_DIR}/frame_bottom_styles.yaml"
+  FRAME_TOP_PRESET: "default"
+  FRAME_BOTTOM_PRESET: "default"
   BROLL_FIT_MODE: "cover"

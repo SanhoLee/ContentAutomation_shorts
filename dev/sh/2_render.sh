@@ -23,6 +23,8 @@ FRAME_BOTTOM_H="${FRAME_BOTTOM_H:-360}"
 FRAME_BG_COLOR="${FRAME_BG_COLOR:-black}"
 FRAME_HEADER_TEXT="${FRAME_HEADER_TEXT:-}"
 FRAME_HEADER_FONT_SIZE="${FRAME_HEADER_FONT_SIZE:-64}"
+FRAME_HEADER_FONT_NAME="${FRAME_HEADER_FONT_NAME:-Noto Sans CJK KR}"
+FRAME_HEADER_FONT_FILE="${FRAME_HEADER_FONT_FILE:-}"
 FRAME_HEADER_Y="${FRAME_HEADER_Y:-80}"
 BROLL_FIT_MODE="${BROLL_FIT_MODE:-cover}"
 
@@ -77,6 +79,14 @@ while [ "$#" -gt 0 ]; do
             ;;
         --frame-header-text|--header-text)
             FRAME_HEADER_TEXT="$2"
+            shift 2
+            ;;
+        --frame-header-font|--header-font)
+            FRAME_HEADER_FONT_NAME="$2"
+            shift 2
+            ;;
+        --frame-header-font-file|--header-font-file)
+            FRAME_HEADER_FONT_FILE="$2"
             shift 2
             ;;
         --broll-fit|--broll-fit-mode)
@@ -164,7 +174,17 @@ if [ "$FRAME_MODE" = "framed" ]; then
     if [ -n "$FRAME_HEADER_TEXT" ]; then
         HEADER_TEXT_FILE="$WORK_DIR/frame_header.txt"
         printf "%s" "$FRAME_HEADER_TEXT" > "$HEADER_TEXT_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};[framed]drawtext=textfile=${HEADER_TEXT_FILE}:fontcolor=white:fontsize=${FRAME_HEADER_FONT_SIZE}:x=(w-text_w)/2:y=${FRAME_HEADER_Y}[with_header];[with_header]subtitles=${CAPTION_ASS_FILE}[v]"
+        if [ -z "$FRAME_HEADER_FONT_FILE" ] && command -v fc-match >/dev/null 2>&1; then
+            FRAME_HEADER_FONT_FILE="$(fc-match -f '%{file}' "$FRAME_HEADER_FONT_NAME" || true)"
+        fi
+        if [ -n "$FRAME_HEADER_FONT_FILE" ]; then
+            FRAME_HEADER_FONT_FILE_ESCAPED="${FRAME_HEADER_FONT_FILE//\\/\\\\}"
+            FRAME_HEADER_FONT_FILE_ESCAPED="${FRAME_HEADER_FONT_FILE_ESCAPED//:/\\:}"
+            DRAW_FONT_OPTION=":fontfile=${FRAME_HEADER_FONT_FILE_ESCAPED}"
+        else
+            DRAW_FONT_OPTION=":font=${FRAME_HEADER_FONT_NAME}"
+        fi
+        FILTER_COMPLEX="${FILTER_COMPLEX};[framed]drawtext=textfile=${HEADER_TEXT_FILE}${DRAW_FONT_OPTION}:fontcolor=white:fontsize=${FRAME_HEADER_FONT_SIZE}:x=(w-text_w)/2:y=${FRAME_HEADER_Y}[with_header];[with_header]subtitles=${CAPTION_ASS_FILE}[v]"
     else
         FILTER_COMPLEX="${FILTER_COMPLEX};[framed]subtitles=${CAPTION_ASS_FILE}[v]"
     fi
@@ -185,7 +205,7 @@ ffmpeg -y -nostats -progress "$RENDER_PROGRESS_FILE" \
 "$OUTPUT_FILE"
 
 cat > "$WORK_DIR/render_config.json" <<EOF
-{"font_size": "${FONT_SIZE}", "margin_v": "${MARGIN_V}", "margin_h": "${MARGIN_H}", "caption_style": "${CAPTION_STYLE_NAME}", "caption_style_file": "${CAPTION_STYLE_FILE}", "caption_ass_file": "${CAPTION_ASS_FILE}", "frame_mode": "${FRAME_MODE}", "frame_top_h": "${FRAME_TOP_H}", "frame_bottom_h": "${FRAME_BOTTOM_H}", "frame_header_text": "${FRAME_HEADER_TEXT}", "broll_fit_mode": "${BROLL_FIT_MODE}", "duration": "${DURATION}", "caption_force_style": ${CAPTION_STYLE_JSON}}
+{"font_size": "${FONT_SIZE}", "margin_v": "${MARGIN_V}", "margin_h": "${MARGIN_H}", "caption_style": "${CAPTION_STYLE_NAME}", "caption_style_file": "${CAPTION_STYLE_FILE}", "caption_ass_file": "${CAPTION_ASS_FILE}", "frame_mode": "${FRAME_MODE}", "frame_top_h": "${FRAME_TOP_H}", "frame_bottom_h": "${FRAME_BOTTOM_H}", "frame_header_text": "${FRAME_HEADER_TEXT}", "frame_header_font_name": "${FRAME_HEADER_FONT_NAME}", "frame_header_font_file": "${FRAME_HEADER_FONT_FILE}", "broll_fit_mode": "${BROLL_FIT_MODE}", "duration": "${DURATION}", "caption_force_style": ${CAPTION_STYLE_JSON}}
 EOF
 
 echo "$OUTPUT_FILE" > "$WORK_DIR/output_path.txt"

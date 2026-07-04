@@ -24,6 +24,7 @@ dev:
   FRAME_MODE: "full"
   FRAME_TOP_H: 260
   FRAME_BOTTOM_H: 360
+  FRAME_HEADER_FONT_NAME: "Noto Sans CJK KR"
   BROLL_FIT_MODE: "cover"
 
 prod:
@@ -48,4 +49,5 @@ prod:
   FRAME_MODE: "full"
   FRAME_TOP_H: 260
   FRAME_BOTTOM_H: 360
+  FRAME_HEADER_FONT_NAME: "Noto Sans CJK KR"
   BROLL_FIT_MODE: "cover"

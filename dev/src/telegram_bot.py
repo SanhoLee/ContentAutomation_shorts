@@ -707,6 +707,7 @@ def run_render(chat_id, job):
     frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
     broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
     frame_header_text = job.get("frame_header_text", os.environ.get("FRAME_HEADER_TEXT", ""))
+    frame_header_font = job.get("frame_header_font", os.environ.get("FRAME_HEADER_FONT_NAME", "Noto Sans CJK KR"))
     args      = [str(BASE_DIR / "sh" / "2_render.sh"),
                  "--font-size", font_size, "--margin-v", margin_v, "--style", caption_style,
                  "--frame-mode", frame_mode, "--broll-fit", broll_fit]
@@ -715,7 +716,7 @@ def run_render(chat_id, job):
     if offset_y not in (None, ""):
         args += ["--offset-y", str(offset_y)]
     if frame_header_text:
-        args += ["--frame-header-text", str(frame_header_text)]
+        args += ["--frame-header-text", str(frame_header_text), "--frame-header-font", str(frame_header_font)]
     extra_env = {"CAPTION_MARGIN_H": margin_h}
     send_message(
         chat_id,
@@ -1125,6 +1126,8 @@ def handle_render(chat_id, job, text):
         job["broll_fit_mode"] = safe_choice(broll_fit, "broll_fit", ("cover", "contain", "blur-contain"))
     if "header" in values:
         job["frame_header_text"] = values["header"]
+    if "header_font" in values:
+        job["frame_header_font"] = values["header_font"]
     run_render(chat_id, job)
 
 

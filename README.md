@@ -449,6 +449,7 @@ python 0_script.py "다음 주제"
 | `CAPTION_OFFSET_X` / `CAPTION_OFFSET_Y` | 프리셋 값 | 중앙 위치 프리셋의 화면 중앙 기준 좌우/상하 보정값 |
 | `FRAME_MODE` | `full` | 최종 렌더 프레임 모드. `full`은 기존 전체 화면, `framed`는 상하 검정 safe-zone 프레임 |
 | `FRAME_TOP_H` / `FRAME_BOTTOM_H` | `260` / `360` | `framed` 모드의 상단/하단 검정 여백 높이(px) |
+| `FRAME_HEADER_FONT_NAME` / `FRAME_HEADER_FONT_FILE` | `Noto Sans CJK KR` / 없음 | 상단 헤더 `drawtext`용 한글 폰트 이름 또는 직접 지정할 폰트 파일 경로 |
 | `BROLL_FIT_MODE` | `cover` | 프레임 내부 B-roll 배치 방식. `cover`, `contain`, `blur-contain` |
 | `TELEGRAM_DEFAULT_CAPTION_FONT_SIZE` | `62` | 텔레그램 실행 기본 자막 폰트 크기 |
 | `TELEGRAM_DEFAULT_CAPTION_MARGIN_V` | `60` | 텔레그램 실행 기본 자막 수직 위치 |

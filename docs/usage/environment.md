@@ -134,7 +134,13 @@ source ./config.sh
 
 # 상단 검정 여백에 고정 헤더 텍스트 추가
 ./sh/2_render.sh --frame-mode framed --broll-fit cover --frame-header-text "Brain50" --style center-yellow 10
+
+# 한글 헤더는 drawtext 폰트를 명시합니다. 서버에 설치된 폰트 이름 또는 파일 경로를 사용할 수 있습니다.
+./sh/2_render.sh --frame-mode framed --frame-header-text "오늘의 뇌건강" --frame-header-font "Noto Sans CJK KR" --style center-yellow 10
+./sh/2_render.sh --frame-mode framed --frame-header-text "오늘의 뇌건강" --frame-header-font-file "$HOME/.local/share/fonts/NotoSansKR-Regular.ttf" --style center-yellow 10
 ```
+
+헤더 텍스트는 FFmpeg `drawtext`로 렌더링되며, 캡션 ASS 프리셋의 `FontName`과 별도입니다. 한글이 `□□□`처럼 보이면 서버에 해당 한글 폰트가 없거나 `drawtext`가 기본 라틴 폰트를 선택한 상태입니다. `fc-match "Noto Sans CJK KR"`로 실제 매칭되는 폰트를 확인하고, 필요하면 `FRAME_HEADER_FONT_FILE` 또는 `--frame-header-font-file`로 `.ttf/.otf` 파일을 직접 지정하세요.
 
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
 

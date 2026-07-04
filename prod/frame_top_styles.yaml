@@ -1,0 +1,16 @@
+# Top safe-zone frame presets. height_pct is based on the full 1080x1920 canvas height.
+presets:
+  default:
+    height_pct: 13.5
+    bg_color: black
+    title: ""
+    subtitle: ""
+    font_name: Noto Sans CJK KR
+    font_color: white
+    margin_y: 5
+
+  brain50:
+    extends: default
+    title: "브레인피프티"
+    subtitle: "오늘의 뇌건강"
+    font_color: white

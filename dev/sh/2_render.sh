@@ -55,6 +55,14 @@ while [ "$#" -gt 0 ]; do
             POS_Y="$2"
             shift 2
             ;;
+        --margin-h)
+            MARGIN_H="$2"
+            shift 2
+            ;;
+        --style|--caption-style)
+            CAPTION_STYLE_NAME="$2"
+            shift 2
+            ;;
         *)
             DURATION_OVERRIDE="$1"
             shift

@@ -29,7 +29,7 @@ def env_float(name, default):
 def script_length_targets(target_duration_sec, atempo, chars_per_sec):
     total = int(target_duration_sec * atempo * chars_per_sec)
     prompt_target = int(total * 1.15)
-    min_scenes = max(8, prompt_target // 28)
+    min_scenes = max(8, min(10, prompt_target // 55))
     return total, prompt_target, min_scenes
 
 

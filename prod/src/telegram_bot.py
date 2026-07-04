@@ -19,7 +19,7 @@ STATE_PATH = Path(os.environ.get("TELEGRAM_STATE_PATH", BASE_DIR / "data" / "tel
 POLL_TIMEOUT = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "30"))
 MAX_TEXT_PREVIEW = int(os.environ.get("TELEGRAM_MAX_TEXT_PREVIEW", "3500"))
 POLL_ERROR_NOTIFY_INTERVAL = int(os.environ.get("TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL", "1800"))
-DEFAULT_CAPTION_FONT_SIZE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_FONT_SIZE", "22")
+DEFAULT_CAPTION_FONT_SIZE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_FONT_SIZE", "62")
 DEFAULT_CAPTION_MARGIN_V = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_V", "60")
 DEFAULT_CAPTION_STYLE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_STYLE", os.environ.get("CAPTION_STYLE", "default"))
 
@@ -364,7 +364,7 @@ def send_render_ready(chat_id, job):
         chat_id,
         "렌더 설정 확인 단계입니다.\n"
         f"현재값: font_size={font_size}, margin_v={margin_v}, style={caption_style}, offset_x={offset_x}, offset_y={offset_y}\n"
-        "값 조정 후 렌더: /render font_size=22 margin_v=60 style=center-yellow offset_y=-120",
+        "값 조정 후 렌더: /render font_size=62 margin_v=60 style=center-yellow offset_y=-120",
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
@@ -874,7 +874,7 @@ def help_text():
         "/retry 오메가3 기억력",
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
-        "/render font_size=22 margin_v=60",
+        "/render font_size=62 margin_v=60",
         "/run_auto 오메가3가 정말 뇌에 좋을까?",
         "/status",
         "/cancel",

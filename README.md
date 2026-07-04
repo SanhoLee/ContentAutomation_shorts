@@ -441,7 +441,7 @@ python 0_script.py "다음 주제"
 | `CAPTION_MAX_CHARS` | `16` | 자막 한 라인 최대 글자수 |
 | `CAPTION_MIN_CHARS` | `6` | 자막 한 라인 최소 글자수 |
 | `CAPTION_OFFSET_SEC` | `-0.15` | 생성된 SRT 타임스탬프 전체 보정값. 음성보다 자막이 늦으면 음수로 앞당김 |
-| `CAPTION_FONT_SIZE` | `22` | 렌더 스크립트 기본 자막 폰트 크기 |
+| `CAPTION_FONT_SIZE` | `62` | 렌더 스크립트 기본 자막 폰트 크기 (ASS 1080×1920 좌표 기준) |
 | `CAPTION_MARGIN_V` | `60` | 렌더 스크립트 기본 자막 수직 위치 |
 | `CAPTION_MARGIN_H` | 환경별 기본값 | 렌더 스크립트 기본 자막 좌우 여백 |
 | `CAPTION_STYLE` | `default` | `caption_styles.yaml`에서 선택할 자막 스타일 프리셋 |

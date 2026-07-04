@@ -111,7 +111,7 @@ source ./config.sh
 ./sh/2_render.sh --style center-white 10
 
 # 프리셋을 기준으로 폰트/여백만 덮어쓰기
-./sh/2_render.sh --style center-yellow --font-size 18 --margin-v 70 10
+./sh/2_render.sh --style center-yellow --font-size 72 --margin-v 70 10
 ```
 
 프리셋 이름의 `center`는 최종 1080×1920 쇼츠 화면 전체 기준 중앙 `(540, 960)`을 의미합니다. `center-*` 프리셋은 렌더 직전에 `subs.srt`를 `subs_styled.ass`로 변환하고 `\pos(540,960)` 기준 위치 태그를 넣어 화면 전체 중앙을 고정합니다. `--offset-x`, `--offset-y`는 이 중앙 기준 보정값이며, 예를 들어 `--offset-y -120`은 화면 중앙보다 120px 위입니다.

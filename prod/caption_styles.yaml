@@ -4,12 +4,12 @@
 presets:
   default:
     FontName: Noto Sans CJK KR
-    FontSize: 22
+    FontSize: 62
     PrimaryColour: "&H00FFFFFF"
     OutlineColour: "&H00000000"
     BackColour: "&H80000000"
     BorderStyle: 3
-    Outline: 2
+    Outline: 5
     Shadow: 0
     Alignment: 2
     MarginV: 60
@@ -18,8 +18,8 @@ presets:
   center-outline:
     extends: default
     BorderStyle: 1
-    Outline: 3
-    Shadow: 1
+    Outline: 6
+    Shadow: 2
     Alignment: 5
     MarginV: 0
     PositionMode: center-offset
@@ -29,14 +29,14 @@ presets:
 
   center-yellow:
     extends: center-outline
-    FontSize: 30
+    FontSize: 72
     PrimaryColour: "&H0000D7FF"
-    Outline: 4
-    Shadow: 1
+    Outline: 8
+    Shadow: 2
 
   center-white:
     extends: center-outline
-    FontSize: 30
+    FontSize: 72
     PrimaryColour: "&H00FFFFFF"
-    Outline: 3
-    Shadow: 1
+    Outline: 6
+    Shadow: 2

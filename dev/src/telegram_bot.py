@@ -19,7 +19,7 @@ STATE_PATH = Path(os.environ.get("TELEGRAM_STATE_PATH", BASE_DIR / "data" / "tel
 POLL_TIMEOUT = int(os.environ.get("TELEGRAM_POLL_TIMEOUT", "30"))
 MAX_TEXT_PREVIEW = int(os.environ.get("TELEGRAM_MAX_TEXT_PREVIEW", "3500"))
 POLL_ERROR_NOTIFY_INTERVAL = int(os.environ.get("TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL", "1800"))
-DEFAULT_CAPTION_FONT_SIZE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_FONT_SIZE", "22")
+DEFAULT_CAPTION_FONT_SIZE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_FONT_SIZE", "62")
 DEFAULT_CAPTION_MARGIN_V = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_V", "60")
 DEFAULT_CAPTION_STYLE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_STYLE", os.environ.get("CAPTION_STYLE", "default"))
 DEFAULT_CAPTION_MARGIN_H = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_H", "10")
@@ -371,7 +371,7 @@ def send_render_ready(chat_id, job):
     msg = (
         "렌더 설정 확인\n"
         "현재: font=" + font_size + ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style + ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y) + "\n"
-        "조정: /render font_size=22 margin_v=60 margin_h=12 style=center-yellow offset_y=-120\n"
+        "조정: /render font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120\n"
         "또는 /set 으로 저장 후 재렌더"
     )
     send_action_message(
@@ -550,7 +550,7 @@ def handle_set(chat_id, job, text):
             config_summary(job),
             "",
             "사용법:",
-            "  /set font_size=22 margin_v=60 margin_h=12 style=center-yellow offset_y=-120",
+            "  /set font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120",
             "  /set voice=F2 web=off",
             "  /set reset  <- 초기화",
         ]
@@ -596,7 +596,7 @@ def handle_set(chat_id, job, text):
             "설정 저장:\n" + "\n".join("  " + c for c in changed) +
             "\n\n/run_auto 실행 시 자동 적용됩니다.")
     else:
-        send_message(chat_id, "변경할 설정이 없습니다.\n사용법: /set font_size=22 margin_v=60 style=center-yellow offset_y=-120")
+        send_message(chat_id, "변경할 설정이 없습니다.\n사용법: /set font_size=62 margin_v=60 style=center-yellow offset_y=-120")
 
 
 
@@ -773,8 +773,8 @@ def handle_run_auto(chat_id, job, text):
         send_message(chat_id,
             "주제를 입력하세요.\n"
             "예: /run_auto 치매 초기증상과 건망증 차이\n\n"
-            "기본 설정: font_size=22 margin_v=60 web=on\n"
-            "실행 전 변경: /set font_size=22 margin_v=60 margin_h=12 web=off"
+            "기본 설정: font_size=62 margin_v=60 web=on\n"
+            "실행 전 변경: /set font_size=62 margin_v=60 margin_h=12 web=off"
         )
         return
 
@@ -1086,7 +1086,7 @@ def handle_status(chat_id, job):
 def command_specs():
     return [
         ("run", "승인형 파이프라인 시작"),
-        ("set", "실행 전 렌더/음성/웹 설정 저장 (/set font_size=22 web=off)"),
+        ("set", "실행 전 렌더/음성/웹 설정 저장 (/set font_size=62 web=off)"),
         ("run_auto", "승인 없이 전체 파이프라인 실행"),
         ("trend", "트렌드 후보 조회"),
         ("pick", "트렌드 후보 선택"),
@@ -1121,8 +1121,8 @@ def help_text():
         "/retry 오메가3 기억력",
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
-        "/render font_size=22 margin_v=60",
-        "/set font_size=22 margin_v=60 margin_h=12  <- 실행 전 설정",
+        "/render font_size=62 margin_v=60",
+        "/set font_size=62 margin_v=60 margin_h=12  <- 실행 전 설정",
     "/set web=off voice=F2  <- web_search 끄기 / 목소리 변경",
     "/set  <- 현재 설정 확인  |  /set reset  <- 초기화",
     "/run_auto 오메가3가 정말 뇌에 좋을까?",

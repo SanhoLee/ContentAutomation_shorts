@@ -94,6 +94,32 @@ source ./config.sh
 ./sh/2_render.sh 10
 ```
 
+이미 만들어진 `data/work/{JOB_ID}`의 `voice.wav`, `subs.srt`, `broll.mp4`를 그대로 써서 자막 스타일만 10초 테스트하려면 스크립트 생성부터 다시 돌리지 말고 같은 `JOB_ID`로 렌더 단계만 실행합니다.
+
+```bash
+cd ~/brain50/prod
+export JOB_ID=이미_존재하는_JOB_ID
+source ./config.sh
+
+# 중앙 노란 자막 프리셋으로 10초 테스트
+./sh/2_render.sh --style center-yellow 10
+
+# 화면 정중앙 기준에서 120px 위로 올려 10초 테스트
+./sh/2_render.sh --style center-yellow --offset-y -120 10
+
+# 중앙 흰 자막 프리셋으로 10초 테스트
+./sh/2_render.sh --style center-white 10
+
+# 프리셋을 기준으로 폰트/여백만 덮어쓰기
+./sh/2_render.sh --style center-yellow --font-size 18 --margin-v 70 10
+```
+
+프리셋 이름의 `center`는 최종 1080×1920 쇼츠 화면 전체 기준 중앙 `(540, 960)`을 의미합니다. `center-*` 프리셋은 렌더 직전에 `subs.srt`를 `subs_styled.ass`로 변환하고 `\pos(540,960)` 기준 위치 태그를 넣어 화면 전체 중앙을 고정합니다. `--offset-x`, `--offset-y`는 이 중앙 기준 보정값이며, 예를 들어 `--offset-y -120`은 화면 중앙보다 120px 위입니다.
+
+단, `--font-size`, `--margin-v`, `--margin-h`를 CLI에서 넘기면 프리셋 값보다 우선 적용됩니다. 위치는 `--offset-x`, `--offset-y` 또는 프리셋 파일의 `OffsetX`, `OffsetY`로 조정하는 것을 권장합니다.
+
+프리셋 값은 `caption_styles.yaml`에서 조정합니다. 기본 `CAPTION_STYLE_FILE`은 현재 환경 디렉터리의 `caption_styles.yaml`이며, 필요하면 `CAPTION_STYLE_FILE=/path/to/caption_styles.yaml ./sh/2_render.sh 10`처럼 별도 파일을 지정할 수 있습니다.
+
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
 
 ## 단계별 생성과 수동 보정

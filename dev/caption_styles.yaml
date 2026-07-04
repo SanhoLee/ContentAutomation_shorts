@@ -1,0 +1,42 @@
+# Caption style presets for ffmpeg/libass subtitles.
+# 사용자가 미세 조정하기 쉬운 파일입니다. /render style=<preset> 로 선택합니다.
+# 색상은 ASS/SSA 형식(&HAABBGGRR)입니다. 예: &H00FFFFFF=흰색, &H0000D7FF=노란색 계열.
+presets:
+  default:
+    FontName: Noto Sans CJK KR
+    FontSize: 22
+    PrimaryColour: "&H00FFFFFF"
+    OutlineColour: "&H00000000"
+    BackColour: "&H80000000"
+    BorderStyle: 3
+    Outline: 2
+    Shadow: 0
+    Alignment: 2
+    MarginV: 60
+    WrapStyle: 1
+
+  center-outline:
+    extends: default
+    BorderStyle: 1
+    Outline: 3
+    Shadow: 1
+    Alignment: 5
+    MarginV: 0
+    PositionMode: center-offset
+    Anchor: 5
+    OffsetX: 0
+    OffsetY: 0
+
+  center-yellow:
+    extends: center-outline
+    FontSize: 30
+    PrimaryColour: "&H0000D7FF"
+    Outline: 4
+    Shadow: 1
+
+  center-white:
+    extends: center-outline
+    FontSize: 30
+    PrimaryColour: "&H00FFFFFF"
+    Outline: 3
+    Shadow: 1

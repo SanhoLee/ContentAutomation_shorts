@@ -72,15 +72,29 @@ export TELEGRAM_CHAT_ID="..."
 
 ## 렌더 기본값
 
-텔레그램 실행 기본값은 자막 `font_size=22`, `margin_v=60`, `web_search=on`입니다.
+텔레그램 실행 기본값은 자막 `font_size=22`, `margin_v=60`, `style=default`, `web_search=on`입니다.
 
 - `TELEGRAM_DEFAULT_CAPTION_FONT_SIZE`: 텔레그램 기본 자막 폰트 크기 (기본 `22`)
 - `TELEGRAM_DEFAULT_CAPTION_MARGIN_V`: 텔레그램 기본 자막 수직 위치 (기본 `60`)
+- `TELEGRAM_DEFAULT_CAPTION_STYLE`: 텔레그램 기본 자막 스타일 프리셋 (기본 `default`)
 - `TELEGRAM_DEFAULT_WEB_RESEARCH`: 텔레그램 기본 web_search 사용 여부 (기본 `true`)
 - `CAPTION_FONT_SIZE`: 렌더 스크립트 자막 폰트 크기 기본값
 - `CAPTION_MARGIN_V`: 렌더 스크립트 자막 수직 위치 기본값
+- `CAPTION_STYLE`: 렌더 스크립트 자막 스타일 프리셋 기본값
+- `CAPTION_STYLE_FILE`: 자막 스타일 프리셋 파일 경로 (기본 `{dev|prod}/caption_styles.yaml`)
 
 텔레그램에서 별도 조정 없이 `/approve` 또는 `/run_auto`를 실행하면 위 기본값으로 렌더링합니다.
+
+렌더 단계에서는 스타일을 바로 바꿀 수 있습니다.
+
+```text
+/render font_size=30 margin_v=0 style=center-yellow
+/render font_size=30 margin_v=0 style=center-white
+/render style=center-yellow offset_y=-120
+```
+
+프리셋은 `caption_styles.yaml`의 `presets` 아래에서 수정합니다. 기본 제공 프리셋은 `default`, `center-outline`, `center-yellow`, `center-white`입니다.
+프리셋 이름의 `center`는 최종 1080×1920 쇼츠 화면 전체 기준 중앙 `(540, 960)`을 의미합니다. `offset_x`, `offset_y`는 이 중앙 기준 보정값이며, 예를 들어 `offset_y=-120`은 화면 중앙보다 120px 위입니다. 다만 `/render`에서 `margin_v`를 같이 넘기면 해당 값이 프리셋의 `MarginV`보다 우선합니다.
 
 ## Lightsail 상시 실행
 

@@ -358,11 +358,13 @@ def send_render_ready(chat_id, job):
     font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE))
     margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V))
     caption_style = job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE))
+    offset_x = job.get("caption_offset_x")
+    offset_y = job.get("caption_offset_y")
     send_action_message(
         chat_id,
         "렌더 설정 확인 단계입니다.\n"
-        f"현재값: font_size={font_size}, margin_v={margin_v}, style={caption_style}\n"
-        "값 조정 후 렌더: /render font_size=22 margin_v=60 style=center-yellow",
+        f"현재값: font_size={font_size}, margin_v={margin_v}, style={caption_style}, offset_x={offset_x}, offset_y={offset_y}\n"
+        "값 조정 후 렌더: /render font_size=22 margin_v=60 style=center-yellow offset_y=-120",
         [
             [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
             [button("현재값으로 렌더", "approve:await_render_config")],
@@ -412,6 +414,17 @@ def positive_int(value, name):
     if not str(value).isdigit() or int(value) <= 0:
         raise ValueError(f"{name}은 양의 정수로 입력하세요: {value}")
     return str(value)
+
+
+def signed_int(value, name):
+    text = str(value).strip()
+    if text.startswith("-"):
+        digits = text[1:]
+    else:
+        digits = text
+    if not digits.isdigit():
+        raise ValueError(f"{name}은 정수로 입력하세요: {value}")
+    return text
 
 
 def safe_caption_style(value):
@@ -489,8 +502,14 @@ def run_render(chat_id, job):
     font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
     margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V)))
     caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    offset_x = job.get("caption_offset_x")
+    offset_y = job.get("caption_offset_y")
     args += ["--font-size", font_size, "--margin-v", margin_v, "--style", caption_style]
-    send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}, style={caption_style}")
+    if offset_x not in (None, ""):
+        args += ["--offset-x", str(offset_x)]
+    if offset_y not in (None, ""):
+        args += ["--offset-y", str(offset_y)]
+    send_message(chat_id, f"렌더링 시작: font_size={font_size}, margin_v={margin_v}, style={caption_style}, offset_x={offset_x}, offset_y={offset_y}")
     stop_progress = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:
@@ -804,6 +823,10 @@ def handle_render(chat_id, job, text):
         job["caption_style"] = safe_caption_style(values["style"])
     if "caption_style" in values:
         job["caption_style"] = safe_caption_style(values["caption_style"])
+    if "offset_x" in values:
+        job["caption_offset_x"] = signed_int(values["offset_x"], "offset_x")
+    if "offset_y" in values:
+        job["caption_offset_y"] = signed_int(values["offset_y"], "offset_y")
     run_render(chat_id, job)
 
 

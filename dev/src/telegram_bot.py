@@ -366,10 +366,12 @@ def send_render_ready(chat_id, job):
     margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
     margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
     caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    offset_x = job.get("caption_offset_x")
+    offset_y = job.get("caption_offset_y")
     msg = (
         "렌더 설정 확인\n"
-        "현재: font=" + font_size + ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style + "\n"
-        "조정: /render font_size=22 margin_v=60 margin_h=12 style=center-yellow\n"
+        "현재: font=" + font_size + ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style + ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y) + "\n"
+        "조정: /render font_size=22 margin_v=60 margin_h=12 style=center-yellow offset_y=-120\n"
         "또는 /set 으로 저장 후 재렌더"
     )
     send_action_message(
@@ -427,6 +429,17 @@ def positive_int(value, name):
     return str(value)
 
 
+def signed_int(value, name):
+    text = str(value).strip()
+    if text.startswith("-"):
+        digits = text[1:]
+    else:
+        digits = text
+    if not digits.isdigit():
+        raise ValueError(f"{name}은 정수로 입력하세요: {value}")
+    return text
+
+
 def safe_caption_style(value):
     value = str(value).strip()
     if not value or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in value):
@@ -436,7 +449,7 @@ def safe_caption_style(value):
 
 # ── 설정 키: /set 으로 저장, run_auto 실행 시 자동 적용
 _PRESERVED_KEYS = {
-    "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style",
+    "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y",
     "tts_voice", "web_research",
 }
 
@@ -455,6 +468,10 @@ def _build_extra_env(job):
         env["CAPTION_MARGIN_H"] = str(job["caption_margin_h"])
     if "caption_style" in job:
         env["CAPTION_STYLE"] = str(job["caption_style"])
+    if "caption_offset_x" in job:
+        env["CAPTION_OFFSET_X"] = str(job["caption_offset_x"])
+    if "caption_offset_y" in job:
+        env["CAPTION_OFFSET_Y"] = str(job["caption_offset_y"])
     if "tts_voice" in job:
         env["TTS_VOICE"] = str(job["tts_voice"])
     if "web_research" in job:
@@ -472,6 +489,10 @@ def _settings_summary(job):
         parts.append("margin_h=" + str(job["caption_margin_h"]))
     if "caption_style" in job:
         parts.append("style=" + str(job["caption_style"]))
+    if "caption_offset_x" in job:
+        parts.append("offset_x=" + str(job["caption_offset_x"]))
+    if "caption_offset_y" in job:
+        parts.append("offset_y=" + str(job["caption_offset_y"]))
     if "tts_voice" in job:
         parts.append("voice=" + str(job["tts_voice"]))
     if "web_research" in job:
@@ -529,7 +550,7 @@ def handle_set(chat_id, job, text):
             config_summary(job),
             "",
             "사용법:",
-            "  /set font_size=22 margin_v=60 margin_h=12 style=center-yellow",
+            "  /set font_size=22 margin_v=60 margin_h=12 style=center-yellow offset_y=-120",
             "  /set voice=F2 web=off",
             "  /set reset  <- 초기화",
         ]
@@ -553,6 +574,12 @@ def handle_set(chat_id, job, text):
         if "caption_style" in values:
             job["caption_style"] = safe_caption_style(values["caption_style"])
             changed.append("style=" + job["caption_style"])
+        if "offset_x" in values:
+            job["caption_offset_x"] = signed_int(values["offset_x"], "offset_x")
+            changed.append("offset_x=" + job["caption_offset_x"])
+        if "offset_y" in values:
+            job["caption_offset_y"] = signed_int(values["offset_y"], "offset_y")
+            changed.append("offset_y=" + job["caption_offset_y"])
         if "voice" in values:
             job["tts_voice"] = values["voice"].upper()
             changed.append("voice=" + job["tts_voice"])
@@ -569,7 +596,7 @@ def handle_set(chat_id, job, text):
             "설정 저장:\n" + "\n".join("  " + c for c in changed) +
             "\n\n/run_auto 실행 시 자동 적용됩니다.")
     else:
-        send_message(chat_id, "변경할 설정이 없습니다.\n사용법: /set font_size=22 margin_v=60")
+        send_message(chat_id, "변경할 설정이 없습니다.\n사용법: /set font_size=22 margin_v=60 style=center-yellow offset_y=-120")
 
 
 
@@ -641,12 +668,18 @@ def run_render(chat_id, job):
     margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
     margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
     caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    offset_x = job.get("caption_offset_x")
+    offset_y = job.get("caption_offset_y")
     args      = [str(BASE_DIR / "sh" / "2_render.sh"),
                  "--font-size", font_size, "--margin-v", margin_v, "--style", caption_style]
+    if offset_x not in (None, ""):
+        args += ["--offset-x", str(offset_x)]
+    if offset_y not in (None, ""):
+        args += ["--offset-y", str(offset_y)]
     extra_env = {"CAPTION_MARGIN_H": margin_h}
     send_message(chat_id,
         "렌더링 시작: font=" + font_size +
-        ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style)
+        ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style + ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y))
     stop_progress   = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:
@@ -1036,6 +1069,10 @@ def handle_render(chat_id, job, text):
         job["caption_style"] = safe_caption_style(values["style"])
     if "caption_style" in values:
         job["caption_style"] = safe_caption_style(values["caption_style"])
+    if "offset_x" in values:
+        job["caption_offset_x"] = signed_int(values["offset_x"], "offset_x")
+    if "offset_y" in values:
+        job["caption_offset_y"] = signed_int(values["offset_y"], "offset_y")
     run_render(chat_id, job)
 
 

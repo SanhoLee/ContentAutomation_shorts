@@ -22,6 +22,10 @@ presets:
     Shadow: 1
     Alignment: 5
     MarginV: 0
+    PositionMode: center-offset
+    Anchor: 5
+    OffsetX: 0
+    OffsetY: 0
 
   center-yellow:
     extends: center-outline

@@ -446,6 +446,7 @@ python 0_script.py "다음 주제"
 | `CAPTION_MARGIN_H` | 환경별 기본값 | 렌더 스크립트 기본 자막 좌우 여백 |
 | `CAPTION_STYLE` | `default` | `caption_styles.yaml`에서 선택할 자막 스타일 프리셋 |
 | `CAPTION_STYLE_FILE` | `{dev|prod}/caption_styles.yaml` | 사용자 조정 가능한 자막 스타일 프리셋 파일 |
+| `CAPTION_OFFSET_X` / `CAPTION_OFFSET_Y` | 프리셋 값 | 중앙 위치 프리셋의 화면 중앙 기준 좌우/상하 보정값 |
 | `TELEGRAM_DEFAULT_CAPTION_FONT_SIZE` | `22` | 텔레그램 실행 기본 자막 폰트 크기 |
 | `TELEGRAM_DEFAULT_CAPTION_MARGIN_V` | `60` | 텔레그램 실행 기본 자막 수직 위치 |
 | `TELEGRAM_DEFAULT_CAPTION_STYLE` | `default` | 텔레그램 실행 기본 자막 스타일 프리셋 |

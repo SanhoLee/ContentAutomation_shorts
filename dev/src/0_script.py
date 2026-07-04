@@ -520,7 +520,8 @@ search_title_format: 제목 성격 (질문형/비교형/체크리스트형/생�
 core_message : 시청자가 이 영상에서 가져갈 딱 한 문장 (30자 이내)
 thumbnail_text: 썸네일용 짧은 문구 후보 1~2개 (배열, 각 8~14자, 약간 자극적이되 사실 기반)
 frame_header : 상단 프레임용 2줄 훅 후보. 대본 맥락을 압축한 추상적이지만 이해 가능한 문구
-               - title 4~9자, subtitle 5~12자 권장
+               - title 3~7자 권장·최대 9자, subtitle 7~14자 권장·최대 18자
+               - title은 subtitle보다 반드시 짧게 잡아 위는 짧고 아래는 긴 삼각형 구도로 만들 것
                - 사용자가 입력한 주제어를 그대로 복사하지 말 것
                - 호기심·반전·해결 약속이 느껴지게 작성
 cta_next     : 다음 영상 예고 주제 (파생 주제, 20자 이내)
@@ -706,8 +707,8 @@ main_keyword·훅 유형·핵심 메시지는 유지하되, 최종 제목은 대
 frame_header는 framed Shorts 상단 검정 여백에 들어갈 2줄 훅 텍스트입니다.
 렌더링 시 대제목(title)과 소제목(subtitle)으로 자동 연결되므로, 고정 safe-zone 안에서 한눈에 읽히는 짧은 문구여야 합니다.
 - 사용자가 입력한 주제어·검색어를 그대로 복사하지 말고, 전체 대본의 맥락·반전·해결 약속을 압축하세요.
-- title은 대제목입니다. 4~9자 권장, 최대 12자 이내. 예: "수면의 비밀", "기억력 경고", "혈관의 신호"
-- subtitle은 소제목입니다. 5~12자 권장, 최대 16자 이내. 예: "오늘의 뇌건강", "놓치기 쉬운 습관"
+- title은 대제목입니다. 3~7자 권장, 최대 9자 이내. subtitle보다 반드시 짧게 작성하세요. 예: "수면비밀", "기억경고", "혈관신호"
+- subtitle은 소제목입니다. 7~14자 권장, 최대 18자 이내. title보다 옆으로 더 길게 작성해 전체 형태가 위는 짧고 아래는 긴 삼각형 구도가 되게 하세요. 예: "오늘의 뇌건강", "놓치기 쉬운 습관"
 - 너무 추상적이라 뜻을 알 수 없는 단어 조합은 금지합니다.
 - 공포 조장보다 호기심, 공감, 해결 가능성의 느낌을 우선합니다.
 - title과 subtitle은 같은 말을 반복하지 말고 역할을 나누세요.
@@ -857,8 +858,10 @@ def normalize_frame_header(result, strategy, thumbnail_items):
     if not subtitle:
         subtitle = "오늘의 뇌건강"
 
-    title = re.sub(r"\s+", " ", title)[:12]
-    subtitle = re.sub(r"\s+", " ", subtitle)[:16]
+    title = re.sub(r"\s+", " ", title)[:9]
+    subtitle = re.sub(r"\s+", " ", subtitle)[:18]
+    if len(title) >= len(subtitle) and len(title) > 3:
+        title = title[:max(3, min(7, len(subtitle) - 1))]
     return {"title": title, "subtitle": subtitle}
 
 def trim_scenes(scenes):

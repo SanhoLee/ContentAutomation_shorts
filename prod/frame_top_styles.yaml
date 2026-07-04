@@ -8,6 +8,8 @@ presets:
     font_name: Noto Sans CJK KR
     font_color: white
     margin_y: 5
+    margin_top_pct: 0
+    margin_x_pct: 6
 
   brain50:
     extends: default

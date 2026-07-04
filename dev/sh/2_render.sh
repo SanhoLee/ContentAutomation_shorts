@@ -27,6 +27,8 @@ FRAME_BOTTOM_PCT="${FRAME_BOTTOM_PCT:-}"
 FRAME_BG_COLOR="${FRAME_BG_COLOR:-black}"
 FRAME_TOP_TITLE="${FRAME_TOP_TITLE:-}"
 FRAME_TOP_SUBTITLE="${FRAME_TOP_SUBTITLE:-}"
+FRAME_TOP_MARGIN_PCT="${FRAME_TOP_MARGIN_PCT:-}"
+FRAME_TOP_MARGIN_X_PCT="${FRAME_TOP_MARGIN_X_PCT:-}"
 FRAME_BOTTOM_CHANNEL_NAME="${FRAME_BOTTOM_CHANNEL_NAME:-브레인피프티}"
 BROLL_FIT_MODE="${BROLL_FIT_MODE:-cover}"
 
@@ -87,6 +89,14 @@ PY
             ;;
         --frame-top-pct|--top-pct)
             FRAME_TOP_PCT="$2"
+            shift 2
+            ;;
+        --frame-top-margin-pct|--top-margin-pct|--top-margin)
+            FRAME_TOP_MARGIN_PCT="$2"
+            shift 2
+            ;;
+        --frame-top-margin-x-pct|--top-margin-x-pct|--top-margin-x|--top-side-margin-pct)
+            FRAME_TOP_MARGIN_X_PCT="$2"
             shift 2
             ;;
         --frame-bottom-pct|--bottom-pct)
@@ -164,7 +174,7 @@ CAPTION_ASS_FILE="$WORK_DIR/subs_styled.ass"
 CAPTION_STYLE_JSON="$(python3 "$SRC_DIR/caption_style.py" "${STYLE_ARGS[@]}" --srt-in "$WORK_DIR/subs.srt" --ass-out "$CAPTION_ASS_FILE" --json)"
 
 echo "자막 설정: Style=${CAPTION_STYLE_NAME}, FontSize=${FONT_SIZE}, MarginV=${MARGIN_V}, MarginH=${MARGIN_H}, OffsetX=${OFFSET_X:-preset}, OffsetY=${OFFSET_Y:-preset}, PosX=${POS_X:-preset}, PosY=${POS_Y:-preset}"
-echo "프레임 설정: Mode=${FRAME_MODE}, TopPreset=${FRAME_TOP_PRESET}, BottomPreset=${FRAME_BOTTOM_PRESET}, BrollFit=${BROLL_FIT_MODE}"
+echo "프레임 설정: Mode=${FRAME_MODE}, TopPreset=${FRAME_TOP_PRESET}, BottomPreset=${FRAME_BOTTOM_PRESET}, TopMarginPct=${FRAME_TOP_MARGIN_PCT:-preset}, TopMarginXPct=${FRAME_TOP_MARGIN_X_PCT:-preset}, BrollFit=${BROLL_FIT_MODE}"
 
 RENDER_PROGRESS_FILE="$WORK_DIR/render_progress.txt"
 rm -f "$RENDER_PROGRESS_FILE"
@@ -215,6 +225,12 @@ PY
     if [ -n "$FRAME_TOP_PCT" ]; then
         FRAME_ARGS+=(--top-height-pct "$FRAME_TOP_PCT")
     fi
+    if [ -n "$FRAME_TOP_MARGIN_PCT" ]; then
+        FRAME_ARGS+=(--top-margin-pct "$FRAME_TOP_MARGIN_PCT")
+    fi
+    if [ -n "$FRAME_TOP_MARGIN_X_PCT" ]; then
+        FRAME_ARGS+=(--top-margin-x-pct "$FRAME_TOP_MARGIN_X_PCT")
+    fi
     if [ -n "$FRAME_BOTTOM_PCT" ]; then
         FRAME_ARGS+=(--bottom-height-pct "$FRAME_BOTTOM_PCT")
     fi
@@ -251,13 +267,13 @@ PY
     if [ -n "$FRAME_TOP_TITLE" ]; then
         TOP_TITLE_FILE="$WORK_DIR/frame_top_title.txt"
         printf "%s" "$FRAME_TOP_TITLE" > "$TOP_TITLE_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_TITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_FONT_COLOR}:fontsize=${FRAME_TOP_TITLE_FONT_SIZE}:x=(w-text_w)/2:y=${FRAME_TOP_TITLE_Y}[with_top_title]"
+        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_TITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_FONT_COLOR}:fontsize=${FRAME_TOP_TITLE_FONT_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_TITLE_Y}[with_top_title]"
         CURRENT_LABEL="[with_top_title]"
     fi
     if [ -n "$FRAME_TOP_SUBTITLE" ]; then
         TOP_SUBTITLE_FILE="$WORK_DIR/frame_top_subtitle.txt"
         printf "%s" "$FRAME_TOP_SUBTITLE" > "$TOP_SUBTITLE_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_SUBTITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_FONT_COLOR}:fontsize=${FRAME_TOP_SUBTITLE_FONT_SIZE}:x=(w-text_w)/2:y=${FRAME_TOP_SUBTITLE_Y}[with_top_subtitle]"
+        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_SUBTITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_FONT_COLOR}:fontsize=${FRAME_TOP_SUBTITLE_FONT_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_SUBTITLE_Y}[with_top_subtitle]"
         CURRENT_LABEL="[with_top_subtitle]"
     fi
     if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then
@@ -288,7 +304,7 @@ ffmpeg -y -nostats -progress "$RENDER_PROGRESS_FILE" \
 "$OUTPUT_FILE"
 
 cat > "$WORK_DIR/render_config.json" <<EOF
-{"font_size": "${FONT_SIZE}", "margin_v": "${MARGIN_V}", "margin_h": "${MARGIN_H}", "caption_style": "${CAPTION_STYLE_NAME}", "caption_style_file": "${CAPTION_STYLE_FILE}", "caption_ass_file": "${CAPTION_ASS_FILE}", "frame_mode": "${FRAME_MODE}", "frame_top_preset": "${FRAME_TOP_PRESET}", "frame_bottom_preset": "${FRAME_BOTTOM_PRESET}", "frame_json": ${FRAME_JSON:-null}, "broll_fit_mode": "${BROLL_FIT_MODE}", "duration": "${DURATION}", "caption_force_style": ${CAPTION_STYLE_JSON}}
+{"font_size": "${FONT_SIZE}", "margin_v": "${MARGIN_V}", "margin_h": "${MARGIN_H}", "caption_style": "${CAPTION_STYLE_NAME}", "caption_style_file": "${CAPTION_STYLE_FILE}", "caption_ass_file": "${CAPTION_ASS_FILE}", "frame_mode": "${FRAME_MODE}", "frame_top_preset": "${FRAME_TOP_PRESET}", "frame_top_margin_pct": "${FRAME_TOP_MARGIN_PCT}", "frame_top_margin_x_pct": "${FRAME_TOP_MARGIN_X_PCT}", "frame_bottom_preset": "${FRAME_BOTTOM_PRESET}", "frame_json": ${FRAME_JSON:-null}, "broll_fit_mode": "${BROLL_FIT_MODE}", "duration": "${DURATION}", "caption_force_style": ${CAPTION_STYLE_JSON}}
 EOF
 
 echo "$OUTPUT_FILE" > "$WORK_DIR/output_path.txt"

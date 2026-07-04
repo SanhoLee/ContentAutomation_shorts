@@ -4,7 +4,7 @@
 presets:
   default:
     FontName: Noto Sans CJK KR
-    FontSize: 62
+    FontSize: 100
     PrimaryColour: "&H00FFFFFF"
     OutlineColour: "&H00000000"
     BackColour: "&H80000000"
@@ -29,14 +29,14 @@ presets:
 
   center-yellow:
     extends: center-outline
-    FontSize: 72
+    FontSize: 100
     PrimaryColour: "&H0000D7FF"
     Outline: 8
     Shadow: 2
 
   center-white:
     extends: center-outline
-    FontSize: 72
+    FontSize: 100
     PrimaryColour: "&H00FFFFFF"
     Outline: 6
     Shadow: 2

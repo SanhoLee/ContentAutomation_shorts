@@ -18,6 +18,7 @@ ALIASES = {
     "font_name": "font_name",
     "font_file": "font_file",
     "font_color": "font_color",
+    "font_style": "font_style",
     "font_size": "font_size",
     "title_font_size": "title_font_size",
     "subtitle_font_size": "subtitle_font_size",
@@ -125,14 +126,14 @@ def resolve_top(data):
             int_value(data, "subtitle_font_size", requested_size),
         )
     max_text_w = max(CANVAS_W - margin_x * 2, 1)
-    text_top = margin + margin_top
-    max_text_h = max(h - text_top - margin, 1)
+    bottom_anchor_y = max(h - margin - margin_top, margin + 1)
+    max_text_h = max(bottom_anchor_y - margin, 1)
     font_size = fit_equal_font_size(data.get("title", ""), data.get("subtitle", ""), requested_size, max_text_w, max_text_h)
     title_size = font_size
     subtitle_size = font_size
     gap = max(0, int(round(font_size * 0.35)))
     total_text_h = title_size + subtitle_size + gap
-    title_y = min(max(text_top, margin), max(h - total_text_h - margin, margin))
+    title_y = max(bottom_anchor_y - total_text_h, margin)
     subtitle_y = title_y + title_size + gap
     x_expr = f"{margin_x}+((w-{margin_x * 2})-text_w)/2" if margin_x else "(w-text_w)/2"
     return {
@@ -143,6 +144,7 @@ def resolve_top(data):
         "font_name": data.get("font_name", "Noto Sans CJK KR"),
         "font_file": data.get("font_file", ""),
         "font_color": data.get("font_color", "white"),
+        "font_style": data.get("font_style", ""),
         "title_font_size": title_size,
         "subtitle_font_size": subtitle_size,
         "title_y": title_y,
@@ -153,6 +155,7 @@ def resolve_top(data):
         "margin_x_pct": data.get("margin_x_pct", "0"),
         "margin_top_px": margin_top,
         "margin_x_px": margin_x,
+        "bottom_anchor_y": bottom_anchor_y,
     }
 
 
@@ -228,6 +231,7 @@ def main():
         "FRAME_TOP_FONT_NAME": top_resolved["font_name"],
         "FRAME_TOP_FONT_FILE": top_resolved["font_file"],
         "FRAME_TOP_FONT_COLOR": top_resolved["font_color"],
+        "FRAME_TOP_FONT_STYLE": top_resolved["font_style"],
         "FRAME_TOP_TITLE_FONT_SIZE": top_resolved["title_font_size"],
         "FRAME_TOP_SUBTITLE_FONT_SIZE": top_resolved["subtitle_font_size"],
         "FRAME_TOP_TITLE_Y": top_resolved["title_y"],

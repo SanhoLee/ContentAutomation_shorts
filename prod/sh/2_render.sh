@@ -182,15 +182,20 @@ rm -f "$RENDER_PROGRESS_FILE"
 drawtext_font_option() {
     local font_name="$1"
     local font_file="$2"
+    local font_style="${3:-}"
+    local font_pattern="$font_name"
+    if [ -n "$font_style" ]; then
+        font_pattern="${font_pattern}:style=${font_style}"
+    fi
     if [ -z "$font_file" ] && command -v fc-match >/dev/null 2>&1; then
-        font_file="$(fc-match -f '%{file}' "$font_name" || true)"
+        font_file="$(fc-match -f '%{file}' "$font_pattern" || true)"
     fi
     if [ -n "$font_file" ]; then
         font_file="${font_file//\\/\\\\}"
         font_file="${font_file//:/\\:}"
         printf ":fontfile=%s" "$font_file"
     else
-        printf ":font=%s" "$font_name"
+        printf ":font=%s" "$font_pattern"
     fi
 }
 
@@ -261,7 +266,7 @@ PY
     esac
 
     FILTER_COMPLEX="color=c=${FRAME_BG_COLOR}:s=1080x1920:d=${DURATION}[base];${BROLL_FILTER}[base][broll]overlay=0:${CONTENT_Y}[framed]"
-    TOP_FONT_OPTION="$(drawtext_font_option "$FRAME_TOP_FONT_NAME" "$FRAME_TOP_FONT_FILE")"
+    TOP_FONT_OPTION="$(drawtext_font_option "$FRAME_TOP_FONT_NAME" "$FRAME_TOP_FONT_FILE" "$FRAME_TOP_FONT_STYLE")"
     BOTTOM_FONT_OPTION="$(drawtext_font_option "$FRAME_BOTTOM_FONT_NAME" "$FRAME_BOTTOM_FONT_FILE")"
     CURRENT_LABEL="[framed]"
     if [ -n "$FRAME_TOP_TITLE" ]; then

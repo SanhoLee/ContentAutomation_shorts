@@ -6,8 +6,9 @@ presets:
     title: ""
     subtitle: ""
     font_name: Noto Sans CJK KR
+    font_style: Bold
     font_color: white
-    margin_y: 10
+    margin_y: 60
     margin_top_pct: 30
     margin_x_pct: 6
 

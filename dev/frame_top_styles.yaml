@@ -8,8 +8,8 @@ presets:
     font_name: Noto Sans CJK KR
     font_style: Bold
     font_color: white
-    title_font_size: 84
-    subtitle_font_size: 48
+    title_font_size: 150
+    subtitle_font_size: 130
     margin_y: 1
     margin_top_pct: 5
     margin_x_pct: 8

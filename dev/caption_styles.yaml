@@ -25,7 +25,7 @@ presets:
     PositionMode: center-offset
     Anchor: 5
     OffsetX: 0
-    OffsetY: 0
+    OffsetY: -420
 
   center-yellow:
     extends: center-outline

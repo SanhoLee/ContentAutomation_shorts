@@ -105,12 +105,21 @@ def text_width_units(text):
     return max(units, 1.0)
 
 
-def fit_equal_font_size(title, subtitle, requested_size, max_width, max_height):
-    width_units = max(text_width_units(title), text_width_units(subtitle))
-    width_limited = int(max_width / width_units)
-    # Two equal-height text lines plus an inter-line gap around 35% of the font size.
-    height_limited = int(max_height / 2.35)
-    return max(1, min(int(requested_size), width_limited, height_limited))
+def fit_top_font_sizes(title, subtitle, requested_title_size, requested_subtitle_size, max_width, max_height):
+    title_width_limited = int(max_width / text_width_units(title))
+    subtitle_width_limited = int(max_width / text_width_units(subtitle))
+    title_size = max(1, min(int(requested_title_size), title_width_limited))
+    subtitle_size = max(1, min(int(requested_subtitle_size), subtitle_width_limited))
+
+    def line_gap(first_size, second_size):
+        return max(0, int(round(max(first_size, second_size) * 0.35)))
+
+    total_h = title_size + subtitle_size + line_gap(title_size, subtitle_size)
+    if total_h > max_height:
+        scale = max_height / total_h
+        title_size = max(1, int(title_size * scale))
+        subtitle_size = max(1, int(subtitle_size * scale))
+    return title_size, subtitle_size
 
 
 def resolve_top(data):
@@ -120,18 +129,20 @@ def resolve_top(data):
     margin_x = int_from_pct(data.get("margin_x_pct", "0"), CANVAS_W)
     usable = max(h - margin * 2, 1)
     requested_size = int_value(data, "font_size", usable * 0.36)
-    if data.get("title_font_size") or data.get("subtitle_font_size"):
-        requested_size = min(
-            int_value(data, "title_font_size", requested_size),
-            int_value(data, "subtitle_font_size", requested_size),
-        )
+    requested_title_size = int_value(data, "title_font_size", requested_size)
+    requested_subtitle_size = int_value(data, "subtitle_font_size", requested_size)
     max_text_w = max(CANVAS_W - margin_x * 2, 1)
     bottom_anchor_y = max(h - margin - margin_top, margin + 1)
     max_text_h = max(bottom_anchor_y - margin, 1)
-    font_size = fit_equal_font_size(data.get("title", ""), data.get("subtitle", ""), requested_size, max_text_w, max_text_h)
-    title_size = font_size
-    subtitle_size = font_size
-    gap = max(0, int(round(font_size * 0.35)))
+    title_size, subtitle_size = fit_top_font_sizes(
+        data.get("title", ""),
+        data.get("subtitle", ""),
+        requested_title_size,
+        requested_subtitle_size,
+        max_text_w,
+        max_text_h,
+    )
+    gap = max(0, int(round(max(title_size, subtitle_size) * 0.35)))
     total_text_h = title_size + subtitle_size + gap
     title_y = max(bottom_anchor_y - total_text_h, margin)
     subtitle_y = title_y + title_size + gap

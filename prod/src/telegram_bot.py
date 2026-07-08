@@ -116,6 +116,7 @@ def approval_buttons(stage):
             button("본문 수정", f"edit_body:{stage}"),
             button("타이틀 수정", f"edit_title_menu:{stage}"),
         ])
+        rows.insert(1, [button("이후 자동 업로드", f"auto_upload:{stage}")])
     elif stage in ("await_caption_approval", "await_upload_meta_approval"):
         rows.insert(0, [button("수정", f"edit:{stage}")])
     if stage == "await_tts_approval":
@@ -614,6 +615,48 @@ def run_render(chat_id, job):
     send_rendered_video(chat_id, job_id)
 
 
+def _run_render_silent(chat_id, job, extra_env=None):
+    job_id = job["job_id"]
+    args = [str(BASE_DIR / "sh" / "2_render.sh")]
+    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
+    margin_v = str(job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V)))
+    caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    offset_x = job.get("caption_offset_x")
+    offset_y = job.get("caption_offset_y")
+    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
+    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
+    frame_top_preset = job.get("frame_top_preset", os.environ.get("FRAME_TOP_PRESET", "default"))
+    frame_bottom_preset = job.get("frame_bottom_preset", os.environ.get("FRAME_BOTTOM_PRESET", "default"))
+    frame_top_pct = job.get("frame_top_pct")
+    frame_bottom_pct = job.get("frame_bottom_pct")
+    frame_top_title = job.get("frame_top_title", job.get("frame_header_text", ""))
+    frame_top_subtitle = job.get("frame_top_subtitle", "")
+    frame_bottom_channel = job.get("frame_bottom_channel_name", "")
+    args += ["--font-size", font_size, "--margin-v", margin_v, "--style", caption_style, "--frame-mode", frame_mode, "--broll-fit", broll_fit, "--frame-top-preset", frame_top_preset, "--frame-bottom-preset", frame_bottom_preset]
+    if offset_x not in (None, ""):
+        args += ["--offset-x", str(offset_x)]
+    if offset_y not in (None, ""):
+        args += ["--offset-y", str(offset_y)]
+    if frame_top_pct not in (None, ""):
+        args += ["--frame-top-pct", str(frame_top_pct)]
+    if frame_bottom_pct not in (None, ""):
+        args += ["--frame-bottom-pct", str(frame_bottom_pct)]
+    if frame_top_title:
+        args += ["--top-title", str(frame_top_title)]
+    if frame_top_subtitle:
+        args += ["--top-subtitle", str(frame_top_subtitle)]
+    if frame_bottom_channel:
+        args += ["--bottom-channel-name", str(frame_bottom_channel)]
+    stop_progress = threading.Event()
+    progress_thread = start_render_progress(chat_id, job_id, stop_progress)
+    try:
+        run_command(args, job_id, job.get("topic"), extra_env=extra_env)
+    finally:
+        stop_progress.set()
+        if progress_thread:
+            progress_thread.join(timeout=1)
+
+
 def run_next_stage(chat_id, job):
     job_id = job["job_id"]
     topic = job.get("topic")
@@ -649,6 +692,49 @@ def run_next_stage(chat_id, job):
         send_message(chat_id, "업로드 완료. YouTube Studio에서 비공개 영상을 확인하세요.")
     else:
         send_message(chat_id, f"승인할 단계가 없습니다. 현재 단계: {stage}")
+
+def run_remaining_to_upload(chat_id, job):
+    job_id = job.get("job_id")
+    topic = job.get("topic")
+    if not job_id:
+        send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return
+    if job.get("stage") != "await_script_approval":
+        send_message(chat_id, f"이후 자동 업로드는 스크립트 승인 단계에서만 가능합니다. 현재 단계: {job.get('stage')}")
+        return
+
+    job.pop("edit_target", None)
+    job.pop("edit_stage", None)
+    job.pop("title_edit_field", None)
+    job.pop("title_edit_stage", None)
+    header = load_frame_header(job_id)
+    sync_frame_header_to_job(job, header)
+    extra_env = {}
+    job["approval_required"] = False
+    job["stage"] = "running_after_script_auto"
+    send_message(chat_id, "스크립트/타이틀 승인 완료. 이후 단계를 YouTube 업로드까지 자동 진행합니다.")
+
+    send_message(chat_id, "1/5 TTS 음성 생성 중...")
+    run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
+    send_message(chat_id, "1/5 TTS 완료")
+
+    send_message(chat_id, "2/5 자막 생성 중...")
+    run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
+    send_message(chat_id, "2/5 자막 완료")
+
+    send_message(chat_id, "3/5 B-roll 수집 중...")
+    run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
+    send_message(chat_id, "3/5 B-roll 완료")
+
+    send_message(chat_id, "4/5 렌더링 중...")
+    _run_render_silent(chat_id, job, extra_env)
+    send_message(chat_id, "4/5 렌더링 완료")
+
+    send_message(chat_id, "5/5 YouTube 비공개 업로드 중...")
+    run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic)
+    job["stage"] = "done"
+    send_message(chat_id, "완료! YouTube Studio에서 비공개 영상을 확인하세요.")
+
 
 def run_script_generation(chat_id, job, args):
     job_id = job["job_id"]
@@ -799,6 +885,7 @@ def send_title_edit_menu(chat_id, job):
             [button("주제목 수정", "edit_title_field:await_script_approval:title")],
             [button("부제목 수정", "edit_title_field:await_script_approval:subtitle")],
             [button("본문 수정", "edit_body:await_script_approval")],
+            [button("이후 자동 업로드", "auto_upload:await_script_approval")],
             [button("승인", "approve:await_script_approval"), button("전체 취소", "cancel_all")],
         ],
     )
@@ -932,6 +1019,12 @@ def handle_callback(state, callback):
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
             handle_title_edit_field(chat_id, job, field)
+        elif data.startswith("auto_upload:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            start_background_task(state, chat_id, job, "이후 자동 업로드", lambda: run_remaining_to_upload(chat_id, job))
         elif data.startswith("back:"):
             _, expected_stage, target_stage = data.split(":", 2)
             if job.get("stage") != expected_stage:

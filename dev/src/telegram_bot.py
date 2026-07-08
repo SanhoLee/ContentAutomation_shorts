@@ -118,7 +118,12 @@ def approval_buttons(stage):
     previous = previous_stage_button(stage)
     if previous:
         rows.insert(0, [previous])
-    if stage in ("await_script_approval", "await_caption_approval", "await_upload_meta_approval"):
+    if stage == "await_script_approval":
+        rows.insert(0, [
+            button("본문 수정", f"edit_body:{stage}"),
+            button("타이틀 수정", f"edit_title_menu:{stage}"),
+        ])
+    elif stage in ("await_caption_approval", "await_upload_meta_approval"):
         rows.insert(0, [button("수정", f"edit:{stage}")])
     if stage == "await_tts_approval":
         rows.insert(0, [button("스크립트 수정", "back:await_tts_approval:await_script_approval"), button("TTS 재생성", f"rerun:{stage}:tts")])
@@ -246,6 +251,64 @@ def output_file(job_id):
 
 def pubmed_status_path(job_id):
     return work_dir(job_id) / "pubmed_status.json"
+
+
+def frame_header_path(job_id):
+    return work_dir(job_id) / "frame_header.json"
+
+
+def video_meta_path(job_id):
+    return work_dir(job_id) / "video_meta.json"
+
+
+def load_frame_header(job_id):
+    header = {"title": "", "subtitle": ""}
+    for path in (frame_header_path(job_id), video_meta_path(job_id)):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if path.name == "video_meta.json":
+            data = data.get("frame_header") if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            continue
+        if not header["title"]:
+            header["title"] = str(data.get("title") or "").strip()
+        if not header["subtitle"]:
+            header["subtitle"] = str(data.get("subtitle") or "").strip()
+    return header
+
+
+def save_frame_header(job_id, header):
+    normalized = {
+        "title": str(header.get("title") or "").strip(),
+        "subtitle": str(header.get("subtitle") or "").strip(),
+    }
+    header_path = frame_header_path(job_id)
+    header_path.parent.mkdir(parents=True, exist_ok=True)
+    header_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    meta_path = video_meta_path(job_id)
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = None
+        if isinstance(meta, dict):
+            meta["frame_header"] = normalized
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return normalized
+
+
+def sync_frame_header_to_job(job, header):
+    title = str(header.get("title") or "").strip()
+    subtitle = str(header.get("subtitle") or "").strip()
+    if title:
+        job["frame_top_title"] = title
+    if subtitle:
+        job["frame_top_subtitle"] = subtitle
 
 
 def read_pubmed_status(job_id):
@@ -998,6 +1061,8 @@ def handle_edit(chat_id, job):
         send_message(chat_id, "현재 단계는 텍스트 파일 수정 대상이 아닙니다. 재생성이나 렌더 설정 버튼을 사용하세요.")
         return
     path, name = info
+    job.pop("title_edit_field", None)
+    job.pop("title_edit_stage", None)
     job["edit_target"] = str(path)
     job["edit_stage"] = stage
     send_message(
@@ -1007,6 +1072,92 @@ def handle_edit(chat_id, job):
     )
     if path.exists():
         send_file_or_path(chat_id, path, f"수정용 원본: {name}")
+
+
+def send_title_edit_menu(chat_id, job):
+    job_id = job.get("job_id")
+    if not job_id:
+        send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return
+    if job.get("stage") != "await_script_approval":
+        send_message(chat_id, f"타이틀 수정은 스크립트 승인 단계에서만 가능합니다. 현재 단계: {job.get('stage')}")
+        return
+
+    job.pop("edit_target", None)
+    job.pop("edit_stage", None)
+    job.pop("title_edit_field", None)
+    job.pop("title_edit_stage", None)
+    header = load_frame_header(job_id)
+    sync_frame_header_to_job(job, header)
+    title = header.get("title") or "(비어 있음)"
+    subtitle = header.get("subtitle") or "(비어 있음)"
+    send_action_message(
+        chat_id,
+        "타이틀 수정 단계입니다.\n"
+        f"현재 주제목: {title}\n"
+        f"현재 부제목: {subtitle}\n\n"
+        "수정할 항목을 선택하세요. 선택 후 다음 메시지에 새 문구를 보내면 띄어쓰기 포함 그대로 저장됩니다.",
+        [
+            [button("주제목 수정", "edit_title_field:await_script_approval:title")],
+            [button("부제목 수정", "edit_title_field:await_script_approval:subtitle")],
+            [button("본문 수정", "edit_body:await_script_approval")],
+            [button("승인", "approve:await_script_approval"), button("전체 취소", "cancel_all")],
+        ],
+    )
+
+
+def handle_title_edit_field(chat_id, job, field):
+    if job.get("stage") != "await_script_approval":
+        send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+        return
+    if field not in ("title", "subtitle"):
+        send_message(chat_id, "수정할 수 없는 타이틀 항목입니다.")
+        return
+    label = "주제목" if field == "title" else "부제목"
+    current = load_frame_header(job["job_id"]).get(field, "")
+    job["title_edit_field"] = field
+    job["title_edit_stage"] = job.get("stage")
+    job.pop("edit_target", None)
+    job.pop("edit_stage", None)
+    send_message(
+        chat_id,
+        f"{label} 수정 모드입니다.\n"
+        f"현재값: {current or '(비어 있음)'}\n\n"
+        f"다음 메시지에 새 {label}을 보내세요. 띄어쓰기 포함 전체 메시지가 그대로 저장됩니다.",
+    )
+
+
+def apply_title_edit_message(chat_id, job, message):
+    field = job.get("title_edit_field")
+    if not field:
+        return False
+    if message.get("document"):
+        send_message(chat_id, "타이틀은 텍스트 메시지로 보내세요. 띄어쓰기 포함 입력할 수 있습니다.")
+        return True
+    text = message.get("text")
+    if not text or text.startswith("/"):
+        return False
+    value = text.strip()
+    if not value:
+        send_message(chat_id, "빈 문구는 저장할 수 없습니다. 새 문구를 다시 보내세요.")
+        return True
+
+    job_id = job.get("job_id")
+    job.pop("edit_target", None)
+    job.pop("edit_stage", None)
+    job.pop("title_edit_field", None)
+    job.pop("title_edit_stage", None)
+    header = load_frame_header(job_id)
+    header[field] = value
+    saved = save_frame_header(job_id, header)
+    sync_frame_header_to_job(job, saved)
+    job.pop("title_edit_field", None)
+    job["stage"] = job.pop("title_edit_stage", job.get("stage"))
+
+    label = "주제목" if field == "title" else "부제목"
+    send_message(chat_id, f"{label}을 저장했습니다: {value}")
+    send_title_edit_menu(chat_id, job)
+    return True
 
 
 def apply_edit_message(chat_id, job, message):
@@ -1065,6 +1216,24 @@ def handle_callback(state, callback):
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
             handle_edit(chat_id, job)
+        elif data.startswith("edit_body:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            handle_edit(chat_id, job)
+        elif data.startswith("edit_title_menu:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            send_title_edit_menu(chat_id, job)
+        elif data.startswith("edit_title_field:"):
+            _, expected_stage, field = data.split(":", 2)
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            handle_title_edit_field(chat_id, job, field)
         elif data.startswith("back:"):
             _, expected_stage, target_stage = data.split(":", 2)
             if job.get("stage") != expected_stage:
@@ -1254,6 +1423,8 @@ def handle_message(state, message):
     try:
         if is_busy(job) and not text.startswith("/status"):
             send_message(chat_id, busy_message(job))
+            return
+        if apply_title_edit_message(chat_id, job, message):
             return
         if apply_edit_message(chat_id, job, message):
             return

@@ -33,6 +33,10 @@ def issue_codes(report):
     return {issue["code"] for issue in report["errors"]}
 
 
+def warning_codes(report):
+    return {issue["code"] for issue in report["warnings"]}
+
+
 def comparison_strategy(evidence_status="sufficient", targets=None):
     return {
         "topic": "소주와 맥주 비교",
@@ -75,28 +79,46 @@ class ScriptQualityTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("missing_final_answer", issue_codes(report))
 
-    def test_validate_script_requires_two_comparison_targets(self):
+    def test_validate_script_warns_for_fewer_than_two_comparison_targets(self):
         report = script0.validate_script(complete_result(), comparison_strategy(targets=["소주"]))
-        self.assertFalse(report["ok"])
-        self.assertIn("comparison_requires_two_targets", issue_codes(report))
+        self.assertTrue(report["ok"])
+        self.assertIn("comparison_requires_two_targets", warning_codes(report))
 
-    def test_validate_script_rejects_generic_alcohol_answer(self):
+    def test_validate_script_warns_for_generic_alcohol_answer(self):
         result = complete_result()
         result["final_answer"] = "술 종류에 따라 다릅니다."
         report = script0.validate_script(result, comparison_strategy(evidence_status="limited"))
-        self.assertFalse(report["ok"])
-        self.assertIn("generic_final_answer", issue_codes(report))
+        self.assertTrue(report["ok"])
+        self.assertIn("generic_final_answer", warning_codes(report))
 
     def test_validate_script_complete_passes(self):
         report = script0.validate_script(complete_result(), comparison_strategy())
         self.assertTrue(report["ok"], report)
 
-    def test_validate_script_rejects_unsupported_winner_with_insufficient_evidence(self):
+    def test_validate_script_warns_for_unsupported_winner_with_insufficient_evidence(self):
         result = complete_result()
         result["final_answer"] = "소주가 더 좋습니다."
         report = script0.validate_script(result, comparison_strategy(evidence_status="insufficient"))
-        self.assertFalse(report["ok"])
-        self.assertIn("unsupported_winner_claim", issue_codes(report))
+        self.assertTrue(report["ok"])
+        self.assertIn("unsupported_winner_claim", warning_codes(report))
+
+    def test_over_target_length_is_warning_and_does_not_block(self):
+        old_total = script0.total_chars
+        try:
+            script0.total_chars = 10
+            report = script0.validate_script(complete_result(), comparison_strategy())
+            self.assertTrue(report["ok"])
+            self.assertIn("over_target_length", warning_codes(report))
+            self.assertGreater(report["metrics"]["length_ratio"], 1.35)
+        finally:
+            script0.total_chars = old_total
+
+    def test_missing_promise_confirmation_is_warning(self):
+        result = complete_result()
+        result["promise_fulfilled"] = False
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertTrue(report["ok"])
+        self.assertIn("promise_not_fulfilled", warning_codes(report))
 
     def test_over_length_trim_does_not_delete_scenes(self):
         old_total = script0.total_chars
@@ -139,7 +161,8 @@ class ScriptQualityTests(unittest.TestCase):
             old_work_dir = script0.WORK_DIR
             try:
                 script0.WORK_DIR = tmp
-                script0.enforce_quality_without_revision(complete_result(), comparison_strategy())
+                with contextlib.redirect_stdout(io.StringIO()):
+                    script0.enforce_quality_without_revision(complete_result(), comparison_strategy())
                 report_path = Path(tmp, "script_quality.json")
                 self.assertTrue(report_path.exists())
                 report = json.loads(report_path.read_text(encoding="utf-8"))

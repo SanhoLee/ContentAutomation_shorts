@@ -1,7 +1,7 @@
 # Bottom safe-zone frame presets. height_pct is based on the full 1080x1920 canvas height.
 presets:
   default:
-    height_pct: 26.00
+    height_pct: 23.00
     bg_color: black
     channel_name: "브레인피프티"
     channel_font_name: Noto Sans CJK KR

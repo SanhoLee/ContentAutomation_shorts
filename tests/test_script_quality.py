@@ -116,18 +116,18 @@ class ScriptQualityTests(unittest.TestCase):
             script0.total_chars = old_total
             script0.min_scenes_estimate = old_min
 
-    def test_revision_failure_prevents_output_files(self):
+    def test_validation_failure_prevents_output_files_without_claude_call(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_work_dir = script0.WORK_DIR
             old_call = script0.call_claude
             try:
                 script0.WORK_DIR = tmp
-                script0.call_claude = lambda prompt: (_ for _ in ()).throw(RuntimeError("revision failed"))
+                script0.call_claude = lambda prompt: (_ for _ in ()).throw(AssertionError("Claude must not be called"))
                 result = complete_result()
                 result["final_answer"] = ""
                 with self.assertRaises(RuntimeError):
                     with contextlib.redirect_stdout(io.StringIO()):
-                        script0.generate_validate_and_revise(result, comparison_strategy())
+                        script0.enforce_quality_without_revision(result, comparison_strategy())
                 self.assertFalse(Path(tmp, "script.txt").exists())
                 self.assertTrue(Path(tmp, "script_quality.json").exists())
             finally:
@@ -139,7 +139,7 @@ class ScriptQualityTests(unittest.TestCase):
             old_work_dir = script0.WORK_DIR
             try:
                 script0.WORK_DIR = tmp
-                script0.generate_validate_and_revise(complete_result(), comparison_strategy())
+                script0.enforce_quality_without_revision(complete_result(), comparison_strategy())
                 report_path = Path(tmp, "script_quality.json")
                 self.assertTrue(report_path.exists())
                 report = json.loads(report_path.read_text(encoding="utf-8"))

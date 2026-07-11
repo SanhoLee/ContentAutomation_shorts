@@ -3,6 +3,13 @@ from dataclasses import dataclass
 
 FALSE_VALUES = {"0", "false", "off", "no", "n"}
 
+SPEECH_PACE_PROFILES = {
+    "slow": {"atempo": 0.95, "script_density": 4.0},
+    "normal": {"atempo": 1.10, "script_density": 4.66},
+    "fast": {"atempo": 1.20, "script_density": 5.10},
+    "very_fast": {"atempo": 1.30, "script_density": 5.50},
+}
+
 
 def env_bool(name, default):
     value = os.environ.get(name)
@@ -26,8 +33,28 @@ def env_float(name, default):
     return float(os.environ.get(name, str(default)))
 
 
-def script_length_targets(target_duration_sec, atempo, chars_per_sec):
-    total = int(target_duration_sec * atempo * chars_per_sec)
+def speech_pace_profile(value):
+    pace = str(value or "normal").strip().lower().replace("-", "_")
+    if pace not in SPEECH_PACE_PROFILES:
+        allowed = ", ".join(SPEECH_PACE_PROFILES)
+        raise ValueError(f"SPEECH_PACE must be one of: {allowed}")
+    return pace, SPEECH_PACE_PROFILES[pace]
+
+
+def resolve_speech_settings():
+    configured_pace = os.environ.get("SPEECH_PACE")
+    if configured_pace not in (None, ""):
+        pace, profile = speech_pace_profile(configured_pace)
+        return pace, profile["atempo"], profile["script_density"]
+
+    # Backward compatibility for existing deployments until they set SPEECH_PACE.
+    atempo = env_float("ATEMPO", "1.0")
+    chars_per_sec = env_float("CHARS_PER_SEC", "4.66")
+    return "legacy", atempo, atempo * chars_per_sec
+
+
+def script_length_targets(target_duration_sec, script_density):
+    total = int(target_duration_sec * script_density)
     prompt_target = int(total * 1.15)
     min_scenes = max(8, min(10, prompt_target // 55))
     return total, prompt_target, min_scenes
@@ -36,9 +63,10 @@ def script_length_targets(target_duration_sec, atempo, chars_per_sec):
 @dataclass(frozen=True)
 class ScriptRuntimeSettings:
     work_dir: str
+    speech_pace: str
     atempo: float
     target_duration_sec: int
-    chars_per_sec: float
+    script_density: float
     trend_candidate_count: int
     request_timeout: int
     claude_timeout: int
@@ -67,20 +95,19 @@ class ScriptRuntimeSettings:
 def load_runtime_settings():
     work_dir = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
     data_dir = os.path.normpath(os.path.join(work_dir, ".."))
-    atempo = env_float("ATEMPO", "1.0")
+    speech_pace, atempo, script_density = resolve_speech_settings()
     target_duration_sec = env_int("TARGET_DURATION_SEC", 60)
-    chars_per_sec = env_float("CHARS_PER_SEC", "4.66")
     total_chars, prompt_target_chars, min_scenes_estimate = script_length_targets(
         target_duration_sec,
-        atempo,
-        chars_per_sec,
+        script_density,
     )
     claude_model = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
     return ScriptRuntimeSettings(
         work_dir=work_dir,
+        speech_pace=speech_pace,
         atempo=atempo,
         target_duration_sec=target_duration_sec,
-        chars_per_sec=chars_per_sec,
+        script_density=script_density,
         trend_candidate_count=env_int("TREND_CANDIDATE_COUNT", 5),
         request_timeout=env_int("REQUEST_TIMEOUT", 20),
         claude_timeout=env_int("CLAUDE_TIMEOUT", 180),

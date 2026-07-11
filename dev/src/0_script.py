@@ -121,7 +121,7 @@ def describe_http_error(response):
 
 
 def is_invalid_model_error(response):
-    if response.status_code != 400:
+    if response.status_code not in (400, 404):
         return False
     try:
         body = response.json()
@@ -330,6 +330,8 @@ def translate_pubmed_query(topic):
             "content": (
                 "Convert the Korean health/medical content topic below into a concise English PubMed search query. "
                 "Use 2 to 6 biomedical keywords, disease/risk/mechanism terms when relevant, and no Korean. "
+                "If the topic compares named items, preserve the comparison intent and include the named targets as English search terms. "
+                "Do not silently drop requested comparison targets. "
                 "Do not add explanations, quotes, markdown, or Boolean operators unless essential.\n\n"
                 f"Korean topic: {topic}"
             ),
@@ -486,10 +488,123 @@ def load_feedback_insights():
 
 
 # ─────────────────────────────────────────────
+
+CONTENT_INTENT_COMPARISON = "comparison"
+COMPARISON_CONNECTORS = (
+    " vs ", " VS ", "대 ", "와 ", "과 ", "랑 ", "하고 ", "또는 ",
+    "비교", "중에", "중에서", "어느", "뭐가", "무엇이", "더 ",
+)
+DEFAULT_COMPARISON_CRITERIA = ["효과", "위험", "대상자", "실천 가능성"]
+DEFAULT_COMPARISON_BEATS = [
+    "시청자가 던진 비교 질문을 첫 부분에서 다시 확인한다",
+    "비교 대상들을 모두 같은 기준으로 나란히 설명한다",
+    "근거가 충분한 부분과 부족한 부분을 구분한다",
+    "조건별로 어떤 선택이 더 맞는지 최종 답을 준다",
+]
+DEFAULT_EXPLANATION_BEATS = [
+    "시청자의 질문이나 걱정을 첫 부분에서 다시 확인한다",
+    "핵심 근거와 한계를 쉬운 말로 설명한다",
+    "오늘 바로 할 수 있는 작은 실천을 제안한다",
+    "마지막에 제목의 약속에 대한 최종 답을 준다",
+]
+GENERIC_FINAL_ANSWERS = (
+    "술 종류에 따라 다르",
+    "종류에 따라 다르",
+    "사람마다 다르",
+    "상황에 따라 다르",
+)
+INSUFFICIENT_EVIDENCE_STATUSES = {"insufficient", "limited", "none", "unsupported", "unknown"}
+
+
+def bounded_research_context(abstracts="", web_research="", limit=3000):
+    parts = []
+    if abstracts:
+        parts.append("[PubMed]\n" + str(abstracts).strip())
+    if web_research:
+        parts.append("[web_search]\n" + str(web_research).strip())
+    text = "\n\n".join(part for part in parts if part.strip())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit("\n", 1)[0].strip() + "\n[근거 자료 일부 생략]"
+
+
+def cleanup_comparison_target(piece):
+    piece = normalize_keyword(piece)
+    piece = re.split(r"\b(?:비교|차이|중에|중에서|어느|뭐가|무엇이|더|추천|나을까|좋을까)\b", piece, 1)[0]
+    piece = re.sub(r"^(?:추천|비교|차이|건강|50대|이상)\s+", "", piece).strip()
+    piece = re.sub(r"\s+(?:추천|비교|차이|효능|효과|위험|부작용|건강|50대|이상)$", "", piece).strip()
+    return piece.strip(" ,./-_|:;()[]{}")
+
+
+def extract_named_comparison_targets(topic):
+    text = normalize_keyword(topic)
+    if not text:
+        return []
+    normalized = re.sub(r"\b(?:vs|VS|Vs)\b", " vs ", text)
+    patterns = [
+        r"(.+?)\s+vs\s+(.+)",
+        r"(.+?)\s*(?:와|과|랑|하고|또는)\s*(.+)",
+        r"(.+?)\s*대\s*(.+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, normalized)
+        if not m:
+            continue
+        raw_targets = [cleanup_comparison_target(m.group(1)), cleanup_comparison_target(m.group(2))]
+        targets = []
+        for target in raw_targets:
+            if target and target not in targets:
+                targets.append(target)
+        if len(targets) >= 2:
+            return targets[:4]
+    return []
+
+
+def detect_content_intent(topic):
+    targets = extract_named_comparison_targets(topic)
+    if len(targets) >= 2:
+        return CONTENT_INTENT_COMPARISON
+    return CONTENT_INTENT_COMPARISON if any(hint in topic for hint in COMPARISON_CONNECTORS) else "explanation"
+
+
+def normalize_strategy_contract(strategy, topic):
+    strategy = dict(strategy or {})
+    strategy["topic"] = topic
+    intent_type = strategy.get("intent_type") or detect_content_intent(topic)
+    had_explicit_targets = "comparison_targets" in strategy
+    targets = strategy.get("comparison_targets") or []
+    if not isinstance(targets, list):
+        targets = [targets]
+    targets = [normalize_keyword(target) for target in targets if normalize_keyword(target)]
+    if intent_type == CONTENT_INTENT_COMPARISON and not had_explicit_targets and len(targets) < 2:
+        targets = extract_named_comparison_targets(topic)
+    strategy["intent_type"] = intent_type
+    strategy["comparison_targets"] = targets
+    if intent_type == CONTENT_INTENT_COMPARISON:
+        joined = "와 ".join(targets[:2]) if len(targets) >= 2 else normalize_keyword(topic)
+        default_question = f"{joined} 중 무엇을 선택해야 할까요?"
+        default_requirement = "비교 대상별 차이와 조건별 선택 기준을 밝히고, 근거가 부족하면 단정하지 말 것"
+        default_beats = list(DEFAULT_COMPARISON_BEATS)
+        if not strategy.get("comparison_criteria"):
+            strategy["comparison_criteria"] = list(DEFAULT_COMPARISON_CRITERIA)
+    else:
+        default_question = f"{normalize_keyword(topic)}에 대해 무엇을 알아야 할까요?"
+        default_requirement = "제목에서 약속한 질문에 근거 기반 최종 답을 줄 것"
+        default_beats = list(DEFAULT_EXPLANATION_BEATS)
+        strategy.setdefault("comparison_criteria", [])
+    strategy.setdefault("viewer_question", default_question)
+    strategy.setdefault("answer_requirement", default_requirement)
+    strategy.setdefault("evidence_status", "unknown")
+    strategy.setdefault("final_answer", "")
+    strategy.setdefault("required_beats", default_beats)
+    strategy.setdefault("title_promise", strategy.get("title") or strategy.get("core_message") or normalize_keyword(topic))
+    return strategy
+
+
 # Stage 1 — 전략 수립 (Haiku)
 # ─────────────────────────────────────────────
 
-def plan_strategy(topic, trend_context=None):
+def plan_strategy(topic, abstracts="", web_research="", trend_context=None):
     """
     Haiku로 빠르게 콘텐츠 전략(검색 키워드·제목·훅 유형·핵심 메시지)을 결정한다.
     Stage 2 대본 작성 전 뼈대를 확정하는 역할.
@@ -502,7 +617,10 @@ def plan_strategy(topic, trend_context=None):
         if kw:
             trend_hint = f"\n트렌드 참고: {kw}"
 
-    prompt = f"""주제: {topic}{trend_hint}
+    research_context = bounded_research_context(abstracts, web_research)
+    research_hint = f"\n\n[근거 자료 요약]\n{research_context}" if research_context else ""
+
+    prompt = f"""주제: {topic}{trend_hint}{research_hint}
 
 이 주제로 50대 이상을 위한 YouTube Shorts 콘텐츠 전략을 수립하세요.
 
@@ -525,6 +643,15 @@ frame_header : 상단 프레임용 2줄 훅 후보. 대본 맥락을 압축한 �
                - 사용자가 입력한 주제어를 그대로 복사하지 말 것
                - 호기심·반전·해결 약속이 느껴지게 작성
 cta_next     : 다음 영상 예고 주제 (파생 주제, 20자 이내)
+intent_type  : comparison / explanation 중 하나. 두 대상을 비교하는 주제면 반드시 comparison
+viewer_question: 시청자가 실제로 묻는 질문을 한 문장으로 명시
+answer_requirement: 최종 대본이 반드시 답해야 하는 조건
+comparison_targets: 비교형이면 사용자가 요청한 비교 대상을 2개 이상 보존
+comparison_criteria: 비교 기준 2~4개
+evidence_status: sufficient / limited / insufficient 중 하나
+final_answer : 현재 근거로 가능한 최종 답의 초안. 단정 불가 시 그 한계를 포함
+required_beats: 대본에 반드시 포함할 전개 비트 배열
+title_promise: 제목이 시청자에게 약속하는 답변
 
 JSON만 출력. 설명·주석·마크다운 없이.
 
@@ -538,12 +665,21 @@ JSON만 출력. 설명·주석·마크다운 없이.
   "core_message": "",
   "thumbnail_text": [],
   "frame_header": {{"title": "", "subtitle": ""}},
+  "intent_type": "",
+  "viewer_question": "",
+  "answer_requirement": "",
+  "comparison_targets": [],
+  "comparison_criteria": [],
+  "evidence_status": "",
+  "final_answer": "",
+  "required_beats": [],
+  "title_promise": "",
   "cta_next": ""
 }}"""
 
     headers = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
                "anthropic-version": "2023-06-01", "content-type": "application/json"}
-    payload = {"max_tokens": 600,
+    payload = {"max_tokens": 900,
                "messages": [{"role": "user", "content": prompt}]}
 
     last_err = None
@@ -563,8 +699,7 @@ JSON만 출력. 설명·주석·마크다운 없이.
                     res.raise_for_status()
                 raw = res.json()["content"][0]["text"].strip()
                 raw = re.sub(r"^```(?:json)?", "", raw).rstrip("`").strip()
-                strategy = json.loads(raw)
-                strategy["topic"] = topic  # 원본 보존
+                strategy = normalize_strategy_contract(json.loads(raw), topic)
 
                 print(f"  ✅ main_keyword    : {strategy.get('main_keyword')}")
                 print(f"  ✅ title           : {strategy.get('title')}")
@@ -612,6 +747,31 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
     else:
         thumbnail_hint = str(thumbnail_text or "")
 
+    strategy = normalize_strategy_contract(strategy, topic)
+    contract = {
+        "intent_type": strategy.get("intent_type"),
+        "viewer_question": strategy.get("viewer_question"),
+        "answer_requirement": strategy.get("answer_requirement"),
+        "comparison_targets": strategy.get("comparison_targets", []),
+        "comparison_criteria": strategy.get("comparison_criteria", []),
+        "evidence_status": strategy.get("evidence_status"),
+        "final_answer": strategy.get("final_answer"),
+        "required_beats": strategy.get("required_beats", []),
+        "title_promise": strategy.get("title_promise"),
+    }
+    contract_block = json.dumps(contract, ensure_ascii=False, indent=2)
+    beats_block = "\n".join(f"- {beat}" for beat in contract.get("required_beats", []) if beat)
+    comparison_instruction = ""
+    if contract.get("intent_type") == CONTENT_INTENT_COMPARISON:
+        target_list = ", ".join(contract.get("comparison_targets") or []) or "비교 대상 미정"
+        criteria_list = ", ".join(contract.get("comparison_criteria") or []) or "효과, 위험, 대상자"
+        comparison_instruction = (
+            f"\n[비교형 필수 조건]\n"
+            f"- 비교 대상({target_list})을 모두 본문과 final_answer에 직접 언급하세요.\n"
+            f"- 같은 비교 기준({criteria_list})으로 설명하고, 한쪽을 승자로 단정하려면 근거가 충분해야 합니다.\n"
+            "- 근거가 부족하면 '현재 근거로는 단정하기 어렵다'고 말하고 조건별 선택 기준을 답하세요.\n"
+        )
+
     # ── 트렌드 블록
     trend_block = ""
     if trend_context:
@@ -645,9 +805,15 @@ main_keyword       : {main_keyword}
 제목 후보          : {title}
 훅(Hook) 유형      : {hook_type}
 핵심 메시지        : {core_message} (이 메시지가 영상 전체의 따뜻한 결론이 되어야 합니다)
-===
+
+[콘텐츠 계약]
+{contract_block}
+{comparison_instruction}===
 
 위 자료를 바탕으로 유튜브 쇼츠 대본을 작성해 주세요. 시청자의 마음이 '불안'에서 시작해 '이해'를 거쳐, 마지막엔 깊은 '안도감과 희망'으로 이어지도록 흐름을 설계해야 합니다.
+
+[반드시 포함할 전개 비트]
+{beats_block}
 
 ─── 📖 따뜻한 스토리텔링 흐름 ───
 [1단계: 내 마음을 알아주는 공감 (Scene 1~2)]
@@ -688,6 +854,9 @@ main_keyword       : {main_keyword}
   "thumbnail_text": ["썸네일 문구 1", "썸네일 문구 2"],
   "frame_header": {{"title": "대제목", "subtitle": "소제목"}},
   "description": "설명란 인트로 텍스트\\n\\n썸네일 문구 후보: {thumbnail_hint}",
+  "final_answer": "제목과 시청자 질문에 대한 한 문장 최종 답",
+  "promise_fulfilled": true,
+  "evidence_limit": "근거가 부족하거나 비교가 불가한 지점",
   "scenes": [
     {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}}
   ]
@@ -782,23 +951,125 @@ def trim_scenes(scenes):
     total = sum(korean_char_count(s["text"]) for s in scenes)
     print(f"\n생성된 글자수: {total}자 (목표: {total_chars}자)")
     if total > total_chars * 1.10:
-        last = scenes[-1]
-        body = scenes[:-1]
-        running = korean_char_count(last["text"])
-        kept = []
-        for s in body:
-            cnt = korean_char_count(s["text"])
-            if running + cnt <= total_chars * 1.05:
-                kept.append(s); running += cnt
-            else:
-                break
-        scenes = kept + [last]
-        print(f"트리밍 후: {sum(korean_char_count(s['text']) for s in scenes)}자, {len(scenes)}개 장면")
+        print("생성 분량이 목표보다 깁니다. 장면을 삭제하지 않고 품질 검증 단계에서 1회 수정 요청합니다.")
     else:
         print(f"트리밍 불필요, {len(scenes)}개 장면")
     scenes = ensure_scene_count(scenes, target_scene_count())
     print(f"장면 수 보정 후: {len(scenes)}개 장면 (목표: {target_scene_count()}개)")
     return scenes
+
+
+def script_text(result):
+    scenes = result.get("scenes") or []
+    scene_text = "\n".join(str(scene.get("text", "")) for scene in scenes if isinstance(scene, dict))
+    fields = [result.get("title", ""), result.get("summary", ""), result.get("description", ""), result.get("final_answer", ""), result.get("evidence_limit", "")]
+    return "\n".join(str(item) for item in fields if item) + "\n" + scene_text
+
+
+def mentioned_comparison_targets(text, targets):
+    haystack = re.sub(r"\s+", "", text or "").lower()
+    mentioned = []
+    for target in targets:
+        needle = re.sub(r"\s+", "", str(target or "")).lower()
+        if needle and needle in haystack:
+            mentioned.append(target)
+    return mentioned
+
+
+def is_generic_final_answer(answer):
+    compact = re.sub(r"\s+", "", str(answer or ""))
+    if any(re.sub(r"\s+", "", pattern) in compact for pattern in GENERIC_FINAL_ANSWERS):
+        return True
+    return "따라" in compact and any(token in compact for token in ("다르", "다릅", "달라"))
+
+
+def unsupported_winner_claim(result, strategy):
+    evidence_status = str(strategy.get("evidence_status") or result.get("evidence_status") or "").lower()
+    if evidence_status not in INSUFFICIENT_EVIDENCE_STATUSES:
+        return False
+    answer = str(result.get("final_answer") or "")
+    decisive = any(token in answer for token in ("가 더 좋", "이 더 좋", "더 낫", "더 추천", "선택하세요", "승리", "정답은"))
+    cautious = any(token in answer for token in ("근거", "부족", "단정", "상황", "개인", "따라", "확인", "상담"))
+    return decisive and not cautious
+
+
+def quality_issue(code, message, level="error"):
+    return {"code": code, "level": level, "message": message}
+
+
+def validate_script(result, strategy):
+    topic = strategy.get("topic", "")
+    strategy = normalize_strategy_contract(strategy, topic)
+    result = dict(result or {})
+    scenes = result.get("scenes") or []
+    text = script_text(result)
+    final_answer = str(result.get("final_answer") or "").strip()
+    char_count = sum(korean_char_count(str(scene.get("text", ""))) for scene in scenes if isinstance(scene, dict))
+    errors = []
+    warnings = []
+    if not scenes:
+        errors.append(quality_issue("missing_scenes", "scenes가 비어 있습니다."))
+    if not final_answer:
+        errors.append(quality_issue("missing_final_answer", "final_answer가 비어 있습니다."))
+    if result.get("promise_fulfilled") is not True:
+        errors.append(quality_issue("promise_not_fulfilled", "제목과 질문의 약속을 fulfilled=true로 확인해야 합니다."))
+    if char_count > total_chars * 1.10:
+        errors.append(quality_issue("over_target_length", f"대본이 목표보다 깁니다: {char_count}자"))
+    if strategy.get("intent_type") == CONTENT_INTENT_COMPARISON:
+        targets = strategy.get("comparison_targets") or []
+        if len(targets) < 2:
+            errors.append(quality_issue("comparison_requires_two_targets", "비교형 콘텐츠는 comparison_targets가 2개 이상이어야 합니다."))
+        else:
+            mentioned = mentioned_comparison_targets(text, targets)
+            missing = [target for target in targets if target not in mentioned]
+            if missing:
+                errors.append(quality_issue("missing_comparison_targets", "본문이나 최종 답에서 비교 대상이 누락되었습니다: " + ", ".join(missing)))
+        if final_answer and is_generic_final_answer(final_answer):
+            errors.append(quality_issue("generic_final_answer", "비교형 최종 답이 너무 일반적입니다."))
+        if unsupported_winner_claim(result, strategy):
+            errors.append(quality_issue("unsupported_winner_claim", "근거가 부족한데 한쪽을 승자로 단정했습니다."))
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "metrics": {"scene_count": len(scenes), "korean_char_count": char_count, "intent_type": strategy.get("intent_type"), "comparison_targets": strategy.get("comparison_targets", []), "final_answer_present": bool(final_answer)}}
+
+
+def write_quality_report(report, work_dir=None):
+    work_dir = work_dir or WORK_DIR
+    os.makedirs(work_dir, exist_ok=True)
+    with open(os.path.join(work_dir, "script_quality.json"), "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+
+def build_revision_prompt(result, strategy, report):
+    return ("아래 YouTube Shorts 대본 JSON은 품질 검증에 실패했습니다. 장면을 통째로 삭제하지 말고 의미를 보존하면서 문제만 고쳐 같은 JSON 포맷으로 다시 출력하세요.\n\n" + "[콘텐츠 계약]\n" + json.dumps(normalize_strategy_contract(strategy, strategy.get("topic", "")), ensure_ascii=False, indent=2) + "\n\n[품질 리포트]\n" + json.dumps(report, ensure_ascii=False, indent=2) + "\n\n[원본 대본 JSON]\n" + json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def revise_script(result, strategy, report):
+    prompt = build_revision_prompt(result, strategy, report)
+    response = call_claude(prompt)
+    revised = parse_claude_json(response)
+    revised_report = validate_script(revised, strategy)
+    return revised, revised_report
+
+
+def generate_validate_and_revise(result, strategy):
+    report = validate_script(result, strategy)
+    write_quality_report(report)
+    if report["ok"]:
+        return result
+    print("⚠️  대본 품질 검증 실패. Claude에 1회 수정 요청합니다.")
+    for issue in report["errors"]:
+        print(f"  - {issue['code']}: {issue['message']}")
+    try:
+        revised, revised_report = revise_script(result, strategy, report)
+    except Exception as exc:
+        report["revision_error"] = str(exc)
+        report["ok"] = False
+        write_quality_report(report)
+        raise RuntimeError("대본 품질 검증 실패 및 1회 수정 실패. 출력 파일을 작성하지 않습니다.") from exc
+    write_quality_report(revised_report)
+    if not revised_report["ok"]:
+        raise RuntimeError("대본 품질 검증 실패. 1회 수정 후에도 출력 파일을 작성하지 않습니다.")
+    return revised
+
 
 def write_outputs(result, strategy, trend_context=None):
     scenes = trim_scenes(result["scenes"])
@@ -834,6 +1105,9 @@ def write_outputs(result, strategy, trend_context=None):
         "thumbnail_text":      thumbnail_items,
         "frame_header":        frame_header,
         "description":         description,
+        "final_answer":        result.get("final_answer", ""),
+        "promise_fulfilled":   result.get("promise_fulfilled"),
+        "evidence_limit":      result.get("evidence_limit", ""),
     }
     if trend_context:
         meta["trend_context"] = trend_context
@@ -933,7 +1207,9 @@ def main():
             json.dump(strategy, f, ensure_ascii=False, indent=2)
         print(f"⏭️  Stage 1 건너뜀 (topic JSON 전략 사용): {strategy.get('title')}")
     else:
-        strategy = plan_strategy(topic, trend_context)
+        strategy = plan_strategy(topic, abstracts=abstracts, web_research=web_research, trend_context=trend_context)
+
+    strategy = normalize_strategy_contract(strategy, topic)
 
     # ── Stage 2: 대본 생성 (Sonnet)
     prompt = build_prompt(strategy, abstracts, trend_context, web_research, feedback_insights)
@@ -942,6 +1218,7 @@ def main():
 
     response = call_claude(prompt)
     result   = parse_claude_json(response)
+    result   = generate_validate_and_revise(result, strategy)
     write_outputs(result, strategy, trend_context)
 
 

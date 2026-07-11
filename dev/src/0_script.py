@@ -16,7 +16,8 @@ os.makedirs(WORK_DIR, exist_ok=True)
 
 ATEMPO = SETTINGS.atempo
 TARGET_DURATION_SEC = SETTINGS.target_duration_sec
-CHARS_PER_SEC = SETTINGS.chars_per_sec
+SPEECH_PACE = SETTINGS.speech_pace
+SCRIPT_DENSITY = SETTINGS.script_density
 TREND_CANDIDATE_COUNT = SETTINGS.trend_candidate_count
 REQUEST_TIMEOUT = SETTINGS.request_timeout
 CLAUDE_TIMEOUT = SETTINGS.claude_timeout
@@ -951,7 +952,7 @@ def trim_scenes(scenes):
     total = sum(korean_char_count(s["text"]) for s in scenes)
     print(f"\n생성된 글자수: {total}자 (목표: {total_chars}자)")
     if total > total_chars * 1.10:
-        print("생성 분량이 목표보다 깁니다. 장면을 삭제하지 않고 품질 검증 단계에서 1회 수정 요청합니다.")
+        print("생성 분량이 목표보다 깁니다. 장면을 삭제하지 않고 품질 검증 실패로 처리합니다.")
     else:
         print(f"트리밍 불필요, {len(scenes)}개 장면")
     scenes = ensure_scene_count(scenes, target_scene_count())
@@ -1038,37 +1039,15 @@ def write_quality_report(report, work_dir=None):
         json.dump(report, f, ensure_ascii=False, indent=2)
 
 
-def build_revision_prompt(result, strategy, report):
-    return ("아래 YouTube Shorts 대본 JSON은 품질 검증에 실패했습니다. 장면을 통째로 삭제하지 말고 의미를 보존하면서 문제만 고쳐 같은 JSON 포맷으로 다시 출력하세요.\n\n" + "[콘텐츠 계약]\n" + json.dumps(normalize_strategy_contract(strategy, strategy.get("topic", "")), ensure_ascii=False, indent=2) + "\n\n[품질 리포트]\n" + json.dumps(report, ensure_ascii=False, indent=2) + "\n\n[원본 대본 JSON]\n" + json.dumps(result, ensure_ascii=False, indent=2))
-
-
-def revise_script(result, strategy, report):
-    prompt = build_revision_prompt(result, strategy, report)
-    response = call_claude(prompt)
-    revised = parse_claude_json(response)
-    revised_report = validate_script(revised, strategy)
-    return revised, revised_report
-
-
-def generate_validate_and_revise(result, strategy):
+def enforce_quality_without_revision(result, strategy):
     report = validate_script(result, strategy)
     write_quality_report(report)
     if report["ok"]:
         return result
-    print("⚠️  대본 품질 검증 실패. Claude에 1회 수정 요청합니다.")
+    print("⚠️  대본 품질 검증 실패. Claude를 재호출하지 않고 출력 작성을 중단합니다.")
     for issue in report["errors"]:
         print(f"  - {issue['code']}: {issue['message']}")
-    try:
-        revised, revised_report = revise_script(result, strategy, report)
-    except Exception as exc:
-        report["revision_error"] = str(exc)
-        report["ok"] = False
-        write_quality_report(report)
-        raise RuntimeError("대본 품질 검증 실패 및 1회 수정 실패. 출력 파일을 작성하지 않습니다.") from exc
-    write_quality_report(revised_report)
-    if not revised_report["ok"]:
-        raise RuntimeError("대본 품질 검증 실패. 1회 수정 후에도 출력 파일을 작성하지 않습니다.")
-    return revised
+    raise RuntimeError("대본 품질 검증 실패. 추가 Claude 호출 없이 출력 파일을 작성하지 않습니다.")
 
 
 def write_outputs(result, strategy, trend_context=None):
@@ -1160,7 +1139,10 @@ def main():
             sys.exit(1)
 
     print(f"주제: {topic}")
-    print(f"목표: {total_chars}자 / 프롬프트 요청: {prompt_target_chars}자, 최소 {min_scenes_estimate}개 장면")
+    print(
+        f"목표: {total_chars}자 / 프롬프트 요청: {prompt_target_chars}자, "
+        f"pace={SPEECH_PACE}, density={SCRIPT_DENSITY:.2f}, 최소 {min_scenes_estimate}개 장면"
+    )
 
     # ── 1. PubMed 초록 수집
     try:
@@ -1218,7 +1200,7 @@ def main():
 
     response = call_claude(prompt)
     result   = parse_claude_json(response)
-    result   = generate_validate_and_revise(result, strategy)
+    result   = enforce_quality_without_revision(result, strategy)
     write_outputs(result, strategy, trend_context)
 
 

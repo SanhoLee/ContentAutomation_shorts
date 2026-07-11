@@ -10,6 +10,8 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from script_runtime import speech_pace_profile
+
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 BASE_DIR = Path(os.environ.get("BASE_DIR", Path.cwd())).resolve()
@@ -542,6 +544,7 @@ _PRESERVED_KEYS = {
     "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y",
     "frame_mode", "broll_fit_mode", "frame_header_text", "frame_top_preset", "frame_bottom_preset",
     "frame_top_pct", "frame_bottom_pct", "frame_bottom_channel_name", "tts_voice", "web_research",
+    "speech_pace", "target_duration_sec",
 }
 
 
@@ -583,6 +586,12 @@ def _build_extra_env(job):
         env["TTS_VOICE"] = str(job["tts_voice"])
     if "web_research" in job:
         env["ENABLE_WEB_RESEARCH"] = "true" if job.get("web_research") else "false"
+    if "speech_pace" in job:
+        pace, profile = speech_pace_profile(job["speech_pace"])
+        env["SPEECH_PACE"] = pace
+        env["ATEMPO"] = str(profile["atempo"])
+    if "target_duration_sec" in job:
+        env["TARGET_DURATION_SEC"] = str(job["target_duration_sec"])
     return env
 
 
@@ -608,6 +617,10 @@ def _settings_summary(job):
         parts.append("voice=" + str(job["tts_voice"]))
     if "web_research" in job:
         parts.append("web=" + ("on" if job["web_research"] else "off"))
+    if "speech_pace" in job:
+        parts.append("pace=" + str(job["speech_pace"]))
+    if "target_duration_sec" in job:
+        parts.append("duration=" + str(job["target_duration_sec"]))
     return "설정: " + (", ".join(parts) if parts else "기본값")
 
 
@@ -619,6 +632,8 @@ def config_summary(job):
     effective_frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
     effective_broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
     effective_voice = job.get("tts_voice", os.environ.get("TTS_VOICE", "F1"))
+    effective_pace = job.get("speech_pace", os.environ.get("SPEECH_PACE", "legacy"))
+    effective_duration = job.get("target_duration_sec", os.environ.get("TARGET_DURATION_SEC", "60"))
     effective_web = job.get("web_research")
     if effective_web is None:
         env_web = os.environ.get("ENABLE_WEB_RESEARCH")
@@ -635,9 +650,8 @@ def config_summary(job):
         f"PUBMED_RETMAX={env_value('PUBMED_RETMAX', '3')}",
         f"PUBMED_ABSTRACT_CHAR_LIMIT={env_value('PUBMED_ABSTRACT_CHAR_LIMIT', '7000')}",
         f"LOG_LEVEL={env_value('LOG_LEVEL')}",
-        f"ATEMPO={env_value('ATEMPO', '1.0')}",
-        f"TARGET_DURATION_SEC={env_value('TARGET_DURATION_SEC', '60')}",
-        f"CHARS_PER_SEC={env_value('CHARS_PER_SEC', '4.66')}",
+        f"SPEECH_PACE={effective_pace}",
+        f"TARGET_DURATION_SEC={effective_duration}",
         f"CAPTION_FONT_SIZE={effective_font_size}",
         f"CAPTION_MARGIN_V={effective_margin_v}",
         f"CAPTION_MARGIN_H={effective_margin_h}",
@@ -668,6 +682,7 @@ def handle_set(chat_id, job, text):
             "  /set font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120 frame=framed broll_fit=cover",
             "  /set top_pct=14 bottom_pct=18 top_preset=brain50 channel=브레인피프티",
             "  /set voice=F2 web=off",
+            "  /set pace=fast duration=60",
             "  /set reset  <- 초기화",
         ]
         send_message(chat_id, "\n".join(lines))
@@ -725,6 +740,15 @@ def handle_set(chat_id, job, text):
         if "voice" in values:
             job["tts_voice"] = values["voice"].upper()
             changed.append("voice=" + job["tts_voice"])
+        pace_value = values.get("pace") or values.get("speech_pace")
+        if pace_value is not None:
+            pace, _ = speech_pace_profile(pace_value)
+            job["speech_pace"] = pace
+            changed.append("pace=" + pace)
+        duration_value = values.get("duration") or values.get("target_duration_sec")
+        if duration_value is not None:
+            job["target_duration_sec"] = positive_int(duration_value, "duration")
+            changed.append("duration=" + job["target_duration_sec"])
         web_val = values.get("web") or values.get("web_research")
         if web_val is not None:
             job["web_research"] = web_val.lower() not in ("off", "0", "false", "no")
@@ -1497,7 +1521,7 @@ def help_text():
         "/rerun tts | /rerun caption | /rerun broll",
         "/render font_size=62 margin_v=60",
         "/set font_size=62 margin_v=60 margin_h=12  <- 실행 전 설정",
-    "/set web=off voice=F2  <- web_search 끄기 / 목소리 변경",
+    "/set web=off voice=F2 pace=normal duration=60  <- 검색/목소리/속도/길이 설정",
     "/set  <- 현재 설정 확인  |  /set reset  <- 초기화",
     "/run_auto 오메가3가 정말 뇌에 좋을까?",
         "/status",

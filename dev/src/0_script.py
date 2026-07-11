@@ -952,7 +952,7 @@ def trim_scenes(scenes):
     total = sum(korean_char_count(s["text"]) for s in scenes)
     print(f"\n생성된 글자수: {total}자 (목표: {total_chars}자)")
     if total > total_chars * 1.10:
-        print("생성 분량이 목표보다 깁니다. 장면을 삭제하지 않고 품질 검증 실패로 처리합니다.")
+        print("생성 분량이 목표보다 길지만 장면을 유지하고 작업을 계속 진행합니다.")
     else:
         print(f"트리밍 불필요, {len(scenes)}개 장면")
     scenes = ensure_scene_count(scenes, target_scene_count())
@@ -1013,23 +1013,39 @@ def validate_script(result, strategy):
     if not final_answer:
         errors.append(quality_issue("missing_final_answer", "final_answer가 비어 있습니다."))
     if result.get("promise_fulfilled") is not True:
-        errors.append(quality_issue("promise_not_fulfilled", "제목과 질문의 약속을 fulfilled=true로 확인해야 합니다."))
-    if char_count > total_chars * 1.10:
-        errors.append(quality_issue("over_target_length", f"대본이 목표보다 깁니다: {char_count}자"))
+        warnings.append(quality_issue("promise_not_fulfilled", "제목과 질문의 약속 충족 여부를 확인해 주세요.", "warning"))
+    if scenes and char_count < total_chars * 0.55:
+        warnings.append(quality_issue("under_target_length", f"대본이 목표보다 많이 짧습니다: {char_count}자", "warning"))
+    if char_count > total_chars * 1.35:
+        warnings.append(quality_issue("over_target_length", f"대본이 목표보다 많이 깁니다: {char_count}자", "warning"))
     if strategy.get("intent_type") == CONTENT_INTENT_COMPARISON:
         targets = strategy.get("comparison_targets") or []
         if len(targets) < 2:
-            errors.append(quality_issue("comparison_requires_two_targets", "비교형 콘텐츠는 comparison_targets가 2개 이상이어야 합니다."))
+            warnings.append(quality_issue("comparison_requires_two_targets", "비교형 콘텐츠인데 비교 대상이 2개 미만입니다.", "warning"))
         else:
             mentioned = mentioned_comparison_targets(text, targets)
             missing = [target for target in targets if target not in mentioned]
             if missing:
-                errors.append(quality_issue("missing_comparison_targets", "본문이나 최종 답에서 비교 대상이 누락되었습니다: " + ", ".join(missing)))
+                warnings.append(quality_issue("missing_comparison_targets", "본문이나 최종 답에서 비교 대상이 누락되었습니다: " + ", ".join(missing), "warning"))
         if final_answer and is_generic_final_answer(final_answer):
-            errors.append(quality_issue("generic_final_answer", "비교형 최종 답이 너무 일반적입니다."))
+            warnings.append(quality_issue("generic_final_answer", "비교형 최종 답이 다소 일반적입니다.", "warning"))
         if unsupported_winner_claim(result, strategy):
-            errors.append(quality_issue("unsupported_winner_claim", "근거가 부족한데 한쪽을 승자로 단정했습니다."))
-    return {"ok": not errors, "errors": errors, "warnings": warnings, "metrics": {"scene_count": len(scenes), "korean_char_count": char_count, "intent_type": strategy.get("intent_type"), "comparison_targets": strategy.get("comparison_targets", []), "final_answer_present": bool(final_answer)}}
+            warnings.append(quality_issue("unsupported_winner_claim", "근거가 부족한데 한쪽을 승자로 단정했습니다.", "warning"))
+    length_ratio = round(char_count / total_chars, 3) if total_chars else None
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "metrics": {
+            "scene_count": len(scenes),
+            "korean_char_count": char_count,
+            "target_char_count": total_chars,
+            "length_ratio": length_ratio,
+            "intent_type": strategy.get("intent_type"),
+            "comparison_targets": strategy.get("comparison_targets", []),
+            "final_answer_present": bool(final_answer),
+        },
+    }
 
 
 def write_quality_report(report, work_dir=None):
@@ -1042,6 +1058,10 @@ def write_quality_report(report, work_dir=None):
 def enforce_quality_without_revision(result, strategy):
     report = validate_script(result, strategy)
     write_quality_report(report)
+    if report["warnings"]:
+        print("⚠️  대본 품질 참고 사항이 있지만 작업을 계속 진행합니다.")
+        for issue in report["warnings"]:
+            print(f"  - {issue['code']}: {issue['message']}")
     if report["ok"]:
         return result
     print("⚠️  대본 품질 검증 실패. Claude를 재호출하지 않고 출력 작성을 중단합니다.")

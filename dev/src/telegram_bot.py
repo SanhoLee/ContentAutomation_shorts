@@ -426,17 +426,20 @@ def send_broll(chat_id, job_id):
 
 
 def send_render_ready(chat_id, job):
-    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
-    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
-    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
-    caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    font_size = job.get("caption_font_size")
+    margin_v = job.get("caption_margin_v")
+    margin_h = job.get("caption_margin_h")
+    caption_style = job.get("caption_style")
     offset_x = job.get("caption_offset_x")
     offset_y = job.get("caption_offset_y")
-    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
-    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
+    frame_mode = job.get("frame_mode")
+    broll_fit = job.get("broll_fit_mode")
     msg = (
         "렌더 설정 확인\n"
-        "현재: font=" + font_size + ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style + ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y) + ", frame=" + str(frame_mode) + ", broll_fit=" + str(broll_fit) + "\n"
+        "현재: font=" + display_config_value(font_size) + ", margin_v=" + display_config_value(margin_v) +
+        ", margin_h=" + display_config_value(margin_h) + ", style=" + display_config_value(caption_style) +
+        ", offset_x=" + display_config_value(offset_x) + ", offset_y=" + display_config_value(offset_y) +
+        ", frame=" + display_config_value(frame_mode) + ", broll_fit=" + display_config_value(broll_fit) + "\n"
         "조정: /render style=center-yellow frame=framed broll_fit=cover offset_y=-120\n"
         "또는 /set 으로 저장 후 재렌더"
     )
@@ -451,7 +454,6 @@ def send_render_ready(chat_id, job):
             [button("전체 취소", "cancel_all")],
         ],
     )
-
 
 def send_rendered_video(chat_id, job_id):
     path = output_file(job_id)
@@ -520,10 +522,26 @@ def safe_choice(value, name, choices):
     return value
 
 
-# ── 설정 키: /set 으로 저장, run_auto 실행 시 자동 적용
+def positive_number(value, name):
+    text = str(value).strip()
+    try:
+        number = float(text)
+    except ValueError:
+        raise ValueError(f"{name}은 양수로 입력하세요: {value}")
+    if number <= 0:
+        raise ValueError(f"{name}은 양수로 입력하세요: {value}")
+    return text
+
+
+def display_config_value(value):
+    return str(value) if value not in (None, "") else "config"
+
+
+# ── 설정 키: /set 으로 저장, run_auto/run 실행 시 자동 적용
 _PRESERVED_KEYS = {
-    "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y", "frame_mode", "broll_fit_mode", "frame_header_text",
-    "tts_voice", "web_research",
+    "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y",
+    "frame_mode", "broll_fit_mode", "frame_header_text", "frame_top_preset", "frame_bottom_preset",
+    "frame_top_pct", "frame_bottom_pct", "frame_bottom_channel_name", "tts_voice", "web_research",
 }
 
 
@@ -549,6 +567,16 @@ def _build_extra_env(job):
         env["FRAME_MODE"] = str(job["frame_mode"])
     if "broll_fit_mode" in job:
         env["BROLL_FIT_MODE"] = str(job["broll_fit_mode"])
+    if "frame_top_preset" in job:
+        env["FRAME_TOP_PRESET"] = str(job["frame_top_preset"])
+    if "frame_bottom_preset" in job:
+        env["FRAME_BOTTOM_PRESET"] = str(job["frame_bottom_preset"])
+    if "frame_top_pct" in job:
+        env["FRAME_TOP_PCT"] = str(job["frame_top_pct"])
+    if "frame_bottom_pct" in job:
+        env["FRAME_BOTTOM_PCT"] = str(job["frame_bottom_pct"])
+    if "frame_bottom_channel_name" in job:
+        env["FRAME_BOTTOM_CHANNEL_NAME"] = str(job["frame_bottom_channel_name"])
     if "frame_header_text" in job:
         env["FRAME_HEADER_TEXT"] = str(job["frame_header_text"])
     if "tts_voice" in job:
@@ -638,6 +666,7 @@ def handle_set(chat_id, job, text):
             "",
             "사용법:",
             "  /set font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120 frame=framed broll_fit=cover",
+            "  /set top_pct=14 bottom_pct=18 top_preset=brain50 channel=브레인피프티",
             "  /set voice=F2 web=off",
             "  /set reset  <- 초기화",
         ]
@@ -678,6 +707,21 @@ def handle_set(chat_id, job, text):
         if "header" in values:
             job["frame_header_text"] = values["header"]
             changed.append("header=" + job["frame_header_text"])
+        if "top_preset" in values:
+            job["frame_top_preset"] = safe_caption_style(values["top_preset"])
+            changed.append("top_preset=" + job["frame_top_preset"])
+        if "bottom_preset" in values:
+            job["frame_bottom_preset"] = safe_caption_style(values["bottom_preset"])
+            changed.append("bottom_preset=" + job["frame_bottom_preset"])
+        if "top_pct" in values:
+            job["frame_top_pct"] = positive_number(values["top_pct"], "top_pct")
+            changed.append("top_pct=" + job["frame_top_pct"])
+        if "bottom_pct" in values:
+            job["frame_bottom_pct"] = positive_number(values["bottom_pct"], "bottom_pct")
+            changed.append("bottom_pct=" + job["frame_bottom_pct"])
+        if "channel" in values:
+            job["frame_bottom_channel_name"] = values["channel"]
+            changed.append("channel=" + job["frame_bottom_channel_name"])
         if "voice" in values:
             job["tts_voice"] = values["voice"].upper()
             changed.append("voice=" + job["tts_voice"])
@@ -692,7 +736,7 @@ def handle_set(chat_id, job, text):
     if changed:
         send_message(chat_id,
             "설정 저장:\n" + "\n".join("  " + c for c in changed) +
-            "\n\n/run_auto 실행 시 자동 적용됩니다.")
+            "\n\n/run_auto와 /run 실행 시 자동 적용됩니다.")
     else:
         send_message(chat_id, "변경할 설정이 없습니다.\n사용법: /set font_size=62 margin_v=60 style=center-yellow offset_y=-120")
 
@@ -761,48 +805,54 @@ def start_render_progress(chat_id, job_id, stop_event):
 
 
 def run_render(chat_id, job):
-    job_id    = job["job_id"]
-    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
-    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
-    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
-    caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    job_id = job["job_id"]
+    args = [str(BASE_DIR / "sh" / "2_render.sh")]
+    font_size = job.get("caption_font_size")
+    margin_v = job.get("caption_margin_v")
+    margin_h = job.get("caption_margin_h")
+    caption_style = job.get("caption_style")
     offset_x = job.get("caption_offset_x")
     offset_y = job.get("caption_offset_y")
-    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
-    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
-    frame_top_preset = job.get("frame_top_preset", os.environ.get("FRAME_TOP_PRESET", "default"))
-    frame_bottom_preset = job.get("frame_bottom_preset", os.environ.get("FRAME_BOTTOM_PRESET", "default"))
+    frame_mode = job.get("frame_mode")
+    broll_fit = job.get("broll_fit_mode")
+    frame_top_preset = job.get("frame_top_preset")
+    frame_bottom_preset = job.get("frame_bottom_preset")
     frame_top_pct = job.get("frame_top_pct")
     frame_bottom_pct = job.get("frame_bottom_pct")
     frame_top_title = job.get("frame_top_title", job.get("frame_header_text", ""))
     frame_top_subtitle = job.get("frame_top_subtitle", "")
     frame_bottom_channel = job.get("frame_bottom_channel_name", "")
-    args      = [str(BASE_DIR / "sh" / "2_render.sh"),
-                 "--font-size", font_size, "--margin-v", margin_v, "--style", caption_style,
-                 "--frame-mode", frame_mode, "--broll-fit", broll_fit]
-    if offset_x not in (None, ""):
-        args += ["--offset-x", str(offset_x)]
-    if offset_y not in (None, ""):
-        args += ["--offset-y", str(offset_y)]
-    if frame_top_pct not in (None, ""):
-        args += ["--frame-top-pct", str(frame_top_pct)]
-    if frame_bottom_pct not in (None, ""):
-        args += ["--frame-bottom-pct", str(frame_bottom_pct)]
-    if frame_top_title:
-        args += ["--top-title", str(frame_top_title)]
-    if frame_top_subtitle:
-        args += ["--top-subtitle", str(frame_top_subtitle)]
-    if frame_bottom_channel:
-        args += ["--bottom-channel-name", str(frame_bottom_channel)]
-    extra_env = {"CAPTION_MARGIN_H": margin_h}
+
+    def add_arg(flag, value):
+        if value not in (None, ""):
+            args.extend([flag, str(value)])
+
+    add_arg("--font-size", font_size)
+    add_arg("--margin-v", margin_v)
+    add_arg("--margin-h", margin_h)
+    add_arg("--style", caption_style)
+    add_arg("--offset-x", offset_x)
+    add_arg("--offset-y", offset_y)
+    add_arg("--frame-mode", frame_mode)
+    add_arg("--broll-fit", broll_fit)
+    add_arg("--frame-top-preset", frame_top_preset)
+    add_arg("--frame-bottom-preset", frame_bottom_preset)
+    add_arg("--frame-top-pct", frame_top_pct)
+    add_arg("--frame-bottom-pct", frame_bottom_pct)
+    add_arg("--top-title", frame_top_title)
+    add_arg("--top-subtitle", frame_top_subtitle)
+    add_arg("--bottom-channel-name", frame_bottom_channel)
+
+    extra_env = _build_extra_env(job)
     send_message(
         chat_id,
-        "렌더링 시작: font=" + font_size +
-        ", margin_v=" + margin_v + ", margin_h=" + margin_h + ", style=" + caption_style +
-        ", offset_x=" + str(offset_x) + ", offset_y=" + str(offset_y) +
-        ", frame=" + str(frame_mode) + ", broll_fit=" + str(broll_fit),
+        "렌더링 시작: font=" + display_config_value(font_size) +
+        ", margin_v=" + display_config_value(margin_v) + ", margin_h=" + display_config_value(margin_h) +
+        ", style=" + display_config_value(caption_style) +
+        ", offset_x=" + display_config_value(offset_x) + ", offset_y=" + display_config_value(offset_y) +
+        ", frame=" + display_config_value(frame_mode) + ", broll_fit=" + display_config_value(broll_fit),
     )
-    stop_progress   = threading.Event()
+    stop_progress = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:
         run_command(args, job_id, job.get("topic"), extra_env=extra_env)
@@ -816,44 +866,47 @@ def run_render(chat_id, job):
 
 
 def _run_render_silent(chat_id, job, extra_env=None):
-    """승인 프롬프트 없이 렌더링만 실행 (run_auto 전용)."""
-    job_id    = job["job_id"]
-    font_size = str(job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE)))
-    margin_v  = str(job.get("caption_margin_v",  os.environ.get("CAPTION_MARGIN_V",  DEFAULT_CAPTION_MARGIN_V)))
-    margin_h  = str(job.get("caption_margin_h",  os.environ.get("CAPTION_MARGIN_H",  DEFAULT_CAPTION_MARGIN_H)))
-    caption_style = str(job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE)))
+    job_id = job["job_id"]
+    args = [str(BASE_DIR / "sh" / "2_render.sh")]
+    font_size = job.get("caption_font_size")
+    margin_v = job.get("caption_margin_v")
+    margin_h = job.get("caption_margin_h")
+    caption_style = job.get("caption_style")
     offset_x = job.get("caption_offset_x")
     offset_y = job.get("caption_offset_y")
-    frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
-    broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
-    frame_top_preset = job.get("frame_top_preset", os.environ.get("FRAME_TOP_PRESET", "default"))
-    frame_bottom_preset = job.get("frame_bottom_preset", os.environ.get("FRAME_BOTTOM_PRESET", "default"))
+    frame_mode = job.get("frame_mode")
+    broll_fit = job.get("broll_fit_mode")
+    frame_top_preset = job.get("frame_top_preset")
+    frame_bottom_preset = job.get("frame_bottom_preset")
     frame_top_pct = job.get("frame_top_pct")
     frame_bottom_pct = job.get("frame_bottom_pct")
     frame_top_title = job.get("frame_top_title", job.get("frame_header_text", ""))
     frame_top_subtitle = job.get("frame_top_subtitle", "")
     frame_bottom_channel = job.get("frame_bottom_channel_name", "")
-    env       = dict(extra_env or {})
-    env.setdefault("CAPTION_MARGIN_H", margin_h)
-    args = [str(BASE_DIR / "sh" / "2_render.sh"),
-            "--font-size", font_size, "--margin-v", margin_v, "--margin-h", margin_h,
-            "--style", caption_style, "--frame-mode", frame_mode, "--broll-fit", broll_fit,
-            "--frame-top-preset", frame_top_preset, "--frame-bottom-preset", frame_bottom_preset]
-    if offset_x not in (None, ""):
-        args += ["--offset-x", str(offset_x)]
-    if offset_y not in (None, ""):
-        args += ["--offset-y", str(offset_y)]
-    if frame_top_pct not in (None, ""):
-        args += ["--frame-top-pct", str(frame_top_pct)]
-    if frame_bottom_pct not in (None, ""):
-        args += ["--frame-bottom-pct", str(frame_bottom_pct)]
-    if frame_top_title:
-        args += ["--top-title", str(frame_top_title)]
-    if frame_top_subtitle:
-        args += ["--top-subtitle", str(frame_top_subtitle)]
-    if frame_bottom_channel:
-        args += ["--bottom-channel-name", str(frame_bottom_channel)]
-    stop_progress   = threading.Event()
+
+    def add_arg(flag, value):
+        if value not in (None, ""):
+            args.extend([flag, str(value)])
+
+    add_arg("--font-size", font_size)
+    add_arg("--margin-v", margin_v)
+    add_arg("--margin-h", margin_h)
+    add_arg("--style", caption_style)
+    add_arg("--offset-x", offset_x)
+    add_arg("--offset-y", offset_y)
+    add_arg("--frame-mode", frame_mode)
+    add_arg("--broll-fit", broll_fit)
+    add_arg("--frame-top-preset", frame_top_preset)
+    add_arg("--frame-bottom-preset", frame_bottom_preset)
+    add_arg("--frame-top-pct", frame_top_pct)
+    add_arg("--frame-bottom-pct", frame_bottom_pct)
+    add_arg("--top-title", frame_top_title)
+    add_arg("--top-subtitle", frame_top_subtitle)
+    add_arg("--bottom-channel-name", frame_bottom_channel)
+
+    env = _build_extra_env(job)
+    env.update(extra_env or {})
+    stop_progress = threading.Event()
     progress_thread = start_render_progress(chat_id, job_id, stop_progress)
     try:
         run_command(args, job_id, job.get("topic"), extra_env=env)
@@ -868,19 +921,20 @@ def run_next_stage(chat_id, job):
     topic = job.get("topic")
     stage = job.get("stage")
 
+    extra_env = _build_extra_env(job)
     if stage == "await_script_approval":
         send_message(chat_id, "TTS 생성 시작")
-        run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic)
+        run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "await_tts_approval"
         send_tts(chat_id, job_id)
     elif stage == "await_tts_approval":
         send_message(chat_id, "자막 생성 시작")
-        run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic)
+        run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "await_caption_approval"
         send_caption(chat_id, job_id)
     elif stage == "await_caption_approval":
         send_message(chat_id, "B-roll 생성 시작")
-        run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic)
+        run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "await_broll_approval"
         send_broll(chat_id, job_id)
     elif stage == "await_broll_approval":
@@ -893,7 +947,7 @@ def run_next_stage(chat_id, job):
         send_upload_meta(chat_id, job_id)
     elif stage == "await_upload_meta_approval":
         send_message(chat_id, "YouTube 비공개 업로드 시작")
-        run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic)
+        run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "done"
         send_message(chat_id, "업로드 완료. YouTube Studio에서 비공개 영상을 확인하세요.")
     else:
@@ -945,7 +999,7 @@ def run_remaining_to_upload(chat_id, job):
 def run_script_generation(chat_id, job, args):
     job_id = job["job_id"]
     try:
-        run_command(args, job_id, job.get("topic"))
+        run_command(args, job_id, job.get("topic"), extra_env=_build_extra_env(job))
         job["stage"] = "await_script_approval"
         send_script(chat_id, job_id)
         return True
@@ -978,10 +1032,6 @@ def handle_run_auto(chat_id, job, text):
     job.update({
         "job_id": job_id, "topic": topic,
         "approval_required": False, "stage": "running_auto",
-        "caption_font_size": DEFAULT_CAPTION_FONT_SIZE,
-        "caption_margin_v": DEFAULT_CAPTION_MARGIN_V,
-        "caption_margin_h": DEFAULT_CAPTION_MARGIN_H,
-        "web_research": DEFAULT_WEB_RESEARCH,
     })
     job.update(settings)
     if busy:
@@ -1030,21 +1080,17 @@ def handle_run(chat_id, job, text, trend=False):
         send_message(chat_id, "주제를 입력하세요. 예: /run 오메가3가 정말 뇌에 좋을까?")
         return
     job_id = new_job_id("trend" if trend else "tg")
+    settings = _preserve_settings(job)
     busy = job.get("busy")
     job.clear()
-    job.update({
-        "job_id": job_id, "topic": topic, "approval_required": True,
-        "caption_font_size": DEFAULT_CAPTION_FONT_SIZE,
-        "caption_margin_v": DEFAULT_CAPTION_MARGIN_V,
-        "caption_margin_h": DEFAULT_CAPTION_MARGIN_H,
-        "web_research": DEFAULT_WEB_RESEARCH,
-    })
+    job.update({"job_id": job_id, "topic": topic, "approval_required": True})
+    job.update(settings)
     if busy:
         job["busy"] = busy
     if trend:
         job["stage"] = "await_trend_choice"
         send_message(chat_id, f"트렌드 후보 조회 시작: {topic}")
-        run_command([str(BASE_DIR / "sh" / "0_script.sh"), "--trend", topic], job_id, topic)
+        run_command([str(BASE_DIR / "sh" / "0_script.sh"), "--trend", topic], job_id, topic, extra_env=_build_extra_env(job))
         candidates_path = work_dir(job_id) / "trend_candidates.json"
         payload = json.loads(candidates_path.read_text(encoding="utf-8"))
         lines = ["후보를 선택하세요: /pick 번호"]

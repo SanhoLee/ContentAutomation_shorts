@@ -23,140 +23,140 @@ import json
 import os
 import re
 
-from faster_whisper import WhisperModel
-
 WORK_DIR   = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
-MAX_CHARS  = int(os.environ.get("CAPTION_MAX_CHARS", "13"))  # 한글 폰트 가로폭 기준 최적값
-MIN_CHARS  = int(os.environ.get("CAPTION_MIN_CHARS", "6"))
+MAX_CHARS  = int(os.environ.get("CAPTION_MAX_CHARS", "24"))
+MIN_CHARS  = int(os.environ.get("CAPTION_MIN_CHARS", "8"))
+LINE_MAX_UNITS = float(os.environ.get("CAPTION_LINE_MAX_UNITS", "13"))
+MIN_CAPTION_DURATION = float(os.environ.get("CAPTION_MIN_DURATION_SEC", "0.8"))
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
 CAPTION_OFFSET_SEC = float(os.environ.get("CAPTION_OFFSET_SEC", "-0.15"))
 
 
 # ─────────────────────────────────────────────
-# 한국어 패턴 정의
+# 한국어 문맥 기반 자막 분할
 # ─────────────────────────────────────────────
 
-# 문장 끝 → 즉시 줄바꿈
-_SENTENCE_END = re.compile(
-    r"(습니다|입니다|이에요|아요|어요|거든요|네요|고요|ㄴ데요|군요|잖아요"
-    r"|죠|요)[.!?]?$"
-)
+_SENTENCE_END = re.compile(r"[.!?][\"'”’)]*$|(?:합니다|됩니다|집니다|드립니다|줍니다|갑니다|옵니다|이에요|예요|어요|아요|거든요|네요|군요|잖아요|죠|요)[\"'”’)]*$")
+_CLAUSE_BREAK = re.compile(r"(?:지만|는데|라서|면서|그리고|그래서|그런데|하지만|또한)[,]?$|[,;:]$")
+_SHORT_LEADS = {"이", "그", "저", "안", "못"}
+_TIME_SUFFIXES = ("주", "개월", "일", "시간", "분", "초", "년")
 
-# 절 경계 → 충분히 길 때 줄바꿈
-_CLAUSE_BREAK = re.compile(
-    r"(지만|는데|으로|에서|에게|까지|부터|처럼|보다|이나|라서|면서"
-    r"|그리고|그래서|그런데|하지만|또한|또|고)$"
-)
-
-# 조사 → 앞 토큰에 반드시 붙임 (이 앞에서 줄바꿈 금지)
-_ATTACH = re.compile(
-    r"^(을|를|이|가|은|는|의|에|로|으로|와|과|도|만"
-    r"|에서|부터|까지|에게|처럼|보다|이나|라도"
-    r"|이다|이에요|이야|입니다)$"
-)
-
-
-# ─────────────────────────────────────────────
-# 음절 수 계산 (타임스탬프 비율 기준)
-# ─────────────────────────────────────────────
 
 def _syllables(text: str) -> float:
-    """
-    한국어 실제 발화 시간은 '음절 수'에 비례.
-    한글 1자 = 1음절, 숫자 1자 ≈ 1음절, 영어 1자 ≈ 0.4음절(짧게)
-    """
-    ko  = len(re.findall(r"[\uAC00-\uD7A3]", text))
-    num = len(re.findall(r"\d", text))
+    ko = len(re.findall(r"[가-힣]", text))
+    num = len(re.findall(r"[0-9]", text))
     eng = len(re.findall(r"[A-Za-z]", text))
     return ko + num + eng * 0.4
 
 
-# ─────────────────────────────────────────────
-# 1. 자막 라인 분할
-# ─────────────────────────────────────────────
-
-def _join_tokens(tokens: list[str]) -> str:
-    """
-    토큰 목록을 한국어 규칙에 맞게 문자열로 결합.
-    조사/어미(_ATTACH)는 앞 단어에 공백 없이 붙이고,
-    그 외 일반 어절은 공백으로 구분한다.
-    """
-    if not tokens:
-        return ""
-    result = tokens[0]
-    for tok in tokens[1:]:
-        if _ATTACH.match(tok):
-            result += tok        # 조사: 공백 없이 직접 붙임
+def _display_units(text: str) -> float:
+    """1080px ASS 화면에서 한글 전각 폭을 1로 둔 보수적 가로폭 근사치."""
+    units = 0.0
+    for char in text:
+        if "가" <= char <= "힣":
+            units += 1.0
+        elif char.isspace():
+            units += 0.4
+        elif char.isascii() and char.isalnum():
+            units += 0.55
         else:
-            result += " " + tok  # 일반 어절: 공백 유지
-    return result
+            units += 0.5
+    return units
+
+
+def _is_sentence_end(text: str) -> bool:
+    return bool(_SENTENCE_END.search(text.strip()))
+
+
+def _protected_boundary(left: str, right: str) -> bool:
+    """의미가 강하게 결합된 두 어절 사이에서는 자막을 끊지 않는다."""
+    left_clean = left.strip("'\"“”‘’.,!?()")
+    right_clean = right.strip("'\"“”‘’.,!?()")
+    if left_clean in _SHORT_LEADS:
+        return True
+    if left_clean.endswith(("이라고", "라고")) and right_clean.startswith("해서"):
+        return True
+    if right_clean in {"안", "안에", "이내", "동안"} and left_clean.endswith(_TIME_SUFFIXES):
+        return True
+    return False
+
+
+def _split_sentence_tokens(tokens: list[str]) -> list[list[str]]:
+    """폭 제한 안에서 전체 문장의 경계 비용을 최소화해 고아 어절을 방지한다."""
+    n = len(tokens)
+    if not n:
+        return []
+    limit = min(float(MAX_CHARS), LINE_MAX_UNITS * 2)
+    dp = [(float("inf"), []) for _ in range(n + 1)]
+    dp[n] = (0.0, [])
+    for i in range(n - 1, -1, -1):
+        text = ""
+        for j in range(i + 1, n + 1):
+            text = " ".join(tokens[i:j])
+            width = _display_units(text)
+            if width > limit and j > i + 1:
+                break
+            if j < n and _protected_boundary(tokens[j - 1], tokens[j]):
+                continue
+            shortfall = max(0.0, MIN_CHARS - _syllables(text))
+            target = limit * 0.78
+            cost = (width - target) ** 2 + shortfall ** 2 * 5
+            if len(tokens[i:j]) == 1 and j < n:
+                cost += 18
+            if j < n and re.search(r"(?:이|가|은|는|을|를|의|에|도)[,]?$", tokens[j - 1]):
+                cost += 24
+            if j < n and _CLAUSE_BREAK.search(tokens[j - 1]):
+                cost -= 5
+            total = cost + dp[j][0]
+            if total < dp[i][0]:
+                dp[i] = (total, [tokens[i:j], *dp[j][1]])
+        if not dp[i][1]:
+            dp[i] = (dp[min(i + 1, n)][0] + 100, [[tokens[i]], *dp[min(i + 1, n)][1]])
+    return dp[0][1]
+
+
+def _wrap_caption(tokens: list[str]) -> str:
+    """한 자막 이벤트를 화면폭 안의 최대 두 줄로 의미 균형에 맞춰 배치한다."""
+    text = " ".join(tokens)
+    if _display_units(text) <= LINE_MAX_UNITS:
+        return text
+    choices = []
+    for idx in range(1, len(tokens)):
+        if _protected_boundary(tokens[idx - 1], tokens[idx]):
+            continue
+        left = " ".join(tokens[:idx])
+        right = " ".join(tokens[idx:])
+        lw, rw = _display_units(left), _display_units(right)
+        overflow = max(0.0, lw - LINE_MAX_UNITS) + max(0.0, rw - LINE_MAX_UNITS)
+        short_line = max(0.0, MIN_CHARS - lw) ** 2 + max(0.0, MIN_CHARS - rw) ** 2
+        choices.append((overflow, short_line, abs(lw - rw), left, right))
+    if not choices:
+        return text
+    _, _, _, left, right = min(choices)
+    return left + "\n" + right
 
 
 def split_script_to_lines(script_text: str) -> list[str]:
-    """
-    caption_script.txt를 한국어 문법 기반으로 자막 라인 분할.
-
-    - 조사·어미(_ATTACH)는 앞 단어에 공백 없이 붙임 (원문 띄어쓰기 보존)
-    - 문장 끝(_SENTENCE_END)에서 즉시 줄바꿈
-    - 절 경계(_CLAUSE_BREAK) + 충분한 길이일 때 줄바꿈
-    - MAX_CHARS 초과 시 강제 줄바꿈
-    """
-    tokens  = script_text.replace("\n", " ").replace("\r", " ").split()
-    tokens  = [t for t in tokens if t]
-
-    lines      = []
-    cur_tokens = []   # 현재 라인에 쌓이는 토큰 목록
-    cur_syl    = 0.0
-
-    for i, token in enumerate(tokens):
-        tok_syl = _syllables(token)
-
-        # 조사/어미 → 공백 없이 앞 토큰에 붙임 (줄바꿈 트리거 검사 포함)
-        if _ATTACH.match(token) and cur_tokens:
-            cur_tokens.append(token)
-            cur_syl += tok_syl
-            joined = _join_tokens(cur_tokens)
-            if _SENTENCE_END.search(joined):
-                lines.append(joined)
-                cur_tokens = []; cur_syl = 0.0
-            continue
-
-        # 최대 음절수 초과 → 현재 라인 마감
-        if cur_syl + tok_syl > MAX_CHARS and cur_syl >= MIN_CHARS:
-            line = _join_tokens(cur_tokens)
-            if line:
-                lines.append(line)
-            cur_tokens = []; cur_syl = 0.0
-
-        cur_tokens.append(token)
-        cur_syl += tok_syl
-        joined = _join_tokens(cur_tokens)
-
-        # 다음 토큰이 조사면 여기서 끊지 않음
-        next_tok = tokens[i + 1] if i + 1 < len(tokens) else ""
-        if _ATTACH.match(next_tok):
-            continue
-
-        if _SENTENCE_END.search(joined):
-            lines.append(joined)
-            cur_tokens = []; cur_syl = 0.0
-        elif _CLAUSE_BREAK.search(joined) and cur_syl >= MIN_CHARS:
-            lines.append(joined)
-            cur_tokens = []; cur_syl = 0.0
-
-    if cur_tokens:
-        line = _join_tokens(cur_tokens)
-        if line:
-            lines.append(line)
-
-    return [l for l in lines if l.strip()]
-
+    """원문 공백·문장·문단 경계를 보존하는 1~2줄 자막 이벤트를 만든다."""
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", script_text) if part.strip()]
+    captions = []
+    for paragraph in paragraphs:
+        sentence_tokens = []
+        for token in paragraph.replace("\n", " ").split():
+            sentence_tokens.append(token)
+            if _is_sentence_end(token):
+                captions.extend(_wrap_caption(group) for group in _split_sentence_tokens(sentence_tokens))
+                sentence_tokens = []
+        if sentence_tokens:
+            captions.extend(_wrap_caption(group) for group in _split_sentence_tokens(sentence_tokens))
+    return [caption for caption in captions if caption.strip()]
 
 # ─────────────────────────────────────────────
 # 2. Whisper → 단어 타임스탬프
 # ─────────────────────────────────────────────
 
 def get_whisper_words(audio_path: str, tts_script: str) -> list[dict]:
+    from faster_whisper import WhisperModel
     """
     faster-whisper로 단어 타임스탬프만 추출.
     initial_prompt = tts_script (TTS가 실제로 발화한 텍스트)
@@ -366,9 +366,27 @@ def align_lines_to_timestamps(
         result[-1]["end"] = round(audio_end, 3)
 
     result = apply_caption_offset(result, audio_end)
+    result = stabilize_caption_durations(result)
     print(f"  텍스트 앵커 정렬: anchor={anchor_hits}, fallback={fallback_hits}")
     print(f"  자막 오프셋 적용: {CAPTION_OFFSET_SEC:+.2f}s")
     return result
+
+def stabilize_caption_durations(captions: list[dict]) -> list[dict]:
+    """너무 짧은 서술어 자막을 앞 문맥에 병합해 최소 가독 시간을 확보한다."""
+    stable = []
+    limit = min(float(MAX_CHARS), LINE_MAX_UNITS * 2)
+    for cap in captions:
+        item = dict(cap)
+        duration = item["end"] - item["start"]
+        if duration < MIN_CAPTION_DURATION and stable and not _is_sentence_end(stable[-1]["text"]):
+            combined = stable[-1]["text"].replace("\n", " ") + " " + item["text"].replace("\n", " ")
+            if _display_units(combined) <= limit:
+                tokens = combined.split()
+                stable[-1]["text"] = _wrap_caption(tokens)
+                stable[-1]["end"] = item["end"]
+                continue
+        stable.append(item)
+    return stable
 
 # ─────────────────────────────────────────────
 # 4. SRT 출력

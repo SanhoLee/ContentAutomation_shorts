@@ -30,6 +30,7 @@ CLAUDE_SCRIPT_MODEL = SETTINGS.claude_script_model
 CLAUDE_QUERY_MODEL = SETTINGS.claude_query_model
 CLAUDE_STRATEGY_MODEL = SETTINGS.claude_strategy_model
 CLAUDE_STRATEGY_FALLBACK_MODELS = SETTINGS.claude_strategy_fallback_models
+CLAUDE_STRATEGY_MAX_TOKENS = SETTINGS.claude_strategy_max_tokens
 MAX_TOKENS = SETTINGS.max_tokens
 ENABLE_WEB_RESEARCH = SETTINGS.enable_web_research
 WEB_RESEARCH_TIMEOUT = SETTINGS.web_research_timeout
@@ -166,8 +167,12 @@ def record_claude_usage(stage, model, response):
 def call_claude_api(payload, timeout, label, stage):
     import requests
 
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError(f"{label} 호출에 필요한 ANTHROPIC_API_KEY가 없습니다.")
+
     headers = {
-        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
@@ -605,6 +610,73 @@ def normalize_strategy_contract(strategy, topic):
 # Stage 1 — 전략 수립 (Haiku)
 # ─────────────────────────────────────────────
 
+def strategy_output_schema():
+    string_fields = (
+        "main_keyword", "search_intent", "hook_type", "title",
+        "search_title_format", "core_message", "intent_type",
+        "viewer_question", "answer_requirement", "evidence_status",
+        "final_answer", "title_promise", "cta_next",
+    )
+    properties = {field: {"type": "string"} for field in string_fields}
+    for field in ("sub_keywords", "thumbnail_text", "comparison_targets", "comparison_criteria", "required_beats"):
+        properties[field] = {"type": "array", "items": {"type": "string"}}
+    properties["frame_header"] = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "subtitle": {"type": "string"},
+        },
+        "required": ["title", "subtitle"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
+def local_strategy_fallback(topic, trend_context=None, reason=None):
+    selected = ""
+    if trend_context:
+        selected = trend_context.get("selected", {}).get("keyword", "")
+    keyword = normalize_keyword(selected or topic) or "오늘의 건강 습관"
+    title = normalize_keyword(topic) or keyword
+    strategy = normalize_strategy_contract({
+        "topic": topic,
+        "main_keyword": keyword[:12],
+        "sub_keywords": [],
+        "search_intent": "핵심 내용을 쉽게 확인하고 싶음",
+        "hook_type": "공감형",
+        "title": title[:28],
+        "search_title_format": "생활습관형",
+        "core_message": "부담을 줄이는 작은 습관부터 시작하세요",
+        "thumbnail_text": [keyword[:14]],
+        "frame_header": {
+            "title": keyword[:7],
+            "subtitle": "핵심만 쉽게 알려드립니다",
+        },
+        "cta_next": "다음 건강 습관",
+        "intent_type": detect_content_intent(topic),
+        "viewer_question": title,
+        "answer_requirement": "핵심 포인트와 실천 방법을 분명히 설명할 것",
+        "comparison_targets": extract_named_comparison_targets(topic),
+        "comparison_criteria": list(DEFAULT_COMPARISON_CRITERIA),
+        "evidence_status": "limited",
+        "final_answer": "근거를 바탕으로 부담을 줄이는 실천부터 시작하는 것이 좋습니다.",
+        "required_beats": list(DEFAULT_EXPLANATION_BEATS),
+        "title_promise": title,
+    }, topic)
+    strategy["strategy_source"] = "local_fallback"
+    if reason:
+        strategy["strategy_error"] = str(reason)[:700]
+    with open(STRATEGY_PATH, "w", encoding="utf-8") as f:
+        json.dump(strategy, f, ensure_ascii=False, indent=2)
+    print("⚠️  Stage 1 모델 호출이 모두 실패해 로컬 기본 전략으로 Stage 2를 계속 진행합니다.")
+    return strategy
+
+
 def plan_strategy(topic, abstracts="", web_research="", trend_context=None):
     """
     Haiku로 빠르게 콘텐츠 전략(검색 키워드·제목·훅 유형·핵심 메시지)을 결정한다.
@@ -678,47 +750,73 @@ JSON만 출력. 설명·주석·마크다운 없이.
   "cta_next": ""
 }}"""
 
-    headers = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
-               "anthropic-version": "2023-06-01", "content-type": "application/json"}
-    payload = {"max_tokens": 900,
-               "messages": [{"role": "user", "content": prompt}]}
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return local_strategy_fallback(topic, trend_context, "ANTHROPIC_API_KEY가 없습니다.")
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "max_tokens": CLAUDE_STRATEGY_MAX_TOKENS,
+        "messages": [{"role": "user", "content": prompt}],
+        "output_config": {
+            "format": {
+                "type": "json_schema",
+                "schema": strategy_output_schema(),
+            }
+        },
+    }
 
     last_err = None
     for model in strategy_model_candidates():
         payload["model"] = model
-        for attempt in range(1, 4):
-            try:
-                print(f"📋 Stage 1: 전략 수립 중 (시도 {attempt}, model={model})...")
-                res = requests.post("https://api.anthropic.com/v1/messages",
-                                    headers=headers, json=payload, timeout=30)
-                if is_invalid_model_error(res):
-                    last_err = Exception(describe_http_error(res))
-                    print(f"  ⚠️  모델 오류, 다음 후보로 전환: {last_err}")
-                    break
-                if res.status_code >= 400:
-                    last_err = Exception(describe_http_error(res))
-                    res.raise_for_status()
-                raw = res.json()["content"][0]["text"].strip()
-                raw = re.sub(r"^```(?:json)?", "", raw).rstrip("`").strip()
-                strategy = normalize_strategy_contract(json.loads(raw), topic)
+        try:
+            print(f"📋 Stage 1: 전략 수립 중 (model={model}, max_tokens={CLAUDE_STRATEGY_MAX_TOKENS})...")
+            res = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+            if res.status_code >= 400:
+                last_err = RuntimeError(describe_http_error(res))
+                print(f"  ⚠️  실패, 다음 모델로 전환: {last_err}")
+                continue
 
-                print(f"  ✅ main_keyword    : {strategy.get('main_keyword')}")
-                print(f"  ✅ title           : {strategy.get('title')}")
-                print(f"  ✅ hook_type       : {strategy.get('hook_type')}")
-                print(f"  ✅ search_format   : {strategy.get('search_title_format')}")
-                print(f"  ✅ core_message    : {strategy.get('core_message')}")
-                print(f"  ✅ thumbnail_text  : {strategy.get('thumbnail_text')}")
+            data = res.json()
+            data["_request_id"] = (
+                res.headers.get("request-id")
+                or res.headers.get("anthropic-request-id")
+                or res.headers.get("x-request-id")
+            )
+            record_claude_usage("strategy", model, data)
+            stop_reason = data.get("stop_reason")
+            if stop_reason != "end_turn":
+                last_err = RuntimeError(f"Stage 1 비정상 종료: stop_reason={stop_reason}")
+                print(f"  ⚠️  실패, 다음 모델로 전환: {last_err}")
+                continue
 
-                with open(STRATEGY_PATH, "w", encoding="utf-8") as f:
-                    json.dump(strategy, f, ensure_ascii=False, indent=2)
-                return strategy
+            raw = data["content"][0]["text"].strip()
+            strategy = normalize_strategy_contract(json.loads(raw), topic)
+            strategy["strategy_source"] = "claude"
+            print(f"  ✅ main_keyword    : {strategy.get('main_keyword')}")
+            print(f"  ✅ title           : {strategy.get('title')}")
+            print(f"  ✅ hook_type       : {strategy.get('hook_type')}")
+            print(f"  ✅ search_format   : {strategy.get('search_title_format')}")
+            print(f"  ✅ core_message    : {strategy.get('core_message')}")
+            print(f"  ✅ thumbnail_text  : {strategy.get('thumbnail_text')}")
 
-            except Exception as e:
-                last_err = e
-                print(f"  ⚠️  실패: {e}")
-                time.sleep(3)
+            with open(STRATEGY_PATH, "w", encoding="utf-8") as f:
+                json.dump(strategy, f, ensure_ascii=False, indent=2)
+            return strategy
+        except Exception as exc:
+            last_err = exc
+            print(f"  ⚠️  실패, 다음 모델로 전환: {exc}")
 
-    raise RuntimeError(f"Stage 1 전략 수립 실패: {last_err}")
+    return local_strategy_fallback(topic, trend_context, last_err)
 
 
 # ─────────────────────────────────────────────

@@ -12,7 +12,11 @@ import script_runtime
 
 
 class ScriptRuntimeSettingsTests(unittest.TestCase):
-    KEYS = ("SPEECH_PACE", "ATEMPO", "CHARS_PER_SEC", "TARGET_DURATION_SEC")
+    KEYS = (
+        "SPEECH_PACE", "ATEMPO", "CHARS_PER_SEC", "TARGET_DURATION_SEC",
+        "CLAUDE_MODEL", "CLAUDE_SCRIPT_MODEL", "CLAUDE_STRATEGY_MODEL",
+        "CLAUDE_STRATEGY_FALLBACK_MODELS", "CLAUDE_STRATEGY_MAX_TOKENS",
+    )
 
     def load_settings(self, **values):
         previous = {key: os.environ.get(key) for key in self.KEYS}
@@ -26,6 +30,16 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
                 os.environ.pop(key, None)
                 if previous[key] is not None:
                     os.environ[key] = previous[key]
+
+    def test_stage1_defaults_use_resilient_model_order_and_budget(self):
+        settings = self.load_settings()
+        self.assertEqual(settings.claude_strategy_model, "claude-haiku-4-5-20251001")
+        self.assertEqual(
+            settings.claude_strategy_fallback_models,
+            ("claude-sonnet-4-5-20250929",),
+        )
+        self.assertEqual(settings.claude_script_model, "claude-sonnet-4-6")
+        self.assertEqual(settings.claude_strategy_max_tokens, 2000)
 
     def test_pace_controls_length_without_chars_per_sec(self):
         settings = self.load_settings(SPEECH_PACE="normal", TARGET_DURATION_SEC=60)

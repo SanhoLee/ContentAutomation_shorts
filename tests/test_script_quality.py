@@ -6,6 +6,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+import requests
 from pathlib import Path
 
 
@@ -67,7 +69,81 @@ def complete_result():
     }
 
 
+class StrategyResponse:
+    def __init__(self, stop_reason="max_tokens", text='{"partial": "value'):
+        self.status_code = 200
+        self.headers = {}
+        self._data = {
+            "id": "msg_test",
+            "stop_reason": stop_reason,
+            "usage": {"input_tokens": 100, "output_tokens": 2000},
+            "content": [{"type": "text", "text": text}],
+        }
+        self.text = text
+
+    def json(self):
+        return dict(self._data)
+
+
 class ScriptQualityTests(unittest.TestCase):
+    def test_stage1_uses_each_model_once_then_continues_with_local_strategy(self):
+        calls = []
+        old_post = requests.post
+        old_models = (
+            script0.CLAUDE_STRATEGY_MODEL,
+            script0.CLAUDE_STRATEGY_FALLBACK_MODELS,
+            script0.CLAUDE_SCRIPT_MODEL,
+            script0.CLAUDE_STRATEGY_MAX_TOKENS,
+            script0.STRATEGY_PATH,
+            script0.CLAUDE_USAGE_PATH,
+            os.environ.get("ANTHROPIC_API_KEY"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                os.environ["ANTHROPIC_API_KEY"] = "test-key"
+                script0.CLAUDE_STRATEGY_MODEL = "claude-haiku-4-5-20251001"
+                script0.CLAUDE_STRATEGY_FALLBACK_MODELS = ("claude-sonnet-4-5-20250929",)
+                script0.CLAUDE_SCRIPT_MODEL = "claude-sonnet-4-6"
+                script0.CLAUDE_STRATEGY_MAX_TOKENS = 2000
+                script0.STRATEGY_PATH = str(Path(tmp, "strategy.json"))
+                script0.CLAUDE_USAGE_PATH = str(Path(tmp, "usage.jsonl"))
+
+                def fake_post(url, headers, json, timeout):
+                    calls.append(dict(json))
+                    return StrategyResponse()
+
+                requests.post = fake_post
+                with contextlib.redirect_stdout(io.StringIO()):
+                    strategy = script0.plan_strategy("숙취 다음날 세 가지 습관")
+
+                self.assertEqual(
+                    [call["model"] for call in calls],
+                    [
+                        "claude-haiku-4-5-20251001",
+                        "claude-sonnet-4-5-20250929",
+                        "claude-sonnet-4-6",
+                    ],
+                )
+                self.assertTrue(all(call["max_tokens"] == 2000 for call in calls))
+                self.assertTrue(all(call["output_config"]["format"]["type"] == "json_schema" for call in calls))
+                self.assertEqual(strategy["strategy_source"], "local_fallback")
+                self.assertTrue(Path(script0.STRATEGY_PATH).exists())
+            finally:
+                requests.post = old_post
+                (
+                    script0.CLAUDE_STRATEGY_MODEL,
+                    script0.CLAUDE_STRATEGY_FALLBACK_MODELS,
+                    script0.CLAUDE_SCRIPT_MODEL,
+                    script0.CLAUDE_STRATEGY_MAX_TOKENS,
+                    script0.STRATEGY_PATH,
+                    script0.CLAUDE_USAGE_PATH,
+                    old_api_key,
+                ) = old_models
+                if old_api_key is None:
+                    os.environ.pop("ANTHROPIC_API_KEY", None)
+                else:
+                    os.environ["ANTHROPIC_API_KEY"] = old_api_key
+
     def test_invalid_model_error_detects_404_model_not_found(self):
         response = FakeResponse(404, {"error": {"message": "model claude-test not found"}})
         self.assertTrue(script0.is_invalid_model_error(response))

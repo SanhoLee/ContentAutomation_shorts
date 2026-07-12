@@ -41,6 +41,9 @@ INSIGHTS_PATH = SETTINGS.insights_path
 total_chars = SETTINGS.total_chars
 prompt_target_chars = SETTINGS.prompt_target_chars
 min_scenes_estimate = SETTINGS.min_scenes_estimate
+MAX_SCRIPT_LENGTH_RATIO = 1.40
+PROMPT_MIN_LENGTH_RATIO = 0.90
+PROMPT_MAX_LENGTH_RATIO = 1.15
 
 TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
 PUBMED_STATUS_PATH = os.path.join(WORK_DIR, "pubmed_status.json")
@@ -792,6 +795,10 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
         feedback_block = (f"\n{feedback_insights}\n"
                           "※ 샘플 수 3 미만 항목은 불확실합니다. 근거 자료를 항상 우선하세요.\n")
 
+    prompt_min_chars = max(1, int(total_chars * PROMPT_MIN_LENGTH_RATIO))
+    prompt_max_chars = max(prompt_min_chars, int(total_chars * PROMPT_MAX_LENGTH_RATIO))
+    hard_max_chars = max(prompt_max_chars, int(total_chars * MAX_SCRIPT_LENGTH_RATIO))
+
     return f"""아래는 '{topic}'와 관련한 연구 자료와 콘텐츠 전략입니다. 
 
 당신은 50대 이상 시청자들의 일상적 고민을 진심으로 경청하고, 불안감을 따뜻하게 보듬어주는 '다정한 동네 주치의'이자 스토리텔러입니다. 정보를 다그치듯 나열하지 말고, 자녀나 오랜 친구가 조곤조곤 챙겨주듯 다정한 이야기로 풀어내세요.
@@ -817,22 +824,24 @@ main_keyword       : {main_keyword}
 {beats_block}
 
 ─── 📖 따뜻한 스토리텔링 흐름 ───
-[1단계: 내 마음을 알아주는 공감 (Scene 1~2)]
+[1단계: 내 마음을 알아주는 공감]
 - 시청자의 일상적인 걱정({search_intent})을 알아주는 문장으로 시작하세요.
 - "{main_keyword}"를 첫 문장에 기계적으로 넣기보다, "혹시 요즘 이런 적 있으셨나요?"처럼 자연스럽게 대화를 건네며 도입부(Scene 1~2 이내)에 편안하게 녹여내세요.
 
-[2단계: 다정한 눈높이 설명 (Scene 3~6)]
+[2단계: 다정한 눈높이 설명]
 - 어려운 의학 수치나 연구 결과를 지식 자랑하듯 설명하지 마세요. "이게 우리 몸속에서 어떤 상태냐면요~"처럼 일상적인 비유(예: 오래 켜둔 전구, 가을철 마른 나무 등)를 들어 쉽게 풀어주세요.
 - 시청자가 무안하거나 죄책감을 느끼지 않게 하는 것이 핵심입니다. "여러분이 잘못하신 게 아니라, 자연스러운 현상이에요"라는 뉘앙스를 바닥에 깔아주세요.
 
-[3단계: 안도감을 주는 실천과 다짐 (Scene 7~10)]
+[3단계: 안도감을 주는 실천과 다짐]
 - 겁을 주거나 위협하며 끝내지 마세요. 오늘 당장, 당장 힘들이지 않고 시작할 수 있는 '구체적이고 작은 행동 팁 1가지'(시간, 양, 횟수 명시)를 선물하듯 제안하세요.
 - 중간에 시청자의 일상을 다정하게 묻는 질문을 던져 댓글을 유도하세요. (예: "오늘 아침엔 다들 무얼 드셨나요? 댓글로 소통해 봐요.")
 - 마지막에는 핵심 메시지인 "{core_message}"를 건네며 안도감을 주고, "소중한 가족과 친구분들에게도 이 따뜻한 소식을 공유해 주세요"라는 멘트를 넣으세요.
 - 다음 주제인 "{cta_next}"를 예고하며 따뜻하게 인사를 건네며 마무리하세요.
 
 ─── 📝 작성 및 포맷 규칙 ───
-1. 분량 및 씬: 한국어 기준 최소 {prompt_target_chars}자 이상, 씬(Scene)은 최소 {min_scenes_estimate}개 이상 넉넉하게 구성할 것.
+1. 분량 및 씬: scenes의 text에 포함된 한글 음절만 세어 총 {prompt_min_chars}~{prompt_max_chars}자로 작성하세요. 공백, 숫자, 영문, 문장부호는 글자 수에서 제외합니다. 절대 상한은 {hard_max_chars}자이며 이를 넘기지 마세요.
+   - 훅, 핵심 설명, 필수 전개 비트, 구체적 실천, final_answer로 이어지는 결론을 유지하면서 반복 설명과 긴 비유를 압축하세요.
+   - 장면 수는 절대 조건이 아닙니다. 문맥과 호흡에 맞게 보통 5~10개 사이에서 유연하게 정하고, 각 장면은 1~2개의 짧은 문장으로 작성하세요.
 2. 문체 및 톤: {pace_instruction()} 철저하게 존댓말을 사용하며, 다정하고 친근한 말투를 유지하세요.
 3. 전문용어 순화: 어려운 용어는 한 장면에 1개 이하로 제한하고, 무조건 쉬운 말로 풀어서 쓰세요. 
    - 예: 인지기능 -> '기억하고 판단하는 힘', 염증 반응 -> '몸속 경보가 켜진 상태'
@@ -877,10 +886,53 @@ def call_claude(prompt):
     return call_claude_api(payload, CLAUDE_TIMEOUT, "Claude 대본 생성", "script")
 
 
-def parse_claude_json(response):
+def result_char_count(result):
+    return sum(korean_char_count(str(scene.get("text", ""))) for scene in (result.get("scenes") or []) if isinstance(scene, dict))
+
+
+def build_compression_prompt(result, strategy):
+    target_min = max(1, int(total_chars * PROMPT_MIN_LENGTH_RATIO))
+    target_max = max(target_min, int(total_chars * PROMPT_MAX_LENGTH_RATIO))
+    hard_max = max(target_max, int(total_chars * MAX_SCRIPT_LENGTH_RATIO))
+    return f"""아래 유튜브 쇼츠 JSON 대본을 문맥과 사실관계를 유지한 채 압축하세요.
+
+[압축 규칙]
+- scenes의 text에 포함된 한글 음절만 세어 총 {target_min}~{target_max}자로 맞추세요.
+- 어떠한 경우에도 {hard_max}자를 넘기지 마세요. 공백, 숫자, 영문, 문장부호는 계산에서 제외합니다.
+- 제목의 약속, 훅, 핵심 설명, 필수 전개 비트, 구체적 실천, final_answer와 결론을 보존하세요.
+- 새로운 의학 주장, 수치, 근거를 추가하지 마세요.
+- 반복, 장황한 비유, 중복 CTA를 먼저 줄이세요. 문장 중간을 기계적으로 자르지 마세요.
+- 장면 수는 고정하지 말고 자연스러운 문맥에 맞게 합치거나 줄이세요.
+- 기존 JSON 필드와 유효한 JSON 객체 형식을 유지하고 JSON만 출력하세요.
+
+[콘텐츠 계약]
+{json.dumps(normalize_strategy_contract(strategy, strategy.get('topic', '')), ensure_ascii=False)}
+
+[원본 JSON]
+{json.dumps(result, ensure_ascii=False)}"""
+
+
+def revise_overlong_script(result, strategy):
+    original_count = result_char_count(result)
+    hard_max = int(total_chars * MAX_SCRIPT_LENGTH_RATIO)
+    if original_count <= hard_max:
+        return result
+    with open(os.path.join(WORK_DIR, "script_before_compression.json"), "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    prompt = build_compression_prompt(result, strategy)
+    with open(os.path.join(WORK_DIR, "claude_compression_prompt.txt"), "w", encoding="utf-8") as f:
+        f.write(prompt)
+    payload = {"model": CLAUDE_STRATEGY_MODEL, "max_tokens": MAX_TOKENS, "messages": [{"role": "user", "content": prompt}]}
+    print(f"대본이 허용 상한을 초과해 Haiku 압축 보정을 1회 수행합니다: {original_count}자 > {hard_max}자")
+    response = call_claude_api(payload, CLAUDE_TIMEOUT, "Claude 대본 압축", "script_compression")
+    revised = parse_claude_json(response, raw_filename="raw_compression_response.txt")
+    print(f"Haiku 압축 보정 결과: {original_count}자 -> {result_char_count(revised)}자")
+    return revised
+
+def parse_claude_json(response, raw_filename="raw_response.txt"):
     print(f"  stop_reason: {response['stop_reason']}, usage: {response['usage']}")
     raw = response["content"][0]["text"]
-    with open(os.path.join(WORK_DIR, "raw_response.txt"), "w", encoding="utf-8") as f:
+    with open(os.path.join(WORK_DIR, raw_filename), "w", encoding="utf-8") as f:
         f.write(raw)
     if response["stop_reason"] == "max_tokens":
         raise Exception("Claude 출력 잘림. MAX_TOKENS를 높이세요.")
@@ -955,8 +1007,7 @@ def trim_scenes(scenes):
         print("생성 분량이 목표보다 길지만 장면을 유지하고 작업을 계속 진행합니다.")
     else:
         print(f"트리밍 불필요, {len(scenes)}개 장면")
-    scenes = ensure_scene_count(scenes, target_scene_count())
-    print(f"장면 수 보정 후: {len(scenes)}개 장면 (목표: {target_scene_count()}개)")
+    print(f"문맥에 따라 생성된 장면 수: {len(scenes)}개")
     return scenes
 
 
@@ -1016,8 +1067,8 @@ def validate_script(result, strategy):
         warnings.append(quality_issue("promise_not_fulfilled", "제목과 질문의 약속 충족 여부를 확인해 주세요.", "warning"))
     if scenes and char_count < total_chars * 0.55:
         warnings.append(quality_issue("under_target_length", f"대본이 목표보다 많이 짧습니다: {char_count}자", "warning"))
-    if char_count > total_chars * 1.35:
-        warnings.append(quality_issue("over_target_length", f"대본이 목표보다 많이 깁니다: {char_count}자", "warning"))
+    if char_count > total_chars * MAX_SCRIPT_LENGTH_RATIO:
+        errors.append(quality_issue("over_target_length", f"대본이 허용 상한을 넘었습니다: {char_count}자"))
     if strategy.get("intent_type") == CONTENT_INTENT_COMPARISON:
         targets = strategy.get("comparison_targets") or []
         if len(targets) < 2:
@@ -1160,8 +1211,8 @@ def main():
 
     print(f"주제: {topic}")
     print(
-        f"목표: {total_chars}자 / 프롬프트 요청: {prompt_target_chars}자, "
-        f"pace={SPEECH_PACE}, density={SCRIPT_DENSITY:.2f}, 최소 {min_scenes_estimate}개 장면"
+        f"목표: {total_chars}자 / 허용 상한: {int(total_chars * MAX_SCRIPT_LENGTH_RATIO)}자, "
+        f"pace={SPEECH_PACE}, density={SCRIPT_DENSITY:.2f}, 장면 수는 문맥에 따라 유연하게 구성"
     )
 
     # ── 1. PubMed 초록 수집
@@ -1220,6 +1271,7 @@ def main():
 
     response = call_claude(prompt)
     result   = parse_claude_json(response)
+    result   = revise_overlong_script(result, strategy)
     result   = enforce_quality_without_revision(result, strategy)
     write_outputs(result, strategy, trend_context)
 

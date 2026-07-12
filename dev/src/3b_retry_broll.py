@@ -1,136 +1,71 @@
 import json
 import os
-import random
 import requests
 import subprocess
+
+from broll_policy import normalization_filter, select_video
 
 WORK_DIR = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
 TEMP_DIR = os.path.join(WORK_DIR, "broll_parts")
 PEXELS_API_KEY = os.environ["PEXELS_API_KEY"]
-FADE_DURATION = 0.3
-
 headers = {"Authorization": PEXELS_API_KEY}
 
 
-def select_video(videos, used_video_ids, min_duration):
-    min_duration = float(min_duration)
-    unused = [v for v in videos if v.get("id") not in used_video_ids]
-    pool = unused or videos
-    long_enough = [v for v in pool if float(v.get("duration") or 0) >= min_duration]
-    candidates = long_enough or pool
-    return random.choice(candidates), not bool(unused), not bool(long_enough)
-
-
-def fetch_clip(query, save_path, used_video_ids, min_duration):
-    res = requests.get(
-        "https://api.pexels.com/videos/search",
-        headers=headers,
-        params={"query": query, "orientation": "portrait", "per_page": 40},
-        timeout=30,
-    )
+def fetch_clip(query, save_path, used_video_ids, orientation_history, min_duration):
+    res = requests.get("https://api.pexels.com/videos/search", headers=headers, params={"query": query, "per_page": 40}, timeout=30)
     res.raise_for_status()
-    videos = res.json().get("videos", [])
-    if not videos:
+    selected = select_video(res.json().get("videos", []), min_duration, used_video_ids, orientation_history)
+    if not selected:
         return None
-    video, duplicate_allowed, short_allowed = select_video(videos, used_video_ids, min_duration)
+    video, target = selected["video"], selected["file"]
     video_id = video.get("id")
     if video_id is not None:
         used_video_ids.add(video_id)
-    portrait = [v for v in video["video_files"] if v["width"] < v["height"]]
-    candidates = portrait or video["video_files"]
-    target = random.choice(candidates)
-    video_data = requests.get(target["link"], timeout=60)
-    video_data.raise_for_status()
+    orientation_history.append(selected["orientation"])
+    data = requests.get(target["link"], timeout=60)
+    data.raise_for_status()
     with open(save_path, "wb") as f:
-        f.write(video_data.content)
-    return {
-        "video_id": video_id,
-        "video_duration": video.get("duration"),
-        "duplicate_allowed": duplicate_allowed,
-        "short_allowed": short_allowed,
-    }
+        f.write(data.content)
+    return {"video_id": video_id, "video_duration": video.get("duration"), "source_width": target["width"], "source_height": target["height"], "orientation": selected["orientation"], "fit_mode": selected["fit_mode"], "crop_retention": selected["crop_retention"], "duplicate_allowed": selected["duplicate_allowed"], "short_allowed": selected["short_allowed"]}
 
 
-def normalize(raw_path, out_path, duration):
-    fade_out_start = max(duration - FADE_DURATION, 0)
-    vf = (
-        "scale=1080:1920:force_original_aspect_ratio=increase,"
-        "crop=1080:1920,fps=30,"
-        f"fade=t=in:st=0:d={FADE_DURATION},"
-        f"fade=t=out:st={fade_out_start}:d={FADE_DURATION}"
-    )
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-stream_loop", "-1", "-i", raw_path,
-        "-t", str(duration),
-        "-vf", vf,
-        "-an",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        out_path
-    ], check=True, capture_output=True)
+def normalize(raw_path, out_path, duration, fit_mode):
+    subprocess.run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", raw_path, "-t", str(duration), "-filter_complex", normalization_filter(fit_mode, duration), "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", out_path], check=True, capture_output=True)
 
 
 with open(os.path.join(WORK_DIR, "scenes_timed.json"), "r", encoding="utf-8") as f:
     scenes = json.load(f)
-
 with open(os.path.join(WORK_DIR, "broll_status.json"), "r", encoding="utf-8") as f:
     results = json.load(f)
-
 failed = [r for r in results if r["status"] == "failed"]
 used_video_ids = {r.get("video_id") for r in results if r.get("video_id")}
-
+orientation_history = [r["orientation"] for r in sorted(results, key=lambda item: item["index"]) if r.get("orientation")]
 if not failed:
     print("재시도할 장면이 없습니다.")
-    exit()
+    raise SystemExit(0)
 
-print(f"재시도 대상: {len(failed)}개 -> {[r['index'] for r in failed]}")
-
-for r in failed:
-    i = r["index"]
-    scene = scenes[i]
+for result in failed:
+    index = result["index"]
+    scene = scenes[index]
     duration = scene.get("render_duration", scene["duration"])
-
-    # 쿼리를 단순화해서 재시도 (앞 2단어만)
-    simplified_query = " ".join(scene["visual_query"].split()[:2])
-    raw_path = os.path.join(TEMP_DIR, f"raw_{i:02d}.mp4")
-    out_path = os.path.join(TEMP_DIR, f"part_{i:02d}.mp4")
-
-    print(f"[{i}] 재시도: '{simplified_query}'")
-
-    clip_info = fetch_clip(simplified_query, raw_path, used_video_ids, duration)
+    query = " ".join(scene["visual_query"].split()[:2])
+    raw_path = os.path.join(TEMP_DIR, f"raw_{index:02d}.mp4")
+    out_path = os.path.join(TEMP_DIR, f"part_{index:02d}.mp4")
+    print(f"[{index}] 재시도: '{query}'")
+    clip_info = fetch_clip(query, raw_path, used_video_ids, orientation_history, duration)
     if clip_info:
-        normalize(raw_path, out_path, duration)
-        r["status"] = "ok_retry"
-        r["query_used"] = simplified_query
-        r.update(clip_info)
-        print("    -> 성공")
+        normalize(raw_path, out_path, duration, clip_info["fit_mode"])
+        result.update({"status": "ok_retry", "query_used": query, **clip_info})
+        print(f"    -> 성공 ({clip_info['orientation']}, {clip_info['fit_mode']})")
     else:
         print("    -> 여전히 실패")
 
-# 상태 업데이트
 with open(os.path.join(WORK_DIR, "broll_status.json"), "w", encoding="utf-8") as f:
     json.dump(results, f, ensure_ascii=False, indent=2)
-
-# 재concat
-still_failed = [r for r in results if r["status"] == "failed"]
-if still_failed:
-    print(f"\n여전히 실패: {[r['index'] for r in still_failed]} - 이 장면들은 영상에서 제외됩니다.")
-
-normalized_paths = [
-    os.path.join(TEMP_DIR, f"part_{r['index']:02d}.mp4")
-    for r in results if r["status"] != "failed"
-]
-
+normalized_paths = [os.path.join(TEMP_DIR, f"part_{r['index']:02d}.mp4") for r in results if r["status"] != "failed"]
 concat_list_path = os.path.join(TEMP_DIR, "concat_list.txt")
 with open(concat_list_path, "w", encoding="utf-8") as f:
-    for p in normalized_paths:
-        f.write(f"file '{p}'\n")
-
-output_path = os.path.join(WORK_DIR, "broll.mp4")
-subprocess.run([
-    "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-    "-i", concat_list_path, "-c", "copy",
-    output_path
-], check=True, capture_output=True)
-
-print(f"\nbroll.mp4 재생성 완료: {output_path}")
+    for path in normalized_paths:
+        f.write(f"file '{path}'\n")
+subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path, "-c", "copy", os.path.join(WORK_DIR, "broll.mp4")], check=True, capture_output=True)
+print("broll.mp4 재생성 완료")

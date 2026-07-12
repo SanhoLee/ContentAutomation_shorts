@@ -28,6 +28,7 @@ PUBMED_ABSTRACT_CHAR_LIMIT = SETTINGS.pubmed_abstract_char_limit
 CLAUDE_MODEL = SETTINGS.claude_model
 CLAUDE_SCRIPT_MODEL = SETTINGS.claude_script_model
 CLAUDE_QUERY_MODEL = SETTINGS.claude_query_model
+CLAUDE_RESEARCH_MODEL = SETTINGS.claude_research_model
 CLAUDE_STRATEGY_MODEL = SETTINGS.claude_strategy_model
 CLAUDE_STRATEGY_FALLBACK_MODELS = SETTINGS.claude_strategy_fallback_models
 CLAUDE_STRATEGY_MAX_TOKENS = SETTINGS.claude_strategy_max_tokens
@@ -162,6 +163,9 @@ def record_claude_usage(stage, model, response):
         "stop_reason": response.get("stop_reason"),
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
+        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+        "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+        "web_search_requests": ((usage.get("server_tool_use") or {}).get("web_search_requests", 0)),
     }
     with open(CLAUDE_USAGE_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -462,10 +466,11 @@ def fetch_web_research(topic, pubmed_query):
                 "max_uses": WEB_RESEARCH_MAX_USES,
             }],
             max_tokens=WEB_RESEARCH_MAX_TOKENS,
-            model=CLAUDE_SCRIPT_MODEL,
+            model=CLAUDE_RESEARCH_MODEL,
             timeout=WEB_RESEARCH_TIMEOUT,
             max_turns=WEB_RESEARCH_MAX_TOOL_TURNS,
         )
+        record_claude_usage("web_research", CLAUDE_RESEARCH_MODEL, data)
         errors = web_search_error_codes(data)
         if errors:
             print(f"⚠️  web_search 도구 오류 (계속 진행): {', '.join(errors)}")
@@ -623,6 +628,21 @@ def strategy_output_schema():
     properties = {field: {"type": "string"} for field in string_fields}
     for field in ("sub_keywords", "thumbnail_text", "comparison_targets", "comparison_criteria", "required_beats"):
         properties[field] = {"type": "array", "items": {"type": "string"}}
+    properties["evidence_brief"] = {
+        "type": "array",
+        "maxItems": 6,
+        "items": {
+            "type": "object",
+            "properties": {
+                "claim": {"type": "string"},
+                "source": {"type": "string"},
+                "year": {"type": "string"},
+                "caveat": {"type": "string"},
+            },
+            "required": ["claim", "source", "year", "caveat"],
+            "additionalProperties": False,
+        },
+    }
     properties["frame_header"] = {
         "type": "object",
         "properties": {
@@ -667,6 +687,7 @@ def local_strategy_fallback(topic, trend_context=None, reason=None):
         "comparison_targets": extract_named_comparison_targets(topic),
         "comparison_criteria": list(DEFAULT_COMPARISON_CRITERIA),
         "evidence_status": "limited",
+        "evidence_brief": [],
         "final_answer": "근거를 바탕으로 부담을 줄이는 실천부터 시작하는 것이 좋습니다.",
         "required_beats": list(DEFAULT_EXPLANATION_BEATS),
         "title_promise": title,
@@ -725,6 +746,7 @@ answer_requirement: 최종 대본이 반드시 답해야 하는 조건
 comparison_targets: 비교형이면 사용자가 요청한 비교 대상을 2개 이상 보존
 comparison_criteria: 비교 기준 2~4개
 evidence_status: sufficient / limited / insufficient 중 하나
+evidence_brief: 근거 자료에서 대본에 필요한 사실 0~6개. 각 항목은 claim, source, year, caveat를 포함하고 자료가 없으면 빈 배열
 final_answer : 현재 근거로 가능한 최종 답의 초안. 단정 불가 시 그 한계를 포함
 required_beats: 대본에 반드시 포함할 전개 비트 배열
 title_promise: 제목이 시청자에게 약속하는 답변
@@ -747,6 +769,7 @@ JSON만 출력. 설명·주석·마크다운 없이.
   "comparison_targets": [],
   "comparison_criteria": [],
   "evidence_status": "",
+  "evidence_brief": [{{"claim": "", "source": "", "year": "", "caveat": ""}}],
   "final_answer": "",
   "required_beats": [],
   "title_promise": "",
@@ -823,6 +846,19 @@ JSON만 출력. 설명·주석·마크다운 없이.
 
 
 # ─────────────────────────────────────────────
+def stage2_research_context(strategy, abstracts="", web_research=""):
+    """Prefer the cheaper Stage 1 evidence digest; retain raw-context compatibility fallback."""
+    brief = strategy.get("evidence_brief") or []
+    valid = [item for item in brief if isinstance(item, dict) and str(item.get("claim") or "").strip()]
+    if strategy.get("strategy_source") == "claude" and valid:
+        return "[검증된 근거 요약]\n" + json.dumps(valid, ensure_ascii=False, separators=(",", ":"))
+    parts = []
+    if abstracts:
+        parts.append("[PubMed 초록]\n" + str(abstracts).strip())
+    if web_research:
+        parts.append("[최신 영문 연구]\n" + str(web_research).strip())
+    return "\n\n".join(parts)
+
 # Stage 2 — 프롬프트 빌더
 # ─────────────────────────────────────────────
 
@@ -882,10 +918,7 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
                        f"선택={trend_context.get('selected',{}).get('keyword', topic)}, "
                        f"후보={candidates}\n")
 
-    # ── web_search 블록
-    web_block = ""
-    if web_research:
-        web_block = f"\n=== 최신 영문 연구 자료 (web_search) ===\n{web_research}\n===\n구체적 수치와 출처가 있는 내용을 우선 활용하세요.\n"
+    research_block = stage2_research_context(strategy, abstracts, web_research)
 
     # ── 피드백 블록
     feedback_block = ""
@@ -902,9 +935,8 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
 당신은 50대 이상 시청자들의 일상적 고민을 진심으로 경청하고, 불안감을 따뜻하게 보듬어주는 '다정한 동네 주치의'이자 스토리텔러입니다. 정보를 다그치듯 나열하지 말고, 자녀나 오랜 친구가 조곤조곤 챙겨주듯 다정한 이야기로 풀어내세요.
 
 === 연구 자료 및 전략 데이터 ===
-[PubMed 초록]
-{abstracts}
-{web_block}{feedback_block}{trend_block}
+{research_block}
+{feedback_block}{trend_block}
 [콘텐츠 전략 (Stage 1 결과)]
 main_keyword       : {main_keyword}
 검색 의도          : {search_intent}

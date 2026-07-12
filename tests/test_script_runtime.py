@@ -14,7 +14,7 @@ import script_runtime
 class ScriptRuntimeSettingsTests(unittest.TestCase):
     KEYS = (
         "SPEECH_PACE", "ATEMPO", "CHARS_PER_SEC", "TARGET_DURATION_SEC",
-        "CLAUDE_MODEL", "CLAUDE_SCRIPT_MODEL", "CLAUDE_STRATEGY_MODEL",
+        "CLAUDE_MODEL", "CLAUDE_SCRIPT_MODEL", "CLAUDE_QUERY_MODEL", "CLAUDE_RESEARCH_MODEL", "CLAUDE_STRATEGY_MODEL",
         "CLAUDE_STRATEGY_FALLBACK_MODELS", "CLAUDE_STRATEGY_MAX_TOKENS",
     )
 
@@ -39,6 +39,8 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
             ("claude-sonnet-4-5-20250929",),
         )
         self.assertEqual(settings.claude_script_model, "claude-sonnet-4-6")
+        self.assertEqual(settings.claude_query_model, "claude-haiku-4-5-20251001")
+        self.assertEqual(settings.claude_research_model, "claude-sonnet-4-6")
         self.assertEqual(settings.claude_strategy_max_tokens, 2000)
 
     def test_pace_controls_length_without_chars_per_sec(self):

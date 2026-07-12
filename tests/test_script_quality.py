@@ -178,14 +178,14 @@ class ScriptQualityTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertIn("unsupported_winner_claim", warning_codes(report))
 
-    def test_over_target_length_is_warning_and_does_not_block(self):
+    def test_over_target_length_is_error_and_blocks(self):
         old_total = script0.total_chars
         try:
             script0.total_chars = 10
             report = script0.validate_script(complete_result(), comparison_strategy())
-            self.assertTrue(report["ok"])
-            self.assertIn("over_target_length", warning_codes(report))
-            self.assertGreater(report["metrics"]["length_ratio"], 1.35)
+            self.assertFalse(report["ok"])
+            self.assertIn("over_target_length", issue_codes(report))
+            self.assertGreater(report["metrics"]["length_ratio"], 1.40)
         finally:
             script0.total_chars = old_total
 

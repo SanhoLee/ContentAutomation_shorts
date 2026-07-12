@@ -144,6 +144,30 @@ class ScriptQualityTests(unittest.TestCase):
                 else:
                     os.environ["ANTHROPIC_API_KEY"] = old_api_key
 
+    def test_stage2_uses_evidence_brief_for_claude_strategy(self):
+        strategy = comparison_strategy()
+        strategy.update({"strategy_source": "claude", "evidence_brief": [{"claim": "핵심 결과", "source": "PubMed", "year": "2025", "caveat": "표본 제한"}]})
+        context = script0.stage2_research_context(strategy, "원문" * 1000, "검색" * 1000)
+        self.assertIn("핵심 결과", context)
+        self.assertNotIn("원문", context)
+        self.assertNotIn("검색", context)
+
+    def test_stage2_falls_back_to_raw_research_for_old_or_local_strategy(self):
+        context = script0.stage2_research_context(comparison_strategy(), "PubMed 원문", "웹 근거")
+        self.assertIn("PubMed 원문", context)
+        self.assertIn("웹 근거", context)
+
+    def test_usage_log_keeps_cache_and_web_search_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_path = script0.CLAUDE_USAGE_PATH
+            try:
+                script0.CLAUDE_USAGE_PATH = str(Path(tmp, "usage.jsonl"))
+                script0.record_claude_usage("research", "haiku", {"usage": {"input_tokens": 10, "output_tokens": 5, "cache_creation_input_tokens": 3, "cache_read_input_tokens": 7, "server_tool_use": {"web_search_requests": 2}}})
+                entry = json.loads(Path(script0.CLAUDE_USAGE_PATH).read_text(encoding="utf-8"))
+                self.assertEqual(entry["cache_read_input_tokens"], 7)
+                self.assertEqual(entry["web_search_requests"], 2)
+            finally:
+                script0.CLAUDE_USAGE_PATH = old_path
     def test_invalid_model_error_detects_404_model_not_found(self):
         response = FakeResponse(404, {"error": {"message": "model claude-test not found"}})
         self.assertTrue(script0.is_invalid_model_error(response))

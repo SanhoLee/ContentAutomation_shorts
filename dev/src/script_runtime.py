@@ -77,6 +77,7 @@ class ScriptRuntimeSettings:
     claude_model: str
     claude_script_model: str
     claude_query_model: str
+    claude_research_model: str
     claude_strategy_model: str
     claude_strategy_fallback_models: tuple[str, ...]
     claude_strategy_max_tokens: int
@@ -118,7 +119,8 @@ def load_runtime_settings():
         pubmed_abstract_char_limit=env_int("PUBMED_ABSTRACT_CHAR_LIMIT", 7000),
         claude_model=claude_model,
         claude_script_model=os.environ.get("CLAUDE_SCRIPT_MODEL", claude_model),
-        claude_query_model=os.environ.get("CLAUDE_QUERY_MODEL", claude_model),
+        claude_query_model=os.environ.get("CLAUDE_QUERY_MODEL", os.environ.get("CLAUDE_STRATEGY_MODEL", "claude-haiku-4-5-20251001")),
+        claude_research_model=os.environ.get("CLAUDE_RESEARCH_MODEL", os.environ.get("CLAUDE_SCRIPT_MODEL", claude_model)),
         claude_strategy_model=os.environ.get("CLAUDE_STRATEGY_MODEL", "claude-haiku-4-5-20251001"),
         claude_strategy_fallback_models=env_csv("CLAUDE_STRATEGY_FALLBACK_MODELS", ("claude-sonnet-4-5-20250929",)),
         claude_strategy_max_tokens=env_int("CLAUDE_STRATEGY_MAX_TOKENS", 2000),

@@ -79,6 +79,7 @@ class ScriptRuntimeSettings:
     claude_query_model: str
     claude_strategy_model: str
     claude_strategy_fallback_models: tuple[str, ...]
+    claude_strategy_max_tokens: int
     max_tokens: int
     enable_web_research: bool
     web_research_timeout: int
@@ -118,8 +119,9 @@ def load_runtime_settings():
         claude_model=claude_model,
         claude_script_model=os.environ.get("CLAUDE_SCRIPT_MODEL", claude_model),
         claude_query_model=os.environ.get("CLAUDE_QUERY_MODEL", claude_model),
-        claude_strategy_model=os.environ.get("CLAUDE_STRATEGY_MODEL", "claude-3-5-haiku-latest"),
-        claude_strategy_fallback_models=env_csv("CLAUDE_STRATEGY_FALLBACK_MODELS", ("claude-3-5-haiku-20241022",)),
+        claude_strategy_model=os.environ.get("CLAUDE_STRATEGY_MODEL", "claude-haiku-4-5-20251001"),
+        claude_strategy_fallback_models=env_csv("CLAUDE_STRATEGY_FALLBACK_MODELS", ("claude-sonnet-4-5-20250929",)),
+        claude_strategy_max_tokens=env_int("CLAUDE_STRATEGY_MAX_TOKENS", 2000),
         max_tokens=env_int("MAX_TOKENS", 2600),
         enable_web_research=env_bool("ENABLE_WEB_RESEARCH", True),
         web_research_timeout=env_int("WEB_RESEARCH_TIMEOUT", 60),

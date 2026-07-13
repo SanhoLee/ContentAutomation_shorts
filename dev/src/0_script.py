@@ -38,6 +38,11 @@ WEB_RESEARCH_TIMEOUT = SETTINGS.web_research_timeout
 WEB_RESEARCH_MAX_USES = SETTINGS.web_research_max_uses
 WEB_RESEARCH_MAX_TOKENS = SETTINGS.web_research_max_tokens
 WEB_RESEARCH_MAX_TOOL_TURNS = SETTINGS.web_research_max_tool_turns
+ENABLE_CASE_RESEARCH = SETTINGS.enable_case_research
+CASE_RESEARCH_TIMEOUT = SETTINGS.case_research_timeout
+CASE_RESEARCH_MAX_USES = SETTINGS.case_research_max_uses
+CASE_RESEARCH_MAX_TOKENS = SETTINGS.case_research_max_tokens
+CASE_RESEARCH_MAX_TOOL_TURNS = SETTINGS.case_research_max_tool_turns
 STRATEGY_PATH = SETTINGS.strategy_path
 INSIGHTS_PATH = SETTINGS.insights_path
 total_chars = SETTINGS.total_chars
@@ -443,6 +448,13 @@ def web_search_error_codes(response):
     return errors
 
 
+CASE_SOURCE_DOMAINS = ("hidoc.co.kr", "mdtoday.co.kr", "k-health.com")
+STAT_SOURCE_DOMAINS = (
+    "hira.or.kr", "kdca.go.kr", "mohw.go.kr",
+    "snuh.org", "amc.seoul.kr", "hqcenter.snu.ac.kr",
+)
+
+
 def fetch_web_research(topic, pubmed_query):
     print(
         "🔍 web_search 최신 영문 연구 자료 수집 중... "
@@ -483,6 +495,55 @@ def fetch_web_research(topic, pubmed_query):
         return result
     except Exception as exc:
         print(f"⚠️  web_search 실패/타임아웃 (재시도 없이 계속 진행): {exc}")
+        return ""
+
+
+def fetch_case_and_stat_research(topic, pubmed_query):
+    """Collect anonymized Korean case-style material and domestic statistics via web_search."""
+    print(
+        "🔍 web_search 실사례/국내통계 자료 수집 중... "
+        f"max_uses={CASE_RESEARCH_MAX_USES}, timeout={CASE_RESEARCH_TIMEOUT}s "
+        f"(query: {pubmed_query})"
+    )
+    domain_hint = ", ".join(CASE_SOURCE_DOMAINS + STAT_SOURCE_DOMAINS)
+    messages = [{"role": "user", "content":
+        f"Search for Korean-language material about: {pubmed_query}\n\n"
+        f"ONLY use these domains, ignore all other results: {domain_hint}\n\n"
+        "From hidoc.co.kr / mdtoday.co.kr / k-health.com: find 1 realistic anonymized "
+        "clinical-scenario style excerpt (e.g. '40대 직장인 B씨' style intro used in Korean health journalism). "
+        "From government/hospital domains: find 1-2 Korean prevalence statistics with source name and year.\n\n"
+        "Output format, plain text, no markdown:\n"
+        "CASE: <one paraphrased sentence describing the scenario, anonymized, no real names>\n"
+        "CASE_SOURCE: <site name>\n"
+        "STAT: <one Korean statistic sentence>\n"
+        "STAT_SOURCE: <site name>\n"
+        "If nothing relevant found in the allowed domains, output exactly: NONE_FOUND"}]
+    try:
+        data = _call_claude_loop(
+            messages,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": CASE_RESEARCH_MAX_USES,
+            }],
+            max_tokens=CASE_RESEARCH_MAX_TOKENS,
+            model=CLAUDE_RESEARCH_MODEL,
+            timeout=CASE_RESEARCH_TIMEOUT,
+            max_turns=CASE_RESEARCH_MAX_TOOL_TURNS,
+        )
+        record_claude_usage("case_research", CLAUDE_RESEARCH_MODEL, data)
+        errors = web_search_error_codes(data)
+        if errors:
+            print(f"⚠️  case_research web_search 도구 오류 (계속 진행): {', '.join(errors)}")
+            return ""
+        result = "".join(b["text"] for b in data.get("content", []) if b.get("type") == "text").strip()
+        if not result or result.strip() == "NONE_FOUND":
+            print("ℹ️  case_research 관련 자료를 화이트리스트 도메인에서 찾지 못했습니다.")
+            return ""
+        print(f"✅ case_research 완료 ({len(result)}자, requests={web_search_request_count(data)})")
+        return result
+    except Exception as exc:
+        print(f"⚠️  case_research 실패/타임아웃 (재시도 없이 계속 진행): {exc}")
         return ""
 
 
@@ -610,6 +671,13 @@ def normalize_strategy_contract(strategy, topic):
     strategy.setdefault("answer_requirement", default_requirement)
     strategy.setdefault("evidence_status", "unknown")
     strategy.setdefault("final_answer", "")
+    source_mix = strategy.get("source_mix") if isinstance(strategy.get("source_mix"), dict) else {}
+    strategy["source_mix"] = {
+        "case_summary": str(source_mix.get("case_summary") or ""),
+        "case_source": str(source_mix.get("case_source") or ""),
+        "stat_value": str(source_mix.get("stat_value") or ""),
+        "stat_source": str(source_mix.get("stat_source") or ""),
+    }
     strategy.setdefault("required_beats", default_beats)
     strategy.setdefault("title_promise", strategy.get("title") or strategy.get("core_message") or normalize_keyword(topic))
     return strategy
@@ -642,6 +710,17 @@ def strategy_output_schema():
             "required": ["claim", "source", "year", "caveat"],
             "additionalProperties": False,
         },
+    }
+    properties["source_mix"] = {
+        "type": "object",
+        "properties": {
+            "case_summary": {"type": "string"},
+            "case_source": {"type": "string"},
+            "stat_value": {"type": "string"},
+            "stat_source": {"type": "string"},
+        },
+        "required": ["case_summary", "case_source", "stat_value", "stat_source"],
+        "additionalProperties": False,
     }
     properties["frame_header"] = {
         "type": "object",
@@ -688,6 +767,7 @@ def local_strategy_fallback(topic, trend_context=None, reason=None):
         "comparison_criteria": list(DEFAULT_COMPARISON_CRITERIA),
         "evidence_status": "limited",
         "evidence_brief": [],
+        "source_mix": {"case_summary": "", "case_source": "", "stat_value": "", "stat_source": ""},
         "final_answer": "근거를 바탕으로 부담을 줄이는 실천부터 시작하는 것이 좋습니다.",
         "required_beats": list(DEFAULT_EXPLANATION_BEATS),
         "title_promise": title,
@@ -701,7 +781,7 @@ def local_strategy_fallback(topic, trend_context=None, reason=None):
     return strategy
 
 
-def plan_strategy(topic, abstracts="", web_research="", trend_context=None):
+def plan_strategy(topic, abstracts="", web_research="", case_research="", trend_context=None):
     """
     Haiku로 빠르게 콘텐츠 전략(검색 키워드·제목·훅 유형·핵심 메시지)을 결정한다.
     Stage 2 대본 작성 전 뼈대를 확정하는 역할.
@@ -715,6 +795,8 @@ def plan_strategy(topic, abstracts="", web_research="", trend_context=None):
             trend_hint = f"\n트렌드 참고: {kw}"
 
     research_context = bounded_research_context(abstracts, web_research)
+    if case_research:
+        research_context = (research_context + "\n\n[case_and_stat_research]\n" + case_research).strip()
     research_hint = f"\n\n[근거 자료 요약]\n{research_context}" if research_context else ""
 
     prompt = f"""주제: {topic}{trend_hint}{research_hint}
@@ -747,6 +829,8 @@ comparison_targets: 비교형이면 사용자가 요청한 비교 대상을 2개
 comparison_criteria: 비교 기준 2~4개
 evidence_status: sufficient / limited / insufficient 중 하나
 evidence_brief: 근거 자료에서 대본에 필요한 사실 0~6개. 각 항목은 claim, source, year, caveat를 포함하고 자료가 없으면 빈 배열
+source_mix   : [case_and_stat_research] 블록이 있으면 그 내용을 바탕으로 채우고, 없으면 모든 값을 빈 문자열로 둘 것.
+               case_summary는 반드시 완전히 새로운 문장으로 재구성하고 실명·특정 가능 정보는 제거할 것. 절대 원문 문장을 그대로 옮기지 말 것.
 final_answer : 현재 근거로 가능한 최종 답의 초안. 단정 불가 시 그 한계를 포함
 required_beats: 대본에 반드시 포함할 전개 비트 배열
 title_promise: 제목이 시청자에게 약속하는 답변
@@ -898,6 +982,26 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
         "title_promise": strategy.get("title_promise"),
     }
     contract_block = json.dumps(contract, ensure_ascii=False, indent=2)
+    source_mix = strategy.get("source_mix") or {}
+    case_summary = str(source_mix.get("case_summary") or "").strip()
+    case_source = str(source_mix.get("case_source") or "").strip()
+    stat_value = str(source_mix.get("stat_value") or "").strip()
+    stat_source = str(source_mix.get("stat_source") or "").strip()
+    source_mix_instruction = ""
+    if case_summary or stat_value:
+        lines = ["\n[실사례·통계 활용 지침 — 1단계(공감) 구간에 자연스럽게 녹여 쓸 것]"]
+        if case_summary:
+            lines.append(
+                f"- 참고 사례(반드시 재구성, 원문 그대로 인용 금지, 익명 유지): {case_summary}"
+                f"{f' (출처: {case_source})' if case_source else ''}"
+            )
+        if stat_value:
+            lines.append(
+                f"- 참고 통계(출처를 자연스러운 한 문장 안에서 언급): {stat_value}"
+                f"{f' (출처: {stat_source})' if stat_source else ''}"
+            )
+        lines.append("- 두 항목 모두 15어절 이상 원문 그대로 옮기지 말고 완전히 새 문장으로 쓸 것.")
+        source_mix_instruction = "\n".join(lines)
     beats_block = "\n".join(f"- {beat}" for beat in contract.get("required_beats", []) if beat)
     comparison_instruction = ""
     if contract.get("intent_type") == CONTENT_INTENT_COMPARISON:
@@ -946,7 +1050,7 @@ main_keyword       : {main_keyword}
 
 [콘텐츠 계약]
 {contract_block}
-{comparison_instruction}===
+{comparison_instruction}{source_mix_instruction}===
 
 위 자료를 바탕으로 유튜브 쇼츠 대본을 작성해 주세요. 시청자의 마음이 '불안'에서 시작해 '이해'를 거쳐, 마지막엔 깊은 '안도감과 희망'으로 이어지도록 흐름을 설계해야 합니다.
 
@@ -1288,6 +1392,7 @@ def write_outputs(result, strategy, trend_context=None):
         "final_answer":        result.get("final_answer", ""),
         "promise_fulfilled":   result.get("promise_fulfilled"),
         "evidence_limit":      result.get("evidence_limit", ""),
+        "source_mix":          strategy.get("source_mix", {}),
     }
     if trend_context:
         meta["trend_context"] = trend_context
@@ -1370,6 +1475,12 @@ def main():
     else:
         print("ℹ️  web_search 비활성화")
 
+    case_research = ""
+    if ENABLE_CASE_RESEARCH and not args.no_web_research:
+        case_research = fetch_case_and_stat_research(topic, pubmed_query)
+    else:
+        print("ℹ️  case_research 비활성화")
+
     # ── 3. 피드백 인사이트 로드
     feedback_insights = load_feedback_insights()
     if feedback_insights:
@@ -1390,7 +1501,7 @@ def main():
             json.dump(strategy, f, ensure_ascii=False, indent=2)
         print(f"⏭️  Stage 1 건너뜀 (topic JSON 전략 사용): {strategy.get('title')}")
     else:
-        strategy = plan_strategy(topic, abstracts=abstracts, web_research=web_research, trend_context=trend_context)
+        strategy = plan_strategy(topic, abstracts=abstracts, web_research=web_research, case_research=case_research, trend_context=trend_context)
 
     strategy = normalize_strategy_contract(strategy, topic)
 

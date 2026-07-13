@@ -48,13 +48,15 @@ Useful commands:
 - `/trend keyword`: generate candidate topics
 - `/pick 1`: select a trend candidate
 - `/set`: print current major runtime config
-- `/set font_size=22 margin_v=60 margin_h=12 web=off`: save runtime overrides
+- `/set font_size=22 margin_v=60 margin_h=12 web=off case=off`: save runtime overrides
 - `/approve`: approve current stage
 - `/edit`: edit current text artifact when applicable
 - `/rerun tts|caption|broll`: regenerate a specific stage
 - `/render font_size=22 margin_v=60`: render with custom caption config
 - `/status`: inspect current state
 - `/cancel`: cancel current job state
+
+- `ENABLE_CASE_RESEARCH`: toggles supplemental Korean case/stat web_search enrichment (default on; `/set case=off` disables it per Telegram job).
 
 Long-running work runs in background threads. While a stage is running, other inputs are ignored except `/status`. Inline buttons carry stage tokens and stale buttons are rejected.
 

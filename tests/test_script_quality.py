@@ -7,7 +7,14 @@ import sys
 import tempfile
 import unittest
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:
+    class _RequestsStub:
+        def post(self, *args, **kwargs):
+            raise RuntimeError("requests is not installed")
+    requests = _RequestsStub()
+    sys.modules["requests"] = requests
 from pathlib import Path
 
 
@@ -168,6 +175,77 @@ class ScriptQualityTests(unittest.TestCase):
                 self.assertEqual(entry["web_search_requests"], 2)
             finally:
                 script0.CLAUDE_USAGE_PATH = old_path
+    def test_source_mix_defaults_to_empty_when_absent(self):
+        strategy = script0.normalize_strategy_contract({}, "야간뇨 원인")
+        self.assertEqual(
+            strategy["source_mix"],
+            {"case_summary": "", "case_source": "", "stat_value": "", "stat_source": ""},
+        )
+
+    def test_build_prompt_omits_source_mix_instruction_when_empty(self):
+        strategy = script0.normalize_strategy_contract(script0.local_strategy_fallback("야간뇨"), "야간뇨")
+        prompt = script0.build_prompt(strategy, abstracts="", trend_context=None, web_research="", feedback_insights="")
+        no_mix_strategy = dict(strategy)
+        no_mix_strategy.pop("source_mix", None)
+        prompt_without_source_mix_key = script0.build_prompt(
+            no_mix_strategy, abstracts="", trend_context=None, web_research="", feedback_insights=""
+        )
+        self.assertNotIn("실사례·통계 활용 지침", prompt)
+        self.assertEqual(prompt, prompt_without_source_mix_key)
+
+    def test_build_prompt_includes_source_mix_instruction_when_present(self):
+        strategy = comparison_strategy()
+        strategy["source_mix"] = {
+            "case_summary": "50대 직장인이 야간뇨로 밤잠을 설쳤다는 사례",
+            "case_source": "하이닥",
+            "stat_value": "50대 야간뇨 유병률은 29퍼센트다",
+            "stat_source": "국내 배뇨장애 연구",
+        }
+        prompt = script0.build_prompt(strategy, abstracts="", trend_context=None, web_research="", feedback_insights="")
+        self.assertIn("실사례·통계 활용 지침", prompt)
+        self.assertIn("하이닥", prompt)
+
+    def test_case_research_fetch_returns_empty_on_none_found(self):
+        old_loop = script0._call_claude_loop
+        try:
+            script0._call_claude_loop = lambda *a, **k: {
+                "content": [{"type": "text", "text": "NONE_FOUND"}],
+                "usage": {},
+            }
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = script0.fetch_case_and_stat_research("존재하지않는주제", "nonexistent topic")
+            self.assertEqual(result, "")
+        finally:
+            script0._call_claude_loop = old_loop
+
+    def test_case_research_fetch_returns_empty_on_tool_error(self):
+        old_loop = script0._call_claude_loop
+        try:
+            script0._call_claude_loop = lambda *a, **k: {
+                "content": [{
+                    "type": "web_search_tool_result",
+                    "content": {"type": "web_search_tool_result_error", "error_code": "rate_limited"},
+                }],
+                "usage": {},
+            }
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = script0.fetch_case_and_stat_research("주제", "topic")
+            self.assertEqual(result, "")
+        finally:
+            script0._call_claude_loop = old_loop
+
+    def test_case_research_fetch_continues_on_exception(self):
+        old_loop = script0._call_claude_loop
+        try:
+            def raise_exc(*a, **k):
+                raise RuntimeError("network down")
+            script0._call_claude_loop = raise_exc
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = script0.fetch_case_and_stat_research("주제", "topic")
+            self.assertEqual(result, "")
+        finally:
+            script0._call_claude_loop = old_loop
+
     def test_invalid_model_error_detects_404_model_not_found(self):
         response = FakeResponse(404, {"error": {"message": "model claude-test not found"}})
         self.assertTrue(script0.is_invalid_model_error(response))

@@ -177,7 +177,7 @@ def main():
         tts_executable, "tts", tts_text,
         "-o", raw_path,
         "--lang", "ko",
-        "--voice", os.environ.get("TTS_VOICE", "F1"),
+        "--voice", os.environ.get("TTS_VOICE", "M2"),
     ], check=True)
 
     # ── 속도 후처리 (ATEMPO, 피치 유지)

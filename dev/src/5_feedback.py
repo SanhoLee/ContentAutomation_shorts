@@ -56,6 +56,7 @@ def _init_db(conn):
         yt_likes      INTEGER,
         yt_comments   INTEGER,
         yt_shares     INTEGER,
+        source_mix_json TEXT,
         created_at    TEXT DEFAULT (datetime('now','localtime')),
         updated_at    TEXT DEFAULT (datetime('now','localtime'))
     );
@@ -72,6 +73,9 @@ def _init_db(conn):
         created_at  TEXT DEFAULT (datetime('now','localtime'))
     );
     """)
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(videos)")}
+    if "source_mix_json" not in existing_cols:
+        conn.execute("ALTER TABLE videos ADD COLUMN source_mix_json TEXT")
     conn.commit()
 
 
@@ -173,6 +177,7 @@ def cmd_rate(args):
     hook_type = meta.get("hook_type", "")
     hashtags  = meta.get("hashtags", "")
     summary   = meta.get("summary", "")
+    source_mix_json = json.dumps(meta.get("source_mix") or {}, ensure_ascii=False, separators=(",", ":"))
 
     print("\n" + "=" * 52)
     print("  Brain50 영상 피드백 입력")
@@ -211,23 +216,23 @@ def cmd_rate(args):
     if existing:
         c.execute("""
             UPDATE videos SET
-                title=?, hook_type=?, hashtags=?, summary=?,
+                title=?, hook_type=?, hashtags=?, summary=?, source_mix_json=?,
                 posted_date=?, rating=?, notes=?,
                 yt_views=?, yt_watch_pct=?, yt_likes=?, yt_comments=?, yt_shares=?,
                 updated_at=datetime('now','localtime')
             WHERE video_key=?
-        """, (title, hook_type, hashtags, summary,
+        """, (title, hook_type, hashtags, summary, source_mix_json,
               posted_date, rating, notes,
               yt_views, yt_watch_pct, yt_likes, yt_comments, yt_shares,
               video_key))
     else:
         c.execute("""
             INSERT INTO videos
-                (video_key, topic, title, hook_type, hashtags, summary,
+                (video_key, topic, title, hook_type, hashtags, summary, source_mix_json,
                  posted_date, rating, notes,
                  yt_views, yt_watch_pct, yt_likes, yt_comments, yt_shares)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (video_key, topic, title, hook_type, hashtags, summary,
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (video_key, topic, title, hook_type, hashtags, summary, source_mix_json,
               posted_date, rating, notes,
               yt_views, yt_watch_pct, yt_likes, yt_comments, yt_shares))
     conn.commit()

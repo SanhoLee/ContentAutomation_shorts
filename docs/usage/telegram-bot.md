@@ -72,12 +72,13 @@ export TELEGRAM_CHAT_ID="..."
 
 ## 렌더 기본값
 
-텔레그램 실행 기본값은 자막 `font_size=62`, `margin_v=60`, `style=default`, `web_search=on`입니다.
+텔레그램 실행 기본값은 자막 `font_size=62`, `margin_v=60`, `style=default`, `web_search=on`, `case_research=on`입니다.
 
 - `TELEGRAM_DEFAULT_CAPTION_FONT_SIZE`: 텔레그램 기본 자막 폰트 크기 (기본 `62`)
 - `TELEGRAM_DEFAULT_CAPTION_MARGIN_V`: 텔레그램 기본 자막 수직 위치 (기본 `60`)
 - `TELEGRAM_DEFAULT_CAPTION_STYLE`: 텔레그램 기본 자막 스타일 프리셋 (기본 `default`)
 - `TELEGRAM_DEFAULT_WEB_RESEARCH`: 텔레그램 기본 web_search 사용 여부 (기본 `true`)
+- `ENABLE_CASE_RESEARCH`: 실사례·국내통계 보강 검색 사용 여부 (기본 `true`, `/set case=off`로 작업별 비활성화)
 - `CAPTION_FONT_SIZE`: 렌더 스크립트 자막 폰트 크기 기본값
 - `CAPTION_MARGIN_V`: 렌더 스크립트 자막 수직 위치 기본값
 - `CAPTION_STYLE`: 렌더 스크립트 자막 스타일 프리셋 기본값

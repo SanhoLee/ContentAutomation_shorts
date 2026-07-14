@@ -16,6 +16,7 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
         "SPEECH_PACE", "ATEMPO", "CHARS_PER_SEC", "TARGET_DURATION_SEC",
         "CLAUDE_MODEL", "CLAUDE_SCRIPT_MODEL", "CLAUDE_QUERY_MODEL", "CLAUDE_RESEARCH_MODEL", "CLAUDE_STRATEGY_MODEL",
         "CLAUDE_STRATEGY_FALLBACK_MODELS", "CLAUDE_STRATEGY_MAX_TOKENS",
+        "ENABLE_CASE_RESEARCH", "CASE_RESEARCH_MAX_USES",
     )
 
     def load_settings(self, **values):
@@ -66,6 +67,15 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
         settings = self.load_settings(TARGET_DURATION_SEC=60, ATEMPO=1.1, CHARS_PER_SEC=5)
         self.assertEqual(settings.speech_pace, "legacy")
         self.assertEqual(settings.total_chars, int(60 * 1.1 * 5))
+
+    def test_case_research_defaults_enabled(self):
+        settings = self.load_settings()
+        self.assertTrue(settings.enable_case_research)
+        self.assertEqual(settings.case_research_max_uses, 3)
+
+    def test_case_research_can_be_disabled_via_env(self):
+        settings = self.load_settings(ENABLE_CASE_RESEARCH="false")
+        self.assertFalse(settings.enable_case_research)
 
 
 if __name__ == "__main__":

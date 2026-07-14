@@ -87,6 +87,11 @@ class ScriptRuntimeSettings:
     web_research_max_uses: int
     web_research_max_tokens: int
     web_research_max_tool_turns: int
+    enable_case_research: bool
+    case_research_timeout: int
+    case_research_max_uses: int
+    case_research_max_tokens: int
+    case_research_max_tool_turns: int
     strategy_path: str
     insights_path: str
     total_chars: int
@@ -130,6 +135,11 @@ def load_runtime_settings():
         web_research_max_uses=env_int("WEB_RESEARCH_MAX_USES", 3),
         web_research_max_tokens=env_int("WEB_RESEARCH_MAX_TOKENS", 900),
         web_research_max_tool_turns=env_int("WEB_RESEARCH_MAX_TOOL_TURNS", 2),
+        enable_case_research=env_bool("ENABLE_CASE_RESEARCH", True),
+        case_research_timeout=env_int("CASE_RESEARCH_TIMEOUT", 60),
+        case_research_max_uses=env_int("CASE_RESEARCH_MAX_USES", 3),
+        case_research_max_tokens=env_int("CASE_RESEARCH_MAX_TOKENS", 900),
+        case_research_max_tool_turns=env_int("CASE_RESEARCH_MAX_TOOL_TURNS", 2),
         strategy_path=os.environ.get("STRATEGY_PATH", os.path.join(work_dir, "strategy.json")),
         insights_path=os.environ.get("FEEDBACK_INSIGHTS", os.path.join(data_dir, "feedback_insights.json")),
         total_chars=total_chars,

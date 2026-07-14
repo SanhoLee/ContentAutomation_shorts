@@ -543,7 +543,7 @@ def display_config_value(value):
 _PRESERVED_KEYS = {
     "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y",
     "frame_mode", "broll_fit_mode", "frame_header_text", "frame_top_preset", "frame_bottom_preset",
-    "frame_top_pct", "frame_bottom_pct", "frame_bottom_channel_name", "tts_voice", "web_research",
+    "frame_top_pct", "frame_bottom_pct", "frame_bottom_channel_name", "tts_voice", "web_research", "case_research",
     "speech_pace", "target_duration_sec",
 }
 
@@ -586,6 +586,8 @@ def _build_extra_env(job):
         env["TTS_VOICE"] = str(job["tts_voice"])
     if "web_research" in job:
         env["ENABLE_WEB_RESEARCH"] = "true" if job.get("web_research") else "false"
+    if "case_research" in job:
+        env["ENABLE_CASE_RESEARCH"] = "true" if job.get("case_research") else "false"
     if "speech_pace" in job:
         pace, profile = speech_pace_profile(job["speech_pace"])
         env["SPEECH_PACE"] = pace
@@ -617,6 +619,8 @@ def _settings_summary(job):
         parts.append("voice=" + str(job["tts_voice"]))
     if "web_research" in job:
         parts.append("web=" + ("on" if job["web_research"] else "off"))
+    if "case_research" in job:
+        parts.append("case=" + ("on" if job["case_research"] else "off"))
     if "speech_pace" in job:
         parts.append("pace=" + str(job["speech_pace"]))
     if "target_duration_sec" in job:
@@ -638,6 +642,10 @@ def config_summary(job):
     if effective_web is None:
         env_web = os.environ.get("ENABLE_WEB_RESEARCH")
         effective_web = DEFAULT_WEB_RESEARCH if env_web in (None, "") else env_web.lower() not in ("off", "0", "false", "no")
+    effective_case = job.get("case_research")
+    if effective_case is None:
+        env_case = os.environ.get("ENABLE_CASE_RESEARCH")
+        effective_case = True if env_case in (None, "") else env_case.lower() not in ("off", "0", "false", "no")
 
     saved = _preserve_settings(job)
     saved_text = json.dumps(saved, ensure_ascii=False, indent=2) if saved else "없음"
@@ -660,6 +668,7 @@ def config_summary(job):
         f"BROLL_FIT_MODE={effective_broll_fit}",
         f"TTS_VOICE={effective_voice}",
         "ENABLE_WEB_RESEARCH=" + ("on" if effective_web else "off"),
+        "ENABLE_CASE_RESEARCH=" + ("on" if effective_case else "off"),
         "",
         "/set 저장 override:",
         saved_text,
@@ -681,7 +690,7 @@ def handle_set(chat_id, job, text):
             "사용법:",
             "  /set font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120 frame=framed broll_fit=cover",
             "  /set top_pct=14 bottom_pct=18 top_preset=brain50 channel=브레인피프티",
-            "  /set voice=F2 web=off",
+            "  /set voice=F2 web=off case=off",
             "  /set pace=fast duration=60",
             "  /set reset  <- 초기화",
         ]
@@ -753,6 +762,10 @@ def handle_set(chat_id, job, text):
         if web_val is not None:
             job["web_research"] = web_val.lower() not in ("off", "0", "false", "no")
             changed.append("web=" + ("on" if job["web_research"] else "off"))
+        case_val = values.get("case") or values.get("case_research")
+        if case_val is not None:
+            job["case_research"] = case_val.lower() not in ("off", "0", "false", "no")
+            changed.append("case=" + ("on" if job["case_research"] else "off"))
     except ValueError as exc:
         send_message(chat_id, "설정 오류: " + str(exc))
         return
@@ -1045,7 +1058,7 @@ def handle_run_auto(chat_id, job, text):
             "주제를 입력하세요.\n"
             "예: /run_auto 치매 초기증상과 건망증 차이\n\n"
             "기본 설정: font_size=62 margin_v=60 web=on\n"
-            "실행 전 변경: /set font_size=62 margin_v=60 margin_h=12 web=off"
+            "실행 전 변경: /set font_size=62 margin_v=60 margin_h=12 web=off case=off"
         )
         return
 
@@ -1484,7 +1497,7 @@ def handle_status(chat_id, job):
 def command_specs():
     return [
         ("run", "승인형 파이프라인 시작"),
-        ("set", "실행 전 렌더/음성/웹 설정 저장 (/set font_size=62 web=off)"),
+        ("set", "실행 전 렌더/음성/웹/사례검색 설정 저장 (/set font_size=62 web=off case=off)"),
         ("run_auto", "승인 없이 전체 파이프라인 실행"),
         ("trend", "트렌드 후보 조회"),
         ("pick", "트렌드 후보 선택"),
@@ -1521,7 +1534,7 @@ def help_text():
         "/rerun tts | /rerun caption | /rerun broll",
         "/render font_size=62 margin_v=60",
         "/set font_size=62 margin_v=60 margin_h=12  <- 실행 전 설정",
-    "/set web=off voice=F2 pace=normal duration=60  <- 검색/목소리/속도/길이 설정",
+    "/set web=off case=off voice=F2 pace=normal duration=60  <- 검색/사례검색/목소리/속도/길이 설정",
     "/set  <- 현재 설정 확인  |  /set reset  <- 초기화",
     "/run_auto 오메가3가 정말 뇌에 좋을까?",
         "/status",

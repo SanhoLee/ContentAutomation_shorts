@@ -433,7 +433,7 @@ YouTube 업로드용 메타데이터도 함께 작성하세요.
 - "summary": 영상 내용을 2~3문장으로 요약하세요. description 상단에 들어갈 문장입니다.
 - "hashtags": 이 영상 주제에 맞는 한국어 해시태그 3~5개. #brain50, #뇌건강처럼 고정 채널 태그만 반복하지 마세요.
 - "thumbnail_text": 썸네일에 넣을 짧은 문구 후보 1~2개. 각 8~14자, 약간 자극적이되 사실 기반으로 쓰세요.
-- "frame_header": framed Shorts 상단 검정 여백에 넣을 2줄 훅 텍스트입니다. 사용자가 넘긴 주제어를 그대로 복사하지 말고, 전체 대본의 맥락을 압축한 추상적이지만 이해 가능한 개념어로 쓰세요. 관심 유발이 최우선이며 너무 길면 안 됩니다. title은 대제목 3~7자 권장·최대 9자, subtitle은 소제목 7~14자 권장·최대 18자이며, title이 subtitle보다 반드시 짧아야 합니다. 공포 조장/과장 대신 호기심, 반전, 해결 약속의 느낌을 주세요.
+- "frame_header": framed Shorts 상단 검정 여백에 넣을 2줄 훅 텍스트입니다. 사용자가 넘긴 주제어를 그대로 복사하지 말고, 전체 대본의 맥락을 압축한 추상적이지만 이해 가능한 개념어로 쓰세요. 관심 유발이 최우선이며 너무 길면 안 됩니다. title은 대제목 3~7자 권장·최대 9자, subtitle은 소제목 7~14자 권장·최대 18자이며, title이 subtitle보다 반드시 짧아야 합니다. subtitle은 상한 글자 수 안에서 반드시 의미가 끊기지 않는 완결된 구문으로 작성하고, 작성 후 스스로 글자 수를 세어 상한을 넘지 않도록 조정하세요. 공포 조장/과장 대신 호기심, 반전, 해결 약속의 느낌을 주세요.
 - "description": 부모님께 보내는 아들이 영상 보기 전에 짧게 소개하는 느낌의 한국어 설명문. 3~5문장, 따뜻한 존댓말로 쓰세요. 대본을 그대로 반복하지 말고 별도 소개글로 쓰세요. 마지막에 "썸네일 문구 후보: 문구1 / 문구2"를 넣으세요.
 
 반드시 아래 JSON 객체만 출력하세요. 설명, 마크다운 코드블록, 주석은 출력하지 마세요.
@@ -560,20 +560,21 @@ def normalize_frame_header(result, video_title, thumbnail_items):
     raw = result.get("frame_header") or {}
     if not isinstance(raw, dict):
         raw = {}
-    title = str(raw.get("title") or "").strip()
-    subtitle = str(raw.get("subtitle") or "").strip()
+    title = re.sub(r"\s+", " ", str(raw.get("title") or "").strip())
+    subtitle = re.sub(r"\s+", " ", str(raw.get("subtitle") or "").strip())
 
     # Fallbacks keep framed rendering useful even if the model omits frame_header.
     if not title:
-        title = (thumbnail_items[0] if thumbnail_items else video_title).strip()
+        fallback_title = thumbnail_items[0] if thumbnail_items else video_title
+        title = re.sub(r"\s+", " ", str(fallback_title).strip())
     if not subtitle:
         subtitle = "오늘의 뇌건강"
 
-    # Hard limits are guardrails for the fixed top safe-zone frame.
-    title = re.sub(r"\s+", " ", title)[:9]
-    subtitle = re.sub(r"\s+", " ", subtitle)[:18]
-    if len(title) >= len(subtitle) and len(title) > 3:
-        title = title[:max(3, min(7, len(subtitle) - 1))]
+    # Tight 9/18-character slicing used to cut otherwise meaningful phrases in
+    # the middle. These generous caps only contain abnormal model output; normal
+    # overflow is preserved for word wrapping in frame_style.py.
+    title = title[:20]
+    subtitle = subtitle[:40]
     return {"title": title, "subtitle": subtitle}
 
 def write_outputs(result, topic, trend_context=None):

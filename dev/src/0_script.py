@@ -819,6 +819,7 @@ thumbnail_text: 썸네일용 짧은 문구 후보 1~2개 (배열, 각 8~14자, �
 frame_header : 상단 프레임용 2줄 훅 후보. 대본 맥락을 압축한 추상적이지만 이해 가능한 문구
                - title 3~7자 권장·최대 9자, subtitle 7~14자 권장·최대 18자
                - title은 subtitle보다 반드시 짧게 잡아 위는 짧고 아래는 긴 삼각형 구도로 만들 것
+               - subtitle은 반드시 의미가 끊기지 않는 완결된 구문으로 작성하고, 작성 후 공백 포함 글자 수를 직접 세어 18자 상한을 넘지 않게 조정할 것
                - 사용자가 입력한 주제어를 그대로 복사하지 말 것
                - 호기심·반전·해결 약속이 느껴지게 작성
 cta_next     : 다음 영상 예고 주제 (파생 주제, 20자 이내)
@@ -1084,7 +1085,10 @@ main_keyword       : {main_keyword}
    - 숫자 뒤의 단위는 공백 없이 붙여 쓰세요. 영어 약어(LDL, DNA 등)는 그대로 유지합니다.
 5. visual_query: 50대 이상 시청자가 보았을 때 마음이 편안해지는 따뜻한 일상 장면을 영어 키워드 2~4개로 묘사하세요. (차가운 병원, MRI, 주사기 등 공포감을 주는 이미지 절대 금지)
    - 예: "senior peaceful sleep morning light", "elderly couple walking park sunrise"
-6. frame_header: 상단에 들어갈 2줄 훅. title(대제목)은 짧게, subtitle(소제목)은 조금 더 길게 구성하여 안정감 있는 삼각형 구도를 만드세요. 사용자가 준 단어를 그대로 복사하지 말고, '호기심과 해결책'이 느껴지게 지으세요.
+6. frame_header: 상단에 들어갈 2줄 훅.
+   - title(대제목): 공백 포함 9자 이내, 명사형으로 간결하게 작성하세요.
+   - subtitle(소제목): 공백 포함 18자 이내이며, 반드시 의미가 끊기지 않는 완결된 구문으로 작성하세요. 작성 후 스스로 글자 수를 세어 상한을 넘지 않도록 조정하세요.
+   - 사용자가 준 단어를 그대로 복사하지 말고, '호기심과 해결책'이 느껴지게 지으세요.
 
 반드시 아래 JSON 객체 포맷으로만 출력하세요. 마크다운이나 추가 설명은 절대 넣지 마세요.
 
@@ -1220,18 +1224,20 @@ def normalize_frame_header(result, strategy, thumbnail_items):
     raw = result.get("frame_header") or strategy.get("frame_header") or {}
     if not isinstance(raw, dict):
         raw = {}
-    title = str(raw.get("title") or "").strip()
-    subtitle = str(raw.get("subtitle") or "").strip()
+    title = re.sub(r"\s+", " ", str(raw.get("title") or "").strip())
+    subtitle = re.sub(r"\s+", " ", str(raw.get("subtitle") or "").strip())
 
     if not title:
-        title = (thumbnail_items[0] if thumbnail_items else result.get("title") or strategy.get("title") or "브레인피프티").strip()
+        fallback_title = thumbnail_items[0] if thumbnail_items else result.get("title") or strategy.get("title") or "브레인피프티"
+        title = re.sub(r"\s+", " ", str(fallback_title).strip())
     if not subtitle:
         subtitle = "오늘의 뇌건강"
 
-    title = re.sub(r"\s+", " ", title)[:9]
-    subtitle = re.sub(r"\s+", " ", subtitle)[:18]
-    if len(title) >= len(subtitle) and len(title) > 3:
-        title = title[:max(3, min(7, len(subtitle) - 1))]
+    # Tight 9/18-character slicing used to cut otherwise meaningful phrases in
+    # the middle. These generous caps only contain abnormal model output; normal
+    # overflow is preserved for word wrapping in frame_style.py.
+    title = title[:20]
+    subtitle = subtitle[:40]
     return {"title": title, "subtitle": subtitle}
 
 def trim_scenes(scenes):

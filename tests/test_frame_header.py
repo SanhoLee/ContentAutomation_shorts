@@ -1,0 +1,112 @@
+import importlib.util
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEV_SRC = REPO_ROOT / "dev" / "src"
+os.environ.setdefault("WORK_DIR", tempfile.mkdtemp(prefix="frame_header_import_"))
+sys.path.insert(0, str(DEV_SRC))
+
+
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+dev_script = load_module("frame_header_dev_script", DEV_SRC / "0_script.py")
+prod_script = load_module("frame_header_prod_script", REPO_ROOT / "prod" / "src" / "0_script.py")
+dev_frame_style = load_module("frame_header_dev_style", DEV_SRC / "frame_style.py")
+prod_frame_style = load_module("frame_header_prod_style", REPO_ROOT / "prod" / "src" / "frame_style.py")
+
+
+PROD_TOP_STYLE = {
+    "height_pct": "13.5",
+    "title": "기억경고",
+    "font_name": "Noto Sans CJK KR",
+    "font_style": "Bold",
+    "font_color": "white",
+    "title_font_size": "84",
+    "subtitle_font_size": "48",
+    "margin_y": "60",
+    "margin_top_pct": "0",
+    "margin_x_pct": "6",
+}
+
+
+class FrameHeaderNormalizationTests(unittest.TestCase):
+    def test_dev_preserves_complete_subtitle_beyond_old_limit(self):
+        subtitle = "잊힌 게 아니라 뇌가 한창 자라던 시기였기 때문입니다"
+        result = {"frame_header": {"title": "성장의비밀", "subtitle": subtitle}}
+        normalized = dev_script.normalize_frame_header(result, {}, [])
+        self.assertEqual(normalized["subtitle"], subtitle)
+
+    def test_prod_preserves_complete_subtitle_beyond_old_limit(self):
+        subtitle = "잊힌 게 아니라 뇌가 한창 자라던 시기였기 때문입니다"
+        result = {"frame_header": {"title": "성장의비밀", "subtitle": subtitle}}
+        normalized = prod_script.normalize_frame_header(result, "영상 제목", [])
+        self.assertEqual(normalized["subtitle"], subtitle)
+
+    def test_abnormal_output_uses_only_generous_safety_caps(self):
+        result = {"frame_header": {"title": "가" * 25, "subtitle": "나" * 50}}
+        normalized_headers = (
+            dev_script.normalize_frame_header(result, {}, []),
+            prod_script.normalize_frame_header(result, "영상 제목", []),
+        )
+        for normalized in normalized_headers:
+            self.assertEqual(len(normalized["title"]), 20)
+            self.assertEqual(len(normalized["subtitle"]), 40)
+
+
+class FrameHeaderWrappingTests(unittest.TestCase):
+    def test_normal_subtitle_remains_a_single_unchanged_line(self):
+        data = {**PROD_TOP_STYLE, "subtitle": "오늘의 뇌건강"}
+        resolved = dev_frame_style.resolve_top(data)
+        self.assertEqual(resolved["subtitle"], "오늘의 뇌건강")
+        self.assertEqual(resolved["subtitle_line_count"], 1)
+        self.assertEqual((resolved["title_font_size"], resolved["subtitle_font_size"]), (72, 41))
+
+    def test_long_subtitle_wraps_once_at_a_word_boundary(self):
+        subtitle = "잊힌 게 아니라 뇌가 한창 자라던 시기였기 때문입니다"
+        wrapped, line_count = dev_frame_style.wrap_subtitle_if_needed(subtitle, 48, 950)
+        self.assertEqual(line_count, 2)
+        self.assertEqual(wrapped.replace("\n", " "), subtitle)
+        self.assertEqual(wrapped.count("\n"), 1)
+
+    def test_wrapped_subtitle_stays_inside_the_top_frame(self):
+        subtitle = "잊힌 게 아니라 뇌가 한창 자라던 시기였기 때문입니다"
+        data = {**PROD_TOP_STYLE, "subtitle": subtitle}
+        resolved = dev_frame_style.resolve_top(data)
+        subtitle_bottom = resolved["subtitle_y"] + dev_frame_style.subtitle_block_height(
+            resolved["subtitle_font_size"], resolved["subtitle_line_count"]
+        )
+        self.assertEqual(resolved["subtitle_line_count"], 2)
+        self.assertLessEqual(subtitle_bottom, resolved["bottom_anchor_y"])
+        self.assertLessEqual(subtitle_bottom, resolved["height_px"])
+
+    def test_long_unbroken_word_is_preserved_and_scaled(self):
+        subtitle = "가" * 40
+        data = {**PROD_TOP_STYLE, "subtitle": subtitle}
+        resolved = dev_frame_style.resolve_top(data)
+        self.assertEqual(resolved["subtitle"], subtitle)
+        self.assertEqual(resolved["subtitle_line_count"], 1)
+        self.assertLessEqual(
+            dev_frame_style.max_line_width_units(resolved["subtitle"]) * resolved["subtitle_font_size"],
+            dev_frame_style.CANVAS_W - resolved["margin_x_px"] * 2,
+        )
+
+    def test_dev_and_prod_resolve_identically(self):
+        data = {
+            **PROD_TOP_STYLE,
+            "subtitle": "잊힌 게 아니라 뇌가 한창 자라던 시기였기 때문입니다",
+        }
+        self.assertEqual(dev_frame_style.resolve_top(data), prod_frame_style.resolve_top(data))
+
+
+if __name__ == "__main__":
+    unittest.main()

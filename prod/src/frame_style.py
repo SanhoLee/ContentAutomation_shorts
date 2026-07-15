@@ -105,16 +105,58 @@ def text_width_units(text):
     return max(units, 1.0)
 
 
-def fit_top_font_sizes(title, subtitle, requested_title_size, requested_subtitle_size, max_width, max_height):
+def max_line_width_units(text):
+    return max(text_width_units(line) for line in str(text or "").splitlines() or [""])
+
+
+def wrap_subtitle_if_needed(subtitle, font_size, max_width):
+    """Wrap an over-wide subtitle at the most balanced word boundary."""
+    subtitle = str(subtitle or "")
+    existing_lines = subtitle.splitlines()
+    if len(existing_lines) > 1:
+        return subtitle, len(existing_lines)
+    if text_width_units(subtitle) * font_size <= max_width:
+        return subtitle, 1
+
+    words = subtitle.split()
+    if len(words) <= 1:
+        return subtitle, 1
+
+    best_split = min(
+        ((" ".join(words[:i]), " ".join(words[i:])) for i in range(1, len(words))),
+        key=lambda lines: abs(text_width_units(lines[0]) - text_width_units(lines[1])),
+    )
+    return "\n".join(best_split), 2
+
+
+def top_line_gap(title_size, subtitle_size):
+    return max(0, int(round(max(title_size, subtitle_size) * 0.35)))
+
+
+def subtitle_internal_gap(subtitle_size):
+    return max(0, int(round(subtitle_size * 0.15)))
+
+
+def subtitle_block_height(subtitle_size, line_count):
+    line_count = max(1, int(line_count))
+    return subtitle_size * line_count + subtitle_internal_gap(subtitle_size) * (line_count - 1)
+
+
+def fit_top_font_sizes(
+    title,
+    subtitle,
+    requested_title_size,
+    requested_subtitle_size,
+    max_width,
+    max_height,
+    subtitle_line_count=1,
+):
     title_width_limited = int(max_width / text_width_units(title))
-    subtitle_width_limited = int(max_width / text_width_units(subtitle))
+    subtitle_width_limited = int(max_width / max_line_width_units(subtitle))
     title_size = max(1, min(int(requested_title_size), title_width_limited))
     subtitle_size = max(1, min(int(requested_subtitle_size), subtitle_width_limited))
 
-    def line_gap(first_size, second_size):
-        return max(0, int(round(max(first_size, second_size) * 0.35)))
-
-    total_h = title_size + subtitle_size + line_gap(title_size, subtitle_size)
+    total_h = title_size + subtitle_block_height(subtitle_size, subtitle_line_count) + top_line_gap(title_size, subtitle_size)
     if total_h > max_height:
         scale = max_height / total_h
         title_size = max(1, int(title_size * scale))
@@ -134,16 +176,23 @@ def resolve_top(data):
     max_text_w = max(CANVAS_W - margin_x * 2, 1)
     bottom_anchor_y = max(h - margin - margin_top, margin + 1)
     max_text_h = max(bottom_anchor_y - margin, 1)
+    subtitle, subtitle_line_count = wrap_subtitle_if_needed(
+        data.get("subtitle", ""),
+        requested_subtitle_size,
+        max_text_w,
+    )
     title_size, subtitle_size = fit_top_font_sizes(
         data.get("title", ""),
-        data.get("subtitle", ""),
+        subtitle,
         requested_title_size,
         requested_subtitle_size,
         max_text_w,
         max_text_h,
+        subtitle_line_count,
     )
-    gap = max(0, int(round(max(title_size, subtitle_size) * 0.35)))
-    total_text_h = title_size + subtitle_size + gap
+    gap = top_line_gap(title_size, subtitle_size)
+    subtitle_h = subtitle_block_height(subtitle_size, subtitle_line_count)
+    total_text_h = title_size + subtitle_h + gap
     title_y = max(bottom_anchor_y - total_text_h, margin)
     subtitle_y = title_y + title_size + gap
     x_expr = f"{margin_x}+((w-{margin_x * 2})-text_w)/2" if margin_x else "(w-text_w)/2"
@@ -151,7 +200,8 @@ def resolve_top(data):
         "height_px": h,
         "bg_color": data.get("bg_color", "black"),
         "title": data.get("title", ""),
-        "subtitle": data.get("subtitle", ""),
+        "subtitle": subtitle,
+        "subtitle_line_count": subtitle_line_count,
         "font_name": data.get("font_name", "Noto Sans CJK KR"),
         "font_file": data.get("font_file", ""),
         "font_color": data.get("font_color", "white"),

@@ -272,13 +272,13 @@ PY
     if [ -n "$FRAME_TOP_TITLE" ]; then
         TOP_TITLE_FILE="$WORK_DIR/frame_top_title.txt"
         printf "%s" "$FRAME_TOP_TITLE" > "$TOP_TITLE_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_TITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_FONT_COLOR}:fontsize=${FRAME_TOP_TITLE_FONT_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_TITLE_Y}[with_top_title]"
+        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_TITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_TITLE_COLOR}:fontsize=${FRAME_TOP_TITLE_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_TITLE_Y}[with_top_title]"
         CURRENT_LABEL="[with_top_title]"
     fi
     if [ -n "$FRAME_TOP_SUBTITLE" ]; then
         TOP_SUBTITLE_FILE="$WORK_DIR/frame_top_subtitle.txt"
         printf "%s" "$FRAME_TOP_SUBTITLE" > "$TOP_SUBTITLE_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_SUBTITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_FONT_COLOR}:fontsize=${FRAME_TOP_SUBTITLE_FONT_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_SUBTITLE_Y}[with_top_subtitle]"
+        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_SUBTITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_SUBTITLE_COLOR}:fontsize=${FRAME_TOP_SUBTITLE_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_SUBTITLE_Y}[with_top_subtitle]"
         CURRENT_LABEL="[with_top_subtitle]"
     fi
     if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then

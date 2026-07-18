@@ -2,20 +2,22 @@
 presets:
   default:
     height_pct: 25.5
-    bg_color: black
+    background: black
     title: ""
     subtitle: ""
-    font_name: Noto Sans CJK KR
+    font: Noto Sans CJK KR
     font_style: Bold
-    font_color: white
-    title_font_size: 150
-    subtitle_font_size: 130
-    margin_y: 1
-    margin_top_pct: 5
-    margin_x_pct: 8
+    title_color: orange
+    title_size: 150
+    subtitle_color: white
+    subtitle_size: 130
+    # 주제목 위 여백. 값을 키우면 헤더 높이는 그대로이고 제목만 아래로 내려갑니다.
+    top_margin_pct: 30
+    bottom_margin_pct: 2
+    side_margin_pct: 4
 
   brain50:
     extends: default
     title: "브레인피프티"
     subtitle: "오늘의 뇌건강"
-    font_color: white
+    title_color: white

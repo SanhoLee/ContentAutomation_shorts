@@ -11,6 +11,12 @@ data/output/
 data/backups/
 /dev/data/telegram_state.json
 /dev/data/telegram_state.json.tmp
+/dev/data/slack_state.json
+/dev/data/slack_state.json.tmp
+/prod/data/slack_state.json
+/prod/data/slack_state.json.tmp
+/data/slack_state.json
+/data/slack_state.json.tmp
 /prod/data/telegram_state.json
 /prod/data/telegram_state.json.tmp
 /data/telegram_state.json

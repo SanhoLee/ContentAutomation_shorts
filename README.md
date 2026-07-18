@@ -373,6 +373,10 @@ python 0_script.py "다음 주제"
 | `ANTHROPIC_API_KEY` | Claude API 키 (필수) |
 | `PEXELS_API_KEY` | Pexels B-roll 검색 키 |
 | `TELEGRAM_BOT_TOKEN` | Telegram 봇 토큰 |
+| `SLACK_BOT_TOKEN` | Slack Bot User OAuth Token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | Slack Socket Mode App Token (`xapp-...`) |
+| `SLACK_CHANNEL_ID` | Slack 봇 허용 채널 ID (권장) |
+| `SLACK_ALLOWED_USER_ID` | Slack 봇 허용 사용자 ID (선택) |
 
 ### Claude 모델
 
@@ -494,6 +498,7 @@ python 0_script.py "다음 주제"
 |------|------|
 | [docs/usage/basic-usage.md](docs/usage/basic-usage.md) | 기본 실행 가이드 |
 | [docs/usage/telegram-bot.md](docs/usage/telegram-bot.md) | Telegram 봇 상세 |
+| [docs/usage/slack-bot.md](docs/usage/slack-bot.md) | Slack 봇 설치·권한·운영 |
 | [docs/usage/environment.md](docs/usage/environment.md) | 환경 설정 |
 | [docs/usage/with-job-id.md](docs/usage/with-job-id.md) | JOB_ID 활용법 |
 | [HANDOFF.md](HANDOFF.md) | 개발 히스토리 |

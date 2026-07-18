@@ -1,0 +1,2 @@
+# Slack Socket Mode transport for dev/src/slack_bot.py and prod/src/slack_bot.py
+slack-bolt>=1.18,<2

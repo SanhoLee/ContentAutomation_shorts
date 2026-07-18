@@ -97,6 +97,103 @@ class YouTubeFeedbackTests(unittest.TestCase):
         self.assertGreater(rows[1]["performance_score"], 0.30)
         conn.close()
 
+    def test_shorts_feed_metrics_and_quadrant_are_derived_safely(self):
+        conn = youtube_feedback.connect(self.db)
+        with conn:
+            youtube_feedback.store_videos(conn, [self.sample_video()])
+            youtube_feedback.store_analytics(
+                conn,
+                {
+                    "v1": {
+                        "views": 1000,
+                        "engagedViews": 700,
+                        "averageViewDuration": 52,
+                        "averageViewPercentage": 104,
+                        "subscribersGained": 8,
+                        "subscribersLost": 1,
+                        "likes": 80,
+                        "comments": 10,
+                        "shares": 20,
+                        "creatorContentType": "SHORTS",
+                        "shortsFeedViews": 800,
+                        "shortsFeedEngagedViews": 600,
+                    },
+                },
+                "2026-04-01", "2026-06-29", "2026-07-01T00:00:00+00:00",
+            )
+            youtube_feedback.calculate_performance_scores(conn, "2026-04-01", "2026-06-29")
+        row = conn.execute(youtube_feedback.LATEST_ANALYTICS_SQL).fetchone()
+        derived = youtube_feedback.derive_video_metrics(row)
+        self.assertAlmostEqual(derived["initial_engagement_rate"], 0.75)
+        self.assertEqual(derived["initial_engagement_source"], "shorts_feed")
+        self.assertAlmostEqual(derived["subscriber_conversion_rate"], 0.008)
+        self.assertEqual(derived["replay_lift"], 4.0)
+
+        thresholds = youtube_feedback.adaptive_strategy_thresholds([row])
+        strategy = youtube_feedback.classify_video_strategy(derived, thresholds)
+        self.assertEqual(strategy["quadrant"], "Q1")
+        conn.close()
+
+    def test_shorts_feed_query_keeps_only_official_shorts_traffic_rows(self):
+        class Request:
+            def execute(self):
+                return {
+                    "columnHeaders": [
+                        {"name": "video"},
+                        {"name": "insightTrafficSourceType"},
+                        {"name": "views"},
+                        {"name": "engagedViews"},
+                    ],
+                    "rows": [
+                        ["v1", "SHORTS", 900, 600],
+                        ["v1", "YT_SEARCH", 100, 80],
+                    ],
+                }
+
+        class Reports:
+            def query(self, **parameters):
+                self.parameters = parameters
+                return Request()
+
+        class Analytics:
+            def __init__(self):
+                self.report_api = Reports()
+
+            def reports(self):
+                return self.report_api
+
+        analytics = Analytics()
+        result = youtube_feedback.fetch_shorts_feed_analytics(
+            analytics, "2026-04-01", "2026-06-29", ["v1"]
+        )
+        self.assertEqual(result["v1"]["shortsFeedViews"], 900)
+        self.assertEqual(result["v1"]["shortsFeedEngagedViews"], 600)
+        self.assertEqual(result["v1"]["creatorContentType"], "SHORTS")
+        self.assertEqual(
+            analytics.report_api.parameters["dimensions"],
+            "video,insightTrafficSourceType",
+        )
+
+    def test_explicit_long_form_rows_are_not_scored_as_shorts(self):
+        conn = youtube_feedback.connect(self.db)
+        with conn:
+            youtube_feedback.store_videos(conn, [self.sample_video()])
+            youtube_feedback.store_analytics(
+                conn,
+                {
+                    "v1": {
+                        "views": 1000,
+                        "averageViewPercentage": 90,
+                        "creatorContentType": "VIDEO_ON_DEMAND",
+                    },
+                },
+                "2026-04-01", "2026-06-29", "2026-07-01T00:00:00+00:00",
+            )
+            youtube_feedback.calculate_performance_scores(conn, "2026-04-01", "2026-06-29")
+        score = conn.execute("SELECT performance_score FROM analytics").fetchone()[0]
+        self.assertIsNone(score)
+        conn.close()
+
     def test_adaptive_thresholds_follow_strictness_and_channel_data(self):
         conn = youtube_feedback.connect(self.db)
         videos = [
@@ -151,6 +248,8 @@ class YouTubeFeedbackTests(unittest.TestCase):
         self.assertEqual(parsed["top_videos"][0]["video_id"], "v1")
         self.assertEqual(parsed["strictness"], "balanced")
         self.assertIn("adjusted_score", parsed["keyword_performance"][0])
+        self.assertIn("strategy_thresholds", parsed)
+        self.assertIn("quadrant_summary", parsed)
         self.assertIn("\ub9c8\uc9c0\ub9c9 \uc815\uc0c1 \ub3d9\uae30\ud654", markdown.read_text(encoding="utf-8"))
 
         guidance = youtube_feedback.build_content_guidance(
@@ -158,6 +257,7 @@ class YouTubeFeedbackTests(unittest.TestCase):
         )
         self.assertTrue(guidance["available"])
         self.assertIn("YouTube 채널 실데이터 인사이트", guidance["prompt_text"])
+        self.assertIn("4분면", guidance["prompt_text"])
         self.assertEqual(guidance["strictness"], "balanced")
         conn.close()
 

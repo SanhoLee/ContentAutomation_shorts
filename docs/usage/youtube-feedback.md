@@ -25,7 +25,7 @@ python dev/src/6_youtube_feedback.py guide "수면 부족과 기억력 저하"
 | API | 쉽게 말하면 | 저장되는 정보 |
 |---|---|---|
 | YouTube Data API v3 | 내 채널에 어떤 영상이 있는지 확인 | 영상 ID, 제목, 설명, 게시일, 길이, 공개 조회수·좋아요·댓글 |
-| YouTube Analytics API | 각 영상의 성과가 어땠는지 확인 | 분석 조회수, 참여 조회수, 평균 시청 시간·비율, 공유, 구독자 증감 |
+| YouTube Analytics API | 각 영상의 성과가 어땠는지 확인 | 콘텐츠 유형, 분석 조회수, 참여 조회수, Shorts 피드 유입, 평균 시청 시간·비율, 공유, 구독자 증감 |
 
 둘 다 정상이어야 성과 보고서가 제대로 만들어집니다. Data API만 되면 `videos`에는 데이터가 있지만 `analytics`는 비어 있을 수 있습니다.
 
@@ -33,6 +33,8 @@ python dev/src/6_youtube_feedback.py guide "수면 부족과 기억력 저하"
 
 - [YouTube Data API channels.list](https://developers.google.com/youtube/v3/docs/channels/list)
 - [YouTube Analytics API reports.query](https://developers.google.com/youtube/analytics/reference/reports/query)
+- [YouTube Analytics 채널 보고서](https://developers.google.com/youtube/analytics/channel_reports)
+- [YouTube Analytics 지표](https://developers.google.com/youtube/analytics/metrics)
 - [YouTube OAuth 2.0](https://developers.google.com/youtube/v3/guides/authentication)
 
 ## 3. 최초 1회 준비
@@ -136,7 +138,7 @@ YouTube Studio에 보이는 최근 제목과 같다면 Data API가 올바른 채
 ### 실제 Analytics 값 확인
 
 ```bash
-python -c "import sqlite3; c=sqlite3.connect('dev/data/youtube_feedback.db'); [print(r) for r in c.execute('SELECT video_id,views,engaged_views,average_view_percentage,performance_score,period_start,period_end FROM analytics ORDER BY fetched_at DESC LIMIT 5')]"
+python -c "import sqlite3; c=sqlite3.connect('dev/data/youtube_feedback.db'); [print(r) for r in c.execute('SELECT video_id,creator_content_type,views,shorts_feed_views,shorts_feed_engaged_views,average_view_percentage,subscribers_gained,performance_score FROM analytics ORDER BY fetched_at DESC LIMIT 5')]"
 ```
 
 행이 나오고 성과 값이 하나 이상 있으면 Analytics API 결과가 저장된 것입니다. 채널이나 기간에서 지원되지 않는 지표는 `None`일 수 있습니다.
@@ -175,7 +177,9 @@ FROM sync_runs ORDER BY run_id DESC LIMIT 5;
 SELECT video_id,title,view_count
 FROM videos ORDER BY published_at DESC LIMIT 5;
 
-SELECT video_id,views,engaged_views,average_view_percentage,performance_score
+SELECT video_id,creator_content_type,views,shorts_feed_views,
+       shorts_feed_engaged_views,average_view_percentage,
+       subscribers_gained,performance_score
 FROM analytics ORDER BY fetched_at DESC LIMIT 5;
 
 .quit
@@ -198,11 +202,15 @@ FROM analytics ORDER BY fetched_at DESC LIMIT 5;
 - `analytics` 행 수가 1 이상임
 - `period_start`, `period_end`가 채워져 있음
 - `views`, `engaged_views`, `average_view_percentage` 중 하나 이상에 값이 있음
+- `creator_content_type='SHORTS'`인 행이 있음
+- Shorts 피드 유입이 있는 영상은 `shorts_feed_views`와 `shorts_feed_engaged_views`가 채워짐
 - 비교 가능한 영상이 있으면 `performance_score`가 0~1 사이의 채널 상대 점수로 계산됨
 
 Analytics의 `views`와 Data API의 누적 `view_count`는 조회 기간이 다르므로 같지 않아도 정상입니다. Analytics 기본 기간은 실행일 이틀 전까지의 최근 90일입니다.
 
-성과 점수는 평균 시청률 40%, 공유율 25%, 좋아요율 15%, 순 구독자 전환율 15%, 댓글률 5%를 사용합니다. 각 지표는 고정 조회수 컷이 아니라 채널 내부 백분위로 바뀝니다. 표본이 작으면 점수를 채널 중앙값 쪽으로 축소하고, 영상이 늘수록 실제 분포의 영향이 자동으로 커집니다.
+성과 점수는 초반 몰입 대리지표 25%, 평균 시청률 30%, 순 구독자 전환율 25%, 공유율 10%, 좋아요율 5%, 댓글률 5%를 사용합니다. 각 지표는 고정 조회수 컷이 아니라 채널 내부 백분위로 바뀝니다. 표본이 작으면 점수를 채널 중앙값 쪽으로 축소하고, 영상이 늘수록 실제 분포의 영향이 자동으로 커집니다.
+
+> YouTube Analytics API에는 `shortsViewsFromShortsFeed`, `shortsImpressionsFromShortsFeed`, `stayedToWatch`, `swipedAway`라는 공식 보고서 지표가 없습니다. 따라서 Studio의 "조회함/스와이프함"을 정확히 복제하지 않습니다. 이 시스템은 `insightTrafficSourceType=SHORTS` 행의 `engagedViews / views`를 초반 몰입 **대리지표**로 사용하며, 이 값이 없으면 전체 `engagedViews / views`로 대체합니다. 최신 이틀은 데이터 안정성을 위해 분석 기간에서 제외합니다.
 
 ## 8. 보고서와 주제 검사
 
@@ -238,6 +246,17 @@ python dev/src/6_youtube_feedback.py check-topic "수면 부족과 기억력 저
 | `strict` | 강한 성과 신호만 참고하고 기존 주제 중복을 더 민감하게 봅니다. |
 
 기준값 역시 고정값이 아닙니다. 기존 영상끼리의 주제 유사도 분포와 영상 수를 이용해 매번 갱신하며, 작은 표본에서는 보수적인 사전값과 섞어 극단적인 판정을 막습니다.
+
+보고서는 평균 시청 지속률과 조회수 대비 구독 전환율로 Shorts를 네 가지 전략으로 나눕니다.
+
+| 분류 | 의미 | 다음 콘텐츠 지침 |
+|---|---|---|
+| Q1 치트키 주제 | 지속률·전환율 모두 높음 | 핵심 소재를 변주해 시리즈화 |
+| Q2 소재 우수형 | 전환율은 높고 지속률은 낮음 | 소재 유지, 초반 후킹·템포 보완 |
+| Q3 몰입 우수형 | 지속률은 높고 전환율은 낮음 | CTA·다음 편 예고 강화 |
+| Q4 재검토형 | 둘 다 낮음 | 작은 실험으로 각도를 다시 검증 |
+
+초기 기준은 지속률 85%, 구독 전환율 0.5%입니다. 실제 영상이 쌓이면 `loose` 45분위, `balanced` 50분위, `strict` 60분위의 채널 값이 점차 더 큰 비중을 차지합니다. 이 분류와 영상별 지표는 `youtube_guidance.json`을 통해 Stage 1과 Stage 2에 함께 전달됩니다.
 
 실제 콘텐츠 생성은 평소처럼 실행하면 됩니다.
 

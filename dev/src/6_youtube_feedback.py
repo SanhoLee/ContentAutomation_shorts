@@ -46,6 +46,14 @@ METRIC_COLUMNS = {
     "subscribersGained": "subscribers_gained",
     "subscribersLost": "subscribers_lost",
 }
+PERFORMANCE_WEIGHTS = {
+    "shorts_feed_engagement_rate": 0.25,
+    "average_view_percentage": 0.30,
+    "subscriber_rate": 0.25,
+    "share_rate": 0.10,
+    "like_rate": 0.05,
+    "comment_rate": 0.05,
+}
 ANALYSIS_PERIOD_DAYS = 90
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = SCRIPT_DIR.parent / "data"
@@ -59,6 +67,7 @@ STRICTNESS_PROFILES = {
         "top_fraction": 0.50,
         "keyword_prior_strength": 1.0,
         "keyword_min_fraction": 0.02,
+        "strategy_quantile": 0.45,
         "duplicate_quantile": 0.90,
         "duplicate_prior": 0.55,
         "review_quantile": 0.65,
@@ -69,6 +78,7 @@ STRICTNESS_PROFILES = {
         "top_fraction": 0.35,
         "keyword_prior_strength": 2.0,
         "keyword_min_fraction": 0.04,
+        "strategy_quantile": 0.50,
         "duplicate_quantile": 0.80,
         "duplicate_prior": 0.45,
         "review_quantile": 0.55,
@@ -79,6 +89,7 @@ STRICTNESS_PROFILES = {
         "top_fraction": 0.25,
         "keyword_prior_strength": 3.0,
         "keyword_min_fraction": 0.06,
+        "strategy_quantile": 0.60,
         "duplicate_quantile": 0.65,
         "duplicate_prior": 0.35,
         "review_quantile": 0.40,
@@ -149,6 +160,9 @@ CREATE TABLE IF NOT EXISTS analytics (
     shares INTEGER DEFAULT 0,
     subscribers_gained INTEGER DEFAULT 0,
     subscribers_lost INTEGER DEFAULT 0,
+    creator_content_type TEXT,
+    shorts_feed_views INTEGER,
+    shorts_feed_engaged_views INTEGER,
     performance_score REAL,
     fetched_at TEXT NOT NULL,
     PRIMARY KEY (video_id, period_start, period_end)
@@ -169,6 +183,12 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 );
 """
 
+ANALYTICS_COLUMN_MIGRATIONS = {
+    "creator_content_type": "TEXT",
+    "shorts_feed_views": "INTEGER",
+    "shorts_feed_engaged_views": "INTEGER",
+}
+
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
     target = path or db_path()
@@ -176,6 +196,10 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(target)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(analytics)")}
+    for column, column_type in ANALYTICS_COLUMN_MIGRATIONS.items():
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE analytics ADD COLUMN {column} {column_type}")
     conn.commit()
     return conn
 
@@ -372,6 +396,9 @@ def _analytics_query(analytics, start: str, end: str, metrics: Sequence[str]) ->
         "startDate": start,
         "endDate": end,
         "metrics": ",".join(metrics),
+        # creatorContentType is not compatible with the video dimension in the
+        # channel report for every metric/account combination. Shorts identity
+        # is attached by the separate SHORTS traffic-source query below.
         "dimensions": "video",
         "maxResults": 200,
     }
@@ -417,6 +444,43 @@ def fetch_analytics(analytics, start: str, end: str) -> tuple[dict[str, dict[str
     return merged, supported
 
 
+def fetch_shorts_feed_analytics(
+    analytics,
+    start: str,
+    end: str,
+    video_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Collect Shorts-feed traffic separately from the all-traffic video report.
+
+    YouTube does not expose Shorts feed impressions or a stayed-vs-swiped metric
+    through this API. The official SHORTS traffic-source rows still let us
+    measure feed-attributed starts and engaged views without mixing long-form CTR.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    for group in chunks(video_ids, 10):
+        parameters = {
+            "ids": "channel==MINE",
+            "startDate": start,
+            "endDate": end,
+            "metrics": "views,engagedViews",
+            "dimensions": "video,insightTrafficSourceType",
+            "filters": f"video=={','.join(group)}",
+            "maxResults": 200,
+        }
+        response = analytics.reports().query(**parameters).execute()
+        headers = [header.get("name") for header in response.get("columnHeaders") or []]
+        for values in response.get("rows") or []:
+            row = dict(zip(headers, values))
+            if row.get("insightTrafficSourceType") != "SHORTS" or not row.get("video"):
+                continue
+            result[str(row["video"])] = {
+                "creatorContentType": "SHORTS",
+                "shortsFeedViews": row.get("views"),
+                "shortsFeedEngagedViews": row.get("engagedViews"),
+            }
+    return result
+
+
 VIDEO_UPSERT = """
 INSERT INTO videos (
     video_id, title, description, published_at, duration_seconds,
@@ -438,8 +502,9 @@ INSERT INTO analytics (
     video_id, period_start, period_end, views, engaged_views,
     average_view_duration, average_view_percentage, likes, dislikes,
     comments, shares, subscribers_gained, subscribers_lost,
+    creator_content_type, shorts_feed_views, shorts_feed_engaged_views,
     performance_score, fetched_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
 ON CONFLICT(video_id, period_start, period_end) DO UPDATE SET
     views=COALESCE(excluded.views, analytics.views),
     engaged_views=COALESCE(excluded.engaged_views, analytics.engaged_views),
@@ -451,6 +516,9 @@ ON CONFLICT(video_id, period_start, period_end) DO UPDATE SET
     shares=COALESCE(excluded.shares, analytics.shares),
     subscribers_gained=COALESCE(excluded.subscribers_gained, analytics.subscribers_gained),
     subscribers_lost=COALESCE(excluded.subscribers_lost, analytics.subscribers_lost),
+    creator_content_type=COALESCE(excluded.creator_content_type, analytics.creator_content_type),
+    shorts_feed_views=COALESCE(excluded.shorts_feed_views, analytics.shorts_feed_views),
+    shorts_feed_engaged_views=COALESCE(excluded.shorts_feed_engaged_views, analytics.shorts_feed_engaged_views),
     fetched_at=excluded.fetched_at
 """
 
@@ -488,14 +556,49 @@ def store_analytics(
             values["views"], values["engaged_views"], values["average_view_duration"],
             values["average_view_percentage"], values["likes"], values["dislikes"],
             values["comments"], values["shares"], values["subscribers_gained"],
-            values["subscribers_lost"], fetched_at,
+            values["subscribers_lost"], source.get("creatorContentType"),
+            nullable_number(source.get("shortsFeedViews")),
+            nullable_number(source.get("shortsFeedEngagedViews")), fetched_at,
         ))
 
 
-def _safe_rate(numerator: float | int | None, denominator: float | int | None) -> float | None:
-    if numerator is None:
+def _ratio(numerator: float | int | None, denominator: float | int | None) -> float | None:
+    if numerator is None or denominator is None or float(denominator) <= 0:
         return None
-    return float(numerator) / max(float(denominator or 0), 1.0)
+    return float(numerator) / float(denominator)
+
+
+def derive_video_metrics(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    views = row["views"]
+    engaged_views = row["engaged_views"]
+    feed_views = row["shorts_feed_views"]
+    feed_engaged_views = row["shorts_feed_engaged_views"]
+    if feed_views is not None and feed_views > 0 and feed_engaged_views is not None:
+        initial_engagement_rate = _ratio(feed_engaged_views, feed_views)
+        initial_engagement_source = "shorts_feed"
+    else:
+        initial_engagement_rate = _ratio(engaged_views, views)
+        initial_engagement_source = "all_views_proxy"
+
+    subscribers_gained = row["subscribers_gained"]
+    subscribers_lost = row["subscribers_lost"]
+    net_subscribers = None
+    if subscribers_gained is not None or subscribers_lost is not None:
+        net_subscribers = (subscribers_gained or 0) - (subscribers_lost or 0)
+    average_percentage = nullable_number(row["average_view_percentage"], float)
+    return {
+        "initial_engagement_rate": initial_engagement_rate,
+        "initial_engagement_source": initial_engagement_source,
+        "shorts_feed_view_share": _ratio(feed_views, views),
+        "average_view_duration": nullable_number(row["average_view_duration"], float),
+        "average_view_percentage": average_percentage,
+        "subscriber_conversion_rate": _ratio(subscribers_gained, views),
+        "net_subscriber_conversion_rate": _ratio(net_subscribers, views),
+        "like_rate": _ratio(row["analytics_likes"] if "analytics_likes" in row.keys() else row["likes"], views),
+        "comment_rate": _ratio(row["analytics_comments"] if "analytics_comments" in row.keys() else row["comments"], views),
+        "share_rate": _ratio(row["shares"], views),
+        "replay_lift": max(float(average_percentage or 0) - 100.0, 0.0),
+    }
 
 
 def quantile(values: Sequence[float | int], fraction: float) -> float | None:
@@ -523,6 +626,96 @@ def percentile_rank(value: float, cohort: Sequence[float]) -> float:
     return (lower + 0.5 * equal) / len(cohort)
 
 
+QUADRANT_STRATEGIES = {
+    "Q1": {
+        "label": "치트키 주제",
+        "instruction": "핵심 소재를 시리즈화하되 같은 제목·결론을 복제하지 말 것",
+    },
+    "Q2": {
+        "label": "소재 우수형",
+        "instruction": "주제는 유지하고 초반 후킹·전개 속도·편집 밀도를 보완할 것",
+    },
+    "Q3": {
+        "label": "몰입 우수형",
+        "instruction": "후반 CTA와 다음 편 예고로 구독할 이유를 강화할 것",
+    },
+    "Q4": {
+        "label": "재검토형",
+        "instruction": "작은 실험으로만 재검증하고 제목·주제 각도를 전면 복제하지 말 것",
+    },
+    "NA": {
+        "label": "데이터 부족",
+        "instruction": "성과 결론을 내리지 말고 표본이 쌓일 때까지 탐색적으로 사용할 것",
+    },
+}
+
+
+def adaptive_strategy_thresholds(
+    rows: Sequence[sqlite3.Row | dict[str, Any]],
+    strictness: str = "balanced",
+) -> dict[str, Any]:
+    strictness = normalize_strictness(strictness)
+    target_quantile = float(STRICTNESS_PROFILES[strictness]["strategy_quantile"])
+    derived_rows = [derive_video_metrics(row) for row in rows]
+    retention_values = [
+        float(item["average_view_percentage"])
+        for item in derived_rows
+        if item["average_view_percentage"] is not None
+    ]
+    # Zero-conversion videos are kept on the low side of the matrix. Using only
+    # positive observations for the high threshold avoids classifying 0 >= 0 as high.
+    conversion_values = [
+        float(item["subscriber_conversion_rate"])
+        for item in derived_rows
+        if item["subscriber_conversion_rate"] is not None
+        and item["subscriber_conversion_rate"] > 0
+    ]
+
+    def blended(values: Sequence[float], prior: float) -> tuple[float, float]:
+        if not values:
+            return prior, 0.0
+        empirical = float(quantile(values, target_quantile) or prior)
+        empirical_weight = len(values) / (len(values) + 8.0)
+        return prior * (1.0 - empirical_weight) + empirical * empirical_weight, empirical_weight
+
+    retention, retention_weight = blended(retention_values, 85.0)
+    conversion, conversion_weight = blended(conversion_values, 0.005)
+    return {
+        "retention_percentage": round(retention, 4),
+        "subscriber_conversion_rate": round(conversion, 6),
+        "target_quantile": target_quantile,
+        "retention_sample_count": len(retention_values),
+        "conversion_sample_count": len(conversion_values),
+        "retention_empirical_weight": round(retention_weight, 4),
+        "conversion_empirical_weight": round(conversion_weight, 4),
+    }
+
+
+def classify_video_strategy(
+    derived: dict[str, Any],
+    thresholds: dict[str, Any],
+) -> dict[str, str]:
+    retention = derived.get("average_view_percentage")
+    conversion = derived.get("subscriber_conversion_rate")
+    if retention is None or conversion is None:
+        quadrant = "NA"
+    else:
+        retention_high = float(retention) >= float(thresholds["retention_percentage"])
+        conversion_high = (
+            float(conversion) > 0
+            and float(conversion) >= float(thresholds["subscriber_conversion_rate"])
+        )
+        if retention_high and conversion_high:
+            quadrant = "Q1"
+        elif not retention_high and conversion_high:
+            quadrant = "Q2"
+        elif retention_high and not conversion_high:
+            quadrant = "Q3"
+        else:
+            quadrant = "Q4"
+    return {"quadrant": quadrant, **QUADRANT_STRATEGIES[quadrant]}
+
+
 def calculate_performance_scores(conn: sqlite3.Connection, period_start: str, period_end: str) -> None:
     rows = conn.execute(
         "SELECT * FROM analytics WHERE period_start=? AND period_end=?",
@@ -532,36 +725,40 @@ def calculate_performance_scores(conn: sqlite3.Connection, period_start: str, pe
         return
 
     calculated: list[tuple[str, float, dict[str, float | None]]] = []
+    eligible_video_ids = {
+        row["video_id"] for row in rows if row["creator_content_type"] in (None, "SHORTS")
+    }
+    conn.execute(
+        "UPDATE analytics SET performance_score=NULL WHERE period_start=? AND period_end=?",
+        (period_start, period_end),
+    )
     for row in rows:
-        denominator = max(row["engaged_views"] or 0, row["views"] or 0, 1)
-        net_subscribers = None
-        if row["subscribers_gained"] is not None or row["subscribers_lost"] is not None:
-            net_subscribers = (row["subscribers_gained"] or 0) - (row["subscribers_lost"] or 0)
-        calculated.append((row["video_id"], float(denominator), {
-            "average_view_percentage": nullable_number(row["average_view_percentage"], float),
-            "share_rate": _safe_rate(row["shares"], denominator),
-            "like_rate": _safe_rate(row["likes"], denominator),
-            "subscriber_rate": _safe_rate(net_subscribers, denominator),
-            "comment_rate": _safe_rate(row["comments"], denominator),
+        if row["video_id"] not in eligible_video_ids:
+            continue
+        derived = derive_video_metrics(row)
+        sample = max(row["shorts_feed_views"] or 0, row["engaged_views"] or 0, row["views"] or 0, 1)
+        calculated.append((row["video_id"], float(sample), {
+            "shorts_feed_engagement_rate": derived["initial_engagement_rate"],
+            "average_view_percentage": derived["average_view_percentage"],
+            "share_rate": derived["share_rate"],
+            "like_rate": derived["like_rate"],
+            "subscriber_rate": derived["net_subscriber_conversion_rate"],
+            "comment_rate": derived["comment_rate"],
         }))
 
-    weights = {
-        "average_view_percentage": 0.40,
-        "share_rate": 0.25,
-        "like_rate": 0.15,
-        "subscriber_rate": 0.15,
-        "comment_rate": 0.05,
-    }
+    if not calculated:
+        return
+
     cohorts = {
         metric: [float(metrics[metric]) for _, _, metrics in calculated if metrics[metric] is not None]
-        for metric in weights
+        for metric in PERFORMANCE_WEIGHTS
     }
     sample_median = statistics.median(sample for _, sample, _ in calculated)
     cohort_confidence = len(calculated) / (len(calculated) + 4.0)
 
     for video_id, sample, metrics in calculated:
         components = [
-            (weights[metric], percentile_rank(float(value), cohorts[metric]))
+            (PERFORMANCE_WEIGHTS[metric], percentile_rank(float(value), cohorts[metric]))
             for metric, value in metrics.items()
             if value is not None and cohorts[metric]
         ]
@@ -609,6 +806,19 @@ def cmd_sync(_args: argparse.Namespace) -> int:
         analytics_rows, supported_metrics = fetch_analytics(
             analytics, start_date.isoformat(), end_date.isoformat()
         )
+        shorts_feed_rows: dict[str, dict[str, Any]] = {}
+        try:
+            shorts_feed_rows = fetch_shorts_feed_analytics(
+                analytics, start_date.isoformat(), end_date.isoformat(), video_ids
+            )
+        except Exception as exc:
+            print(
+                f"\uc1fc\uce20 \ud53c\ub4dc \uc720\uc785 \uc9c0\ud45c \uc218\uc9d1 \uc2e4\ud328(\uae30\ubcf8 \uc9c0\ud45c\ub85c \uacc4\uc18d): "
+                f"{type(exc).__name__}",
+                file=sys.stderr,
+            )
+        for video_id, feed_values in shorts_feed_rows.items():
+            analytics_rows.setdefault(video_id, {}).update(feed_values)
 
         with conn:
             store_videos(conn, videos)
@@ -621,6 +831,7 @@ def cmd_sync(_args: argparse.Namespace) -> int:
         print(f"\ucc44\ub110: {channel['title']} ({channel['channel_id']})")
         print(f"\ub3d9\uae30\ud654 \uc644\ub8cc: \uc601\uc0c1 {len(videos)}\uac1c, Analytics \uc601\uc0c1 {len(analytics_rows)}\uac1c")
         print(f"\uc9c0\uc6d0 Analytics \uc9c0\ud45c: {', '.join(supported_metrics)}")
+        print(f"\uc1fc\uce20 \ud53c\ub4dc \uc720\uc785 \uc601\uc0c1: {len(shorts_feed_rows)}\uac1c")
         print(f"DB: {db_path()}")
         return 0
     except Exception as exc:
@@ -644,7 +855,9 @@ WITH latest AS (
     FROM analytics a
 )
 SELECT v.*, l.period_start, l.period_end, l.views, l.engaged_views,
-       l.average_view_percentage, l.performance_score,
+       l.average_view_duration, l.average_view_percentage,
+       l.creator_content_type, l.shorts_feed_views, l.shorts_feed_engaged_views,
+       l.performance_score,
        l.likes AS analytics_likes, l.comments AS analytics_comments,
        l.shares, l.subscribers_gained, l.subscribers_lost
 FROM videos v
@@ -688,13 +901,44 @@ def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") ->
     samples = [_row_sample(row) for row in scored]
     relative_sample_floor = quantile(samples, 0.25) or 0.0
     top_count = min(10, max(1, math.ceil(len(scored) * profile["top_fraction"]))) if scored else 0
-    top_videos = [{
-        "video_id": row["video_id"],
-        "title": row["title"],
-        "performance_score": round(row["performance_score"], 4),
-        "sample": _row_sample(row),
-        "low_confidence": _row_sample(row) < relative_sample_floor,
-    } for row in scored[:top_count]]
+    strategy_thresholds = adaptive_strategy_thresholds(scored, strictness)
+    analyzed_videos = []
+    quadrant_summary = {
+        key: {**value, "video_count": 0, "examples": []}
+        for key, value in QUADRANT_STRATEGIES.items()
+    }
+    for row in scored:
+        derived = derive_video_metrics(row)
+        strategy = classify_video_strategy(derived, strategy_thresholds)
+        entry = {
+            "video_id": row["video_id"],
+            "title": row["title"],
+            "performance_score": round(row["performance_score"], 4),
+            "sample": _row_sample(row),
+            "low_confidence": _row_sample(row) < relative_sample_floor,
+            "creator_content_type": row["creator_content_type"],
+            "initial_engagement_rate": nullable_number(derived["initial_engagement_rate"], float),
+            "initial_engagement_source": derived["initial_engagement_source"],
+            "shorts_feed_view_share": nullable_number(derived["shorts_feed_view_share"], float),
+            "average_view_duration": derived["average_view_duration"],
+            "average_view_percentage": derived["average_view_percentage"],
+            "subscriber_conversion_rate": nullable_number(derived["subscriber_conversion_rate"], float),
+            "net_subscriber_conversion_rate": nullable_number(
+                derived["net_subscriber_conversion_rate"], float
+            ),
+            "replay_lift": derived["replay_lift"],
+            "topic_strategy": strategy,
+        }
+        analyzed_videos.append(entry)
+        summary = quadrant_summary[strategy["quadrant"]]
+        summary["video_count"] += 1
+        if len(summary["examples"]) < 3:
+            summary["examples"].append({
+                "video_id": row["video_id"],
+                "title": row["title"],
+                "performance_score": round(row["performance_score"], 4),
+            })
+    top_videos = analyzed_videos[:top_count]
 
     raw_keyword_rows = conn.execute("""
         WITH latest AS (
@@ -706,6 +950,7 @@ def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") ->
         SELECT k.keyword, AVG(l.performance_score) AS avg_score, COUNT(DISTINCT k.video_id) AS video_count
         FROM keywords k JOIN latest l ON l.video_id=k.video_id AND l.row_number=1
         WHERE l.performance_score IS NOT NULL AND k.source='title'
+          AND (l.creator_content_type='SHORTS' OR l.creator_content_type IS NULL)
         GROUP BY k.keyword
     """).fetchall()
     channel_center = statistics.median(
@@ -751,6 +996,9 @@ def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") ->
             "median": round(quantile([row["performance_score"] for row in scored], 0.50) or 0.5, 4),
             "q75": round(quantile([row["performance_score"] for row in scored], 0.75) or 0.5, 4),
         },
+        "performance_weights": PERFORMANCE_WEIGHTS,
+        "strategy_thresholds": strategy_thresholds,
+        "quadrant_summary": quadrant_summary,
         "last_successful_sync": last_sync["finished_at"] if last_sync else None,
         "top_videos": top_videos,
         "low_sample_videos": [{
@@ -765,6 +1013,7 @@ def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") ->
             "\uc870\ud68c\uc218 \ub2e8\ub3c5 \uae30\uc900\uc73c\ub85c \ubc29\ud5a5\uc744 \ubcc0\uacbd\ud558\uc9c0 \uc54a\uc74c",
             "\ucc44\ub110 \ub0b4\ubd80 \ubd84\uc704\uc218\ub85c \uc815\uaddc\ud654\ud558\uba70 \ud45c\ubcf8\uc774 \uc313\uc77c\uc218\ub85d \uae30\uc900\uc774 \uc790\ub3d9 \uac31\uc2e0\ub428",
             "\uc791\uc740 \ud45c\ubcf8\uc740 \ucc44\ub110 \uc911\uc559\uac12 \ucabd\uc73c\ub85c \ucd95\uc18c\ud574 \ud2b9\uc774\uac12 \uacfc\ub300 \ud574\uc11d\uc744 \uc904\uc784",
+            "YouTube Analytics API\ub294 \uc1fc\uce20 \ud53c\ub4dc \ub178\ucd9c\uc218\ub97c \uc81c\uacf5\ud558\uc9c0 \uc54a\uc73c\uba70, \ud53c\ub4dc \uc720\uc785 views \ub300\ube44 engagedViews\ub97c \ucd08\ubc18 \ubab0\uc785 \ub300\ub9ac\uc9c0\ud45c\ub85c \uc0ac\uc6a9\ud568",
         ],
     }
 
@@ -779,18 +1028,35 @@ def render_markdown(data: dict[str, Any]) -> str:
         f"- \uc131\uacfc \ube44\uad50 \uac00\ub2a5 \uc601\uc0c1: {data['scored_video_count']}\uac1c ({data['cohort_confidence']})",
         f"- \ubd84\uc11d \uae30\uac04: \ucd5c\uadfc {data['analysis_period_days']}\uc77c",
         f"- \ud310\ub2e8 \uac15\ub3c4: {data['strictness_label']}",
-        f"- \ucc44\ub110 \uc0c1\ub300 \ud45c\ubcf8 \ud558\uc704 25% \uae30\uc900: {data['relative_sample_floor']:.0f}\ud68c", "",
+        f"- \ucc44\ub110 \uc0c1\ub300 \ud45c\ubcf8 \ud558\uc704 25% \uae30\uc900: {data['relative_sample_floor']:.0f}\ud68c",
+        f"- 4\ubd84\uba74 \uc801\uc751 \uae30\uc900: \uc2dc\uccad \uc9c0\uc18d\ub960 {data['strategy_thresholds']['retention_percentage']:.1f}%, "
+        f"\uad6c\ub3c5 \uc804\ud658\uc728 {data['strategy_thresholds']['subscriber_conversion_rate']:.2%}", "",
         "## \uc0c1\ub300 \uc131\uacfc \uc0c1\uc704 \uc601\uc0c1", "",
-        "| \uc21c\uc704 | \uc81c\ubaa9 | \uc131\uacfc \uc810\uc218 | \uc2e0\ub8b0\ub3c4 |",
-        "|---:|---|---:|---|",
+        "| \uc21c\uc704 | \uc81c\ubaa9 | \uc810\uc218 | \ucd08\ubc18 \ubab0\uc785 | \uc9c0\uc18d\ub960 | \uad6c\ub3c5 \uc804\ud658 | \uc804\ub7b5 |",
+        "|---:|---|---:|---:|---:|---:|---|",
     ]
     if data["top_videos"]:
         for index, video in enumerate(data["top_videos"], 1):
             title = video["title"].replace("|", "\\|").replace("\n", " ")
-            confidence = "\ub0ae\uc74c" if video["low_confidence"] else "\uc77c\ubc18"
-            lines.append(f"| {index} | {title} | {video['performance_score']:.3f} | {confidence} |")
+            hook = f"{video['initial_engagement_rate']:.1%}" if video["initial_engagement_rate"] is not None else "-"
+            retention = f"{video['average_view_percentage']:.1f}%" if video["average_view_percentage"] is not None else "-"
+            conversion = f"{video['subscriber_conversion_rate']:.2%}" if video["subscriber_conversion_rate"] is not None else "-"
+            strategy = video["topic_strategy"]["label"]
+            lines.append(
+                f"| {index} | {title} | {video['performance_score']:.3f} | "
+                f"{hook} | {retention} | {conversion} | {strategy} |"
+            )
     else:
-        lines.append("| - | Analytics \uc131\uacfc \ub370\uc774\ud130 \uc5c6\uc74c | - | - |")
+        lines.append("| - | Analytics \uc131\uacfc \ub370\uc774\ud130 \uc5c6\uc74c | - | - | - | - | - |")
+
+    lines.extend(["", "## 4\ubd84\uba74 \uc8fc\uc81c \uc804\ub7b5", ""])
+    for quadrant in ("Q1", "Q2", "Q3", "Q4", "NA"):
+        summary = data["quadrant_summary"][quadrant]
+        examples = " / ".join(item["title"] for item in summary["examples"]) or "\uc5c6\uc74c"
+        lines.append(
+            f"- {quadrant} {summary['label']}: {summary['video_count']}\uac1c \u2014 "
+            f"{summary['instruction']} (\uc608: {examples})"
+        )
 
     lines.extend(["", "## \ucd5c\uc18c \ud45c\ubcf8 \ubbf8\ub2ec \uc601\uc0c1", ""])
     if data["low_sample_videos"]:
@@ -939,6 +1205,8 @@ def build_content_guidance(
 
     top_videos = report["top_videos"][:5]
     keywords = report["keyword_performance"][:8]
+    strategy_thresholds = report["strategy_thresholds"]
+    quadrant_summary = report["quadrant_summary"]
     lines = [
         "[YouTube 채널 실데이터 인사이트]",
         f"- 판단 강도: {report['strictness_label']} ({strictness})",
@@ -946,15 +1214,49 @@ def build_content_guidance(
         f"신뢰 단계={report['cohort_confidence']}",
         f"- 새 주제 중복 판단: {verdict}; 최고 유사도={max_similarity:.1%}; "
         f"채널 적응 기준 검토={thresholds['review']:.1%}, 중복={thresholds['duplicate']:.1%}",
+        f"- 쇼츠 전략 기준: 평균 시청 지속률 {strategy_thresholds['retention_percentage']:.1f}% / "
+        f"조회수 대비 구독 전환율 {strategy_thresholds['subscriber_conversion_rate']:.2%}; "
+        "채널 데이터와 85%·0.5% 초기 기준을 표본 수에 따라 혼합",
     ]
     if similar and max_similarity > 0:
         lines.append("- 가까운 기존 영상: " + " / ".join(
             f"{item['title']} ({item['similarity']:.0%})" for item in similar[:3]
         ))
     if top_videos:
-        lines.append("- 채널 내 상대 성과 상위 제목: " + " / ".join(
-            f"{item['title']} ({item['performance_score']:.3f})" for item in top_videos
+        def metric_text(item: dict[str, Any]) -> str:
+            hook = (
+                f"{item['initial_engagement_rate']:.0%}"
+                if item["initial_engagement_rate"] is not None else "-"
+            )
+            retention = (
+                f"{item['average_view_percentage']:.1f}%"
+                if item["average_view_percentage"] is not None else "-"
+            )
+            conversion = (
+                f"{item['subscriber_conversion_rate']:.2%}"
+                if item["subscriber_conversion_rate"] is not None else "-"
+            )
+            return (
+                f"{item['title']} [점수={item['performance_score']:.3f}, "
+                f"초반몰입={hook}, 지속률={retention}, 구독={conversion}, "
+                f"{item['topic_strategy']['quadrant']}]"
+            )
+
+        lines.append("- 채널 내 상대 성과 상위 쇼츠: " + " / ".join(
+            metric_text(item) for item in top_videos
         ))
+    active_quadrants = []
+    for quadrant in ("Q1", "Q2", "Q3", "Q4"):
+        summary = quadrant_summary[quadrant]
+        if not summary["video_count"]:
+            continue
+        examples = ", ".join(item["title"] for item in summary["examples"][:2])
+        active_quadrants.append(
+            f"{quadrant} {summary['label']} {summary['video_count']}개"
+            f"({examples}): {summary['instruction']}"
+        )
+    if active_quadrants:
+        lines.append("- 4분면 실전 지침: " + " / ".join(active_quadrants))
     if keywords:
         lines.append("- 성과 연관 키워드(작은 표본은 중앙값으로 보정): " + ", ".join(
             f"{item['keyword']}[{item['adjusted_score']:.3f}, n={item['video_count']}]"
@@ -991,6 +1293,8 @@ def build_content_guidance(
         },
         "top_videos": top_videos,
         "preferred_keywords": keywords,
+        "strategy_thresholds": strategy_thresholds,
+        "quadrant_summary": quadrant_summary,
         "prompt_text": "\n".join(lines),
     }
 

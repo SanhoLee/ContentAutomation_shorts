@@ -13,6 +13,12 @@ data/backups/
 /dev/data/telegram_state.json.tmp
 /prod/data/telegram_state.json
 /prod/data/telegram_state.json.tmp
+/dev/data/youtube_feedback.db
+/dev/data/youtube_feedback.db-*
+/dev/data/youtube_report.md
+/dev/data/youtube_strategy.json
+client_secret*.json
+youtube_feedback_token*.json
 *.mp4
 *.wav
 *.srt

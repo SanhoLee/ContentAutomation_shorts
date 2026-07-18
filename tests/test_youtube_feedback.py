@@ -93,6 +93,25 @@ class YouTubeFeedbackTests(unittest.TestCase):
         ).fetchall()
         self.assertGreater(rows[0]["performance_score"], rows[1]["performance_score"])
         self.assertIsNotNone(rows[0]["performance_score"])
+        self.assertLess(rows[0]["performance_score"], 0.70)
+        self.assertGreater(rows[1]["performance_score"], 0.30)
+        conn.close()
+
+    def test_adaptive_thresholds_follow_strictness_and_channel_data(self):
+        conn = youtube_feedback.connect(self.db)
+        videos = [
+            self.sample_video("v1", "수면 부족과 기억력 저하"),
+            self.sample_video("v2", "수면 습관과 뇌 건강"),
+            self.sample_video("v3", "혈압 관리와 걷기 운동"),
+            self.sample_video("v4", "혈압 낮추는 저녁 습관"),
+        ]
+        with conn:
+            youtube_feedback.store_videos(conn, videos)
+        loose = youtube_feedback.adaptive_topic_thresholds(conn, "loose")
+        strict = youtube_feedback.adaptive_topic_thresholds(conn, "strict")
+        self.assertGreater(loose["review"], strict["review"])
+        self.assertGreater(loose["duplicate"], strict["duplicate"])
+        self.assertGreater(loose["empirical_weight"], 0)
         conn.close()
 
     def test_topic_check_and_reports(self):
@@ -130,7 +149,16 @@ class YouTubeFeedbackTests(unittest.TestCase):
         self.assertEqual(data["video_count"], 1)
         parsed = json.loads(strategy.read_text(encoding="utf-8"))
         self.assertEqual(parsed["top_videos"][0]["video_id"], "v1")
+        self.assertEqual(parsed["strictness"], "balanced")
+        self.assertIn("adjusted_score", parsed["keyword_performance"][0])
         self.assertIn("\ub9c8\uc9c0\ub9c9 \uc815\uc0c1 \ub3d9\uae30\ud654", markdown.read_text(encoding="utf-8"))
+
+        guidance = youtube_feedback.build_content_guidance(
+            conn, "수면 부족과 기억력 저하", "balanced"
+        )
+        self.assertTrue(guidance["available"])
+        self.assertIn("YouTube 채널 실데이터 인사이트", guidance["prompt_text"])
+        self.assertEqual(guidance["strictness"], "balanced")
         conn.close()
 
 

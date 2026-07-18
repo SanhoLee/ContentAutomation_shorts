@@ -589,6 +589,7 @@ def display_effective_model(job, job_key, value):
 CONFIG_CATEGORIES = (
     ("models", "AI 모델", "스크립트·조사·전략·검색 모델"),
     ("research", "조사 / 검색", "웹 검색과 사례 조사"),
+    ("channel", "채널 성과", "YouTube 실데이터 동기화와 판단 강도"),
     ("audio", "음성 / 영상 길이", "TTS 목소리·속도·목표 길이"),
     ("caption", "자막", "글자·여백·스타일·위치"),
     ("frame", "프레임 / B-roll", "화면 프레임·프리셋·채널명"),
@@ -610,6 +611,8 @@ CONFIG_SETTINGS = {
     "query_model": {"category": "models", "label": "검색어 모델", "job_key": "claude_query_model", "env": "CLAUDE_QUERY_MODEL", "default": lambda job: _effective_setting_value(job, "strategy_model")[0], "kind": "model", "choices": MODEL_CHOICES},
     "web": {"category": "research", "label": "웹 검색", "job_key": "web_research", "env": "ENABLE_WEB_RESEARCH", "default": DEFAULT_WEB_RESEARCH, "kind": "bool", "choices": (("켜기", True), ("끄기", False))},
     "case": {"category": "research", "label": "사례 조사", "job_key": "case_research", "env": "ENABLE_CASE_RESEARCH", "default": True, "kind": "bool", "choices": (("켜기", True), ("끄기", False))},
+    "feedback_policy": {"category": "channel", "label": "판단 강도", "job_key": "youtube_feedback_strictness", "env": "YOUTUBE_FEEDBACK_STRICTNESS", "default": "balanced", "kind": "choice", "choices": (("느슨함", "loose"), ("중간", "balanced"), ("엄격함", "strict"))},
+    "feedback_sync": {"category": "channel", "label": "생성 전 동기화", "job_key": "youtube_feedback_auto_sync", "env": "YOUTUBE_FEEDBACK_AUTO_SYNC", "default": True, "kind": "bool", "choices": (("켜기", True), ("끄기", False))},
     "voice": {"category": "audio", "label": "TTS 목소리", "job_key": "tts_voice", "env": "TTS_VOICE", "default": "M2", "kind": "voice", "choices": tuple((voice, voice) for voice in ("F1", "F2", "M1", "M2"))},
     "pace": {"category": "audio", "label": "말하기 속도", "job_key": "speech_pace", "env": "SPEECH_PACE", "default": "legacy", "kind": "pace", "choices": (("느리게", "slow"), ("보통", "normal"), ("빠르게", "fast"), ("매우 빠르게", "very_fast"))},
     "duration": {"category": "audio", "label": "목표 길이(초)", "job_key": "target_duration_sec", "env": "TARGET_DURATION_SEC", "default": "60", "kind": "positive_int"},
@@ -637,6 +640,9 @@ CONFIG_INPUT_ALIASES = {
     "target_duration_sec": "duration",
     "web_research": "web",
     "case_research": "case",
+    "feedback_strictness": "feedback_policy",
+    "youtube_feedback_strictness": "feedback_policy",
+    "youtube_feedback_auto_sync": "feedback_sync",
 }
 
 _PRESERVED_KEYS = {setting["job_key"] for setting in CONFIG_SETTINGS.values()}
@@ -876,6 +882,10 @@ def _build_extra_env(job):
         env["ENABLE_WEB_RESEARCH"] = "true" if job.get("web_research") else "false"
     if "case_research" in job:
         env["ENABLE_CASE_RESEARCH"] = "true" if job.get("case_research") else "false"
+    if "youtube_feedback_strictness" in job:
+        env["YOUTUBE_FEEDBACK_STRICTNESS"] = str(job["youtube_feedback_strictness"])
+    if "youtube_feedback_auto_sync" in job:
+        env["YOUTUBE_FEEDBACK_AUTO_SYNC"] = "true" if job.get("youtube_feedback_auto_sync") else "false"
     if "speech_pace" in job:
         pace, profile = speech_pace_profile(job["speech_pace"])
         env["SPEECH_PACE"] = pace
@@ -917,6 +927,8 @@ def _settings_summary(job):
         parts.append("web=" + ("on" if job["web_research"] else "off"))
     if "case_research" in job:
         parts.append("case=" + ("on" if job["case_research"] else "off"))
+    if "youtube_feedback_strictness" in job:
+        parts.append("feedback=" + str(job["youtube_feedback_strictness"]))
     if "speech_pace" in job:
         parts.append("pace=" + str(job["speech_pace"]))
     if "target_duration_sec" in job:

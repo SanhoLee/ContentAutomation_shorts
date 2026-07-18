@@ -2,23 +2,23 @@
 
 이 문서는 `dev/src/6_youtube_feedback.py`를 처음 쓰는 사람을 위한 쉬운 안내서입니다.
 
-> 현재 확인 결과: 기능 코드는 저장소에 있지만 기본 위치의 `dev/data/youtube_feedback.db`는 아직 없습니다. OAuth 환경변수도 설정되어 있지 않습니다. 따라서 이 작업공간에는 실제 채널 데이터가 아직 반영되지 않았습니다. 아래 `sync`를 실제 채널 계정으로 성공시킨 뒤 확인해야 합니다.
-
 ## 1. 무엇을 하는 기능인가요?
 
-명령은 세 개입니다.
+YouTube API의 실제 채널 성과를 수집하고, 채널 내부 상대분포로 정규화해 Stage 1 전략과 Stage 2 대본에 자동 반영합니다.
 
 ```bash
 python dev/src/6_youtube_feedback.py sync
 python dev/src/6_youtube_feedback.py report
 python dev/src/6_youtube_feedback.py check-topic "수면 부족과 기억력 저하"
+python dev/src/6_youtube_feedback.py guide "수면 부족과 기억력 저하"
 ```
 
 - `sync`: YouTube에서 실제 데이터를 읽어 DB에 저장합니다.
 - `report`: DB를 읽어 Markdown과 JSON 보고서를 만듭니다.
 - `check-topic`: 새 주제가 기존 영상과 얼마나 비슷한지 알려줍니다.
+- `guide`: 동기화부터 새 주제용 전략 인사이트 생성까지 한 번에 실행합니다.
 
-`report`와 `check-topic`은 YouTube에 접속하지 않고 마지막 `sync` 때 저장한 DB만 읽습니다.
+일반 콘텐츠 생성 명령을 실행하면 `guide`와 같은 과정이 자동 수행됩니다. API 동기화가 실패하면 마지막 정상 DB를 사용하므로 대본 생성은 계속됩니다.
 
 ## 2. 두 YouTube API의 차이
 
@@ -57,21 +57,22 @@ https://www.googleapis.com/auth/yt-analytics.readonly
 
 ```bash
 cd ~/brain50
-export YOUTUBE_CLIENT_SECRET=/home/ubuntu/secrets/client_secret.json
 export YOUTUBE_FEEDBACK_TOKEN=/home/ubuntu/secrets/youtube_feedback_token.json
 export YOUTUBE_FEEDBACK_DB=/home/ubuntu/brain50/dev/data/youtube_feedback.db
+export YOUTUBE_FEEDBACK_STRICTNESS=balanced
+export YOUTUBE_FEEDBACK_AUTO_SYNC=true
 ```
 
 ### Windows PowerShell
 
 ```powershell
 cd C:\path\to\short_pipeline
-$env:YOUTUBE_CLIENT_SECRET = "C:\secrets\client_secret.json"
+$env:YOUTUBE_FEEDBACK_CLIENT_SECRET_FILE = "C:\secrets\feedback_desktop_client.json"
 $env:YOUTUBE_FEEDBACK_TOKEN = "C:\secrets\youtube_feedback_token.json"
 $env:YOUTUBE_FEEDBACK_DB = "$PWD\dev\data\youtube_feedback.db"
 ```
 
-주의: 기존 `4_upload.py`는 `YOUTUBE_CLIENT_SECRET`을 비밀 문자열로 사용하지만, 이 피드백 명령은 `client_secret.json` 파일 경로로 사용합니다. 기존 운영 설정을 바꾸지 말고 피드백 명령을 실행하는 터미널에서만 설정하세요.
+`YOUTUBE_FEEDBACK_CLIENT_SECRET_FILE`은 Windows에서 최초 토큰을 만들 때만 필요합니다. Lightsail은 생성된 피드백 토큰 파일만 사용하므로 기존 업로드용 `YOUTUBE_CLIENT_SECRET`과 충돌하지 않습니다.
 
 ## 4. 실제 데이터 받기
 
@@ -197,16 +198,18 @@ FROM analytics ORDER BY fetched_at DESC LIMIT 5;
 - `analytics` 행 수가 1 이상임
 - `period_start`, `period_end`가 채워져 있음
 - `views`, `engaged_views`, `average_view_percentage` 중 하나 이상에 값이 있음
-- 비교 가능한 영상이 있으면 `performance_score`가 계산됨
+- 비교 가능한 영상이 있으면 `performance_score`가 0~1 사이의 채널 상대 점수로 계산됨
 
 Analytics의 `views`와 Data API의 누적 `view_count`는 조회 기간이 다르므로 같지 않아도 정상입니다. Analytics 기본 기간은 실행일 이틀 전까지의 최근 90일입니다.
+
+성과 점수는 평균 시청률 40%, 공유율 25%, 좋아요율 15%, 순 구독자 전환율 15%, 댓글률 5%를 사용합니다. 각 지표는 고정 조회수 컷이 아니라 채널 내부 백분위로 바뀝니다. 표본이 작으면 점수를 채널 중앙값 쪽으로 축소하고, 영상이 늘수록 실제 분포의 영향이 자동으로 커집니다.
 
 ## 8. 보고서와 주제 검사
 
 동기화 후 보고서를 만듭니다.
 
 ```bash
-python dev/src/6_youtube_feedback.py report
+python dev/src/6_youtube_feedback.py report --strictness balanced
 ```
 
 생성 파일:
@@ -219,14 +222,31 @@ dev/data/youtube_strategy.json
 새 주제를 검사합니다.
 
 ```bash
-python dev/src/6_youtube_feedback.py check-topic "수면 부족과 기억력 저하"
+python dev/src/6_youtube_feedback.py check-topic "수면 부족과 기억력 저하" --strictness balanced
 ```
 
 - `허용`: 많이 겹치지 않음
 - `검토`: 비슷한 부분이 있어 사람이 확인해야 함
 - `중복 가능성 높음`: 기존 영상과 많이 겹칠 가능성이 큼
 
-이 판정은 자동 차단이 아니라 참고용 경고입니다.
+판단 강도는 세 단계입니다.
+
+| 값 | 의미 |
+|---|---|
+| `loose` | 작은 채널에서 더 많은 방향을 실험합니다. |
+| `balanced` | 기본값입니다. 성과 활용과 중복 회피의 균형을 잡습니다. |
+| `strict` | 강한 성과 신호만 참고하고 기존 주제 중복을 더 민감하게 봅니다. |
+
+기준값 역시 고정값이 아닙니다. 기존 영상끼리의 주제 유사도 분포와 영상 수를 이용해 매번 갱신하며, 작은 표본에서는 보수적인 사전값과 섞어 극단적인 판정을 막습니다.
+
+실제 콘텐츠 생성은 평소처럼 실행하면 됩니다.
+
+```bash
+cd /home/ubuntu/brain50/dev
+./sh/0_script.sh "수면 부족과 기억력 저하"
+```
+
+실행별 분석 결과는 `dev/data/work/{JOB_ID}/youtube_guidance.json`에 저장되고 Stage 1·2 프롬프트 양쪽에 들어갑니다.
 
 ## 9. 자주 생기는 문제
 
@@ -269,3 +289,4 @@ python -c "import sqlite3; c=sqlite3.connect('dev/data/youtube_feedback.db'); [p
 - [ ] `sync_runs`의 최근 상태가 `success`다.
 - [ ] `report` 파일 두 개가 생성된다.
 - [ ] `check-topic`에서 유사 영상이 표시된다.
+- [ ] 콘텐츠 작업 폴더에 `youtube_guidance.json`이 생성된다.

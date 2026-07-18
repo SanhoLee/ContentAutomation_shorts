@@ -43,6 +43,20 @@ class TelegramScriptSettingsTests(unittest.TestCase):
         self.assertIn("SPEECH_PACE=normal", summary)
         self.assertNotIn("CHARS_PER_SEC", summary)
 
+    def test_feedback_strictness_is_forwarded_to_script_stage(self):
+        job = {}
+        messages = []
+        old_send_message = telegram_bot.send_message
+        try:
+            telegram_bot.send_message = lambda chat_id, text: messages.append(text)
+            telegram_bot.handle_set(1, job, "/set feedback_policy=strict feedback_sync=off")
+        finally:
+            telegram_bot.send_message = old_send_message
+
+        env = telegram_bot._build_extra_env(job)
+        self.assertEqual(env["YOUTUBE_FEEDBACK_STRICTNESS"], "strict")
+        self.assertEqual(env["YOUTUBE_FEEDBACK_AUTO_SYNC"], "false")
+
     def test_set_without_values_opens_category_menu(self):
         actions = self.capture_actions()
 

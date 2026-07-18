@@ -121,7 +121,10 @@ class ScriptQualityTests(unittest.TestCase):
 
                 requests.post = fake_post
                 with contextlib.redirect_stdout(io.StringIO()):
-                    strategy = script0.plan_strategy("숙취 다음날 세 가지 습관")
+                    strategy = script0.plan_strategy(
+                        "숙취 다음날 세 가지 습관",
+                        youtube_guidance="[YouTube 채널 실데이터 인사이트] 상대 성과 키워드=숙취",
+                    )
 
                 self.assertEqual(
                     [call["model"] for call in calls],
@@ -133,6 +136,7 @@ class ScriptQualityTests(unittest.TestCase):
                 )
                 self.assertTrue(all(call["max_tokens"] == 2000 for call in calls))
                 self.assertTrue(all(call["output_config"]["format"]["type"] == "json_schema" for call in calls))
+                self.assertIn("YouTube 채널 실데이터 인사이트", calls[0]["messages"][0]["content"])
                 self.assertEqual(strategy["strategy_source"], "local_fallback")
                 self.assertTrue(Path(script0.STRATEGY_PATH).exists())
             finally:
@@ -184,11 +188,11 @@ class ScriptQualityTests(unittest.TestCase):
 
     def test_build_prompt_omits_source_mix_instruction_when_empty(self):
         strategy = script0.normalize_strategy_contract(script0.local_strategy_fallback("야간뇨"), "야간뇨")
-        prompt = script0.build_prompt(strategy, abstracts="", trend_context=None, web_research="", feedback_insights="")
+        prompt = script0.build_prompt(strategy, abstracts="", trend_context=None, web_research="", youtube_guidance="")
         no_mix_strategy = dict(strategy)
         no_mix_strategy.pop("source_mix", None)
         prompt_without_source_mix_key = script0.build_prompt(
-            no_mix_strategy, abstracts="", trend_context=None, web_research="", feedback_insights=""
+            no_mix_strategy, abstracts="", trend_context=None, web_research="", youtube_guidance=""
         )
         self.assertNotIn("실사례·통계 활용 지침", prompt)
         self.assertEqual(prompt, prompt_without_source_mix_key)
@@ -201,9 +205,19 @@ class ScriptQualityTests(unittest.TestCase):
             "stat_value": "50대 야간뇨 유병률은 29퍼센트다",
             "stat_source": "국내 배뇨장애 연구",
         }
-        prompt = script0.build_prompt(strategy, abstracts="", trend_context=None, web_research="", feedback_insights="")
+        prompt = script0.build_prompt(strategy, abstracts="", trend_context=None, web_research="", youtube_guidance="")
         self.assertIn("실사례·통계 활용 지침", prompt)
         self.assertIn("하이닥", prompt)
+
+    def test_stage2_prompt_includes_youtube_channel_guidance(self):
+        strategy = script0.normalize_strategy_contract({}, "수면과 기억력")
+        prompt = script0.build_prompt(
+            strategy,
+            abstracts="",
+            youtube_guidance="[YouTube 채널 실데이터 인사이트] 중복 판단=검토",
+        )
+        self.assertIn("YouTube 채널 실데이터 인사이트", prompt)
+        self.assertIn("구성·표현의 방향", prompt)
 
     def test_case_research_fetch_returns_empty_on_none_found(self):
         old_loop = script0._call_claude_loop

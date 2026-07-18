@@ -41,6 +41,18 @@ def speech_pace_profile(value):
     return pace, SPEECH_PACE_PROFILES[pace]
 
 
+def youtube_feedback_strictness(value):
+    aliases = {
+        "loose": "loose", "relaxed": "loose", "느슨": "loose", "느슨함": "loose",
+        "balanced": "balanced", "medium": "balanced", "중간": "balanced", "보통": "balanced",
+        "strict": "strict", "엄격": "strict", "엄격함": "strict",
+    }
+    normalized = aliases.get(str(value or "balanced").strip().lower())
+    if normalized is None:
+        raise ValueError("YOUTUBE_FEEDBACK_STRICTNESS must be one of: loose, balanced, strict")
+    return normalized
+
+
 def resolve_speech_settings():
     configured_pace = os.environ.get("SPEECH_PACE")
     if configured_pace not in (None, ""):
@@ -93,7 +105,8 @@ class ScriptRuntimeSettings:
     case_research_max_tokens: int
     case_research_max_tool_turns: int
     strategy_path: str
-    insights_path: str
+    youtube_feedback_strictness: str
+    youtube_feedback_auto_sync: bool
     total_chars: int
     prompt_target_chars: int
     min_scenes_estimate: int
@@ -101,7 +114,6 @@ class ScriptRuntimeSettings:
 
 def load_runtime_settings():
     work_dir = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
-    data_dir = os.path.normpath(os.path.join(work_dir, ".."))
     speech_pace, atempo, script_density = resolve_speech_settings()
     target_duration_sec = env_int("TARGET_DURATION_SEC", 60)
     total_chars, prompt_target_chars, min_scenes_estimate = script_length_targets(
@@ -141,7 +153,10 @@ def load_runtime_settings():
         case_research_max_tokens=env_int("CASE_RESEARCH_MAX_TOKENS", 900),
         case_research_max_tool_turns=env_int("CASE_RESEARCH_MAX_TOOL_TURNS", 2),
         strategy_path=os.environ.get("STRATEGY_PATH", os.path.join(work_dir, "strategy.json")),
-        insights_path=os.environ.get("FEEDBACK_INSIGHTS", os.path.join(data_dir, "feedback_insights.json")),
+        youtube_feedback_strictness=youtube_feedback_strictness(
+            os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS", "balanced")
+        ),
+        youtube_feedback_auto_sync=env_bool("YOUTUBE_FEEDBACK_AUTO_SYNC", True),
         total_chars=total_chars,
         prompt_target_chars=prompt_target_chars,
         min_scenes_estimate=min_scenes_estimate,

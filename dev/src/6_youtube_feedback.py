@@ -7,12 +7,14 @@
   python dev/src/6_youtube_feedback.py sync
   python dev/src/6_youtube_feedback.py report
   python dev/src/6_youtube_feedback.py check-topic "\uc0c8 \uc8fc\uc81c"
+  python dev/src/6_youtube_feedback.py guide "\uc0c8 \uc8fc\uc81c" --strictness balanced
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sqlite3
@@ -44,10 +46,50 @@ METRIC_COLUMNS = {
     "subscribersGained": "subscribers_gained",
     "subscribersLost": "subscribers_lost",
 }
-MINIMUM_SAMPLE = 500
 ANALYSIS_PERIOD_DAYS = 90
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = SCRIPT_DIR.parent / "data"
+
+# All decisions are relative to the channel's own distribution. Priors prevent
+# tiny cohorts from producing extreme conclusions; empirical data gradually
+# takes over as the channel accumulates videos.
+STRICTNESS_PROFILES = {
+    "loose": {
+        "label": "느슨함",
+        "top_fraction": 0.50,
+        "keyword_prior_strength": 1.0,
+        "keyword_min_fraction": 0.02,
+        "duplicate_quantile": 0.90,
+        "duplicate_prior": 0.55,
+        "review_quantile": 0.65,
+        "review_prior": 0.30,
+    },
+    "balanced": {
+        "label": "중간",
+        "top_fraction": 0.35,
+        "keyword_prior_strength": 2.0,
+        "keyword_min_fraction": 0.04,
+        "duplicate_quantile": 0.80,
+        "duplicate_prior": 0.45,
+        "review_quantile": 0.55,
+        "review_prior": 0.25,
+    },
+    "strict": {
+        "label": "엄격함",
+        "top_fraction": 0.25,
+        "keyword_prior_strength": 3.0,
+        "keyword_min_fraction": 0.06,
+        "duplicate_quantile": 0.65,
+        "duplicate_prior": 0.35,
+        "review_quantile": 0.40,
+        "review_prior": 0.18,
+    },
+}
+STRICTNESS_ALIASES = {
+    "loose": "loose", "relaxed": "loose", "느슨": "loose", "느슨함": "loose",
+    "balanced": "balanced", "medium": "balanced", "중간": "balanced", "보통": "balanced",
+    "strict": "strict", "엄격": "strict", "엄격함": "strict",
+}
 
 
 def _env_path(name: str, default: Path | None = None) -> Path | None:
@@ -71,6 +113,14 @@ def strategy_path() -> Path:
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def normalize_strictness(value: str | None) -> str:
+    normalized = STRICTNESS_ALIASES.get(str(value or "balanced").strip().lower())
+    if normalized is None:
+        allowed = ", ".join(STRICTNESS_PROFILES)
+        raise ValueError(f"YOUTUBE_FEEDBACK_STRICTNESS must be one of {allowed}: {value}")
+    return normalized
 
 
 SCHEMA = """
@@ -135,6 +185,7 @@ STOPWORDS = {
     "\uc601\uc0c1", "\uc1fc\uce20", "shorts", "youtube", "\uc720\ud29c\ube0c", "\uc815\ub9d0", "\ubc14\ub85c", "\uc624\ub298", "\uc6b0\ub9ac", "\uc5ec\ub7ec\ubd84",
     "\uc788\ub294", "\uc5c6\ub294", "\ud558\ub294", "\ub418\ub294", "\uc785\ub2c8\ub2e4", "\ud569\ub2c8\ub2e4", "\ud558\uc138\uc694", "\uc788\uc2b5\ub2c8\ub2e4", "\uc5c6\uc2b5\ub2c8\ub2e4",
     "\uac00\uc9c0", "\ubc29\ubc95", "\uc774\uc720", "\ub54c\ubb38", "\ub300\ud574", "\uc5d0\uc11c", "\uc73c\ub85c", "\uc5d0\uac8c", "\ubd80\ud130", "\uae4c\uc9c0", "\ucc98\ub7fc",
+    "\uc774\ub807\uac8c", "\uc788\uc5c8\uc2b5\ub2c8\ub2e4", "\ub300\uc5d0", "\uc88b\ub2e4", "\uacbd\uc6b0", "\uc0ac\ub78c", "\uc815\ub3c4", "\uc54c\ub824",
 }
 KOREAN_SUFFIXES = (
     "\uc73c\ub85c\ubd80\ud130", "\uc5d0\uac8c\uc11c\ub294", "\uc5d0\uc11c\ub294", "\uc73c\ub85c\ub294", "\uc774\ub77c\uba74", "\ub77c\uba74", "\uc5d0\uac8c", "\uc5d0\uc11c", "\uc73c\ub85c",
@@ -166,10 +217,11 @@ def jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(union) if union else 0.0
 
 
-def topic_verdict(similarity: float) -> str:
-    if similarity >= 0.55:
+def topic_verdict(similarity: float, thresholds: dict[str, float] | None = None) -> str:
+    thresholds = thresholds or {"duplicate": 0.55, "review": 0.30}
+    if similarity >= thresholds["duplicate"]:
         return "\uc911\ubcf5 \uac00\ub2a5\uc131 \ub192\uc74c"
-    if similarity >= 0.30:
+    if similarity >= thresholds["review"]:
         return "\uac80\ud1a0"
     return "\ud5c8\uc6a9"
 
@@ -211,7 +263,13 @@ def load_credentials():
         ) from exc
 
     token = _env_path("YOUTUBE_FEEDBACK_TOKEN")
-    client_secret = _env_path("YOUTUBE_CLIENT_SECRET")
+    client_secret = _env_path("YOUTUBE_FEEDBACK_CLIENT_SECRET_FILE")
+    if client_secret is None:
+        # Backward compatibility with the original guide. The upload pipeline's
+        # raw secret value is deliberately ignored because it is not a file.
+        legacy_client_secret = _env_path("YOUTUBE_CLIENT_SECRET")
+        if legacy_client_secret is not None and legacy_client_secret.is_file():
+            client_secret = legacy_client_secret
     if token is None:
         raise RuntimeError("YOUTUBE_FEEDBACK_TOKEN\uc5d0 \ubcc4\ub3c4 \uc77d\uae30 \ud1a0\ud070 \uacbd\ub85c\ub97c \uc9c0\uc815\ud558\uc138\uc694.")
     creds = Credentials.from_authorized_user_file(str(token), SCOPES) if token.exists() else None
@@ -221,7 +279,10 @@ def load_credentials():
         creds.refresh(Request())
     else:
         if client_secret is None or not client_secret.is_file():
-            raise RuntimeError("YOUTUBE_CLIENT_SECRET\uc5d0 OAuth client_secret.json \uacbd\ub85c\ub97c \uc9c0\uc815\ud558\uc138\uc694.")
+            raise RuntimeError(
+                "YOUTUBE_FEEDBACK_CLIENT_SECRET_FILE\uc5d0 \ub370\uc2a4\ud06c\ud1b1 OAuth client_secret.json "
+                "\uacbd\ub85c\ub97c \uc9c0\uc815\ud558\uc138\uc694."
+            )
         flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), SCOPES)
         creds = flow.run_local_server(port=0)
     token.parent.mkdir(parents=True, exist_ok=True)
@@ -437,6 +498,31 @@ def _safe_rate(numerator: float | int | None, denominator: float | int | None) -
     return float(numerator) / max(float(denominator or 0), 1.0)
 
 
+def quantile(values: Sequence[float | int], fraction: float) -> float | None:
+    """Return an interpolated quantile without requiring numpy."""
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return None
+    if len(ordered) == 1:
+        return ordered[0]
+    position = max(0.0, min(1.0, fraction)) * (len(ordered) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def percentile_rank(value: float, cohort: Sequence[float]) -> float:
+    """Mid-rank percentile. Equal values remain neutral instead of winning ties."""
+    if not cohort:
+        return 0.5
+    lower = sum(item < value for item in cohort)
+    equal = sum(item == value for item in cohort)
+    return (lower + 0.5 * equal) / len(cohort)
+
+
 def calculate_performance_scores(conn: sqlite3.Connection, period_start: str, period_end: str) -> None:
     rows = conn.execute(
         "SELECT * FROM analytics WHERE period_start=? AND period_end=?",
@@ -445,13 +531,13 @@ def calculate_performance_scores(conn: sqlite3.Connection, period_start: str, pe
     if not rows:
         return
 
-    calculated: list[tuple[str, dict[str, float | None]]] = []
+    calculated: list[tuple[str, float, dict[str, float | None]]] = []
     for row in rows:
         denominator = max(row["engaged_views"] or 0, row["views"] or 0, 1)
         net_subscribers = None
         if row["subscribers_gained"] is not None or row["subscribers_lost"] is not None:
             net_subscribers = (row["subscribers_gained"] or 0) - (row["subscribers_lost"] or 0)
-        calculated.append((row["video_id"], {
+        calculated.append((row["video_id"], float(denominator), {
             "average_view_percentage": nullable_number(row["average_view_percentage"], float),
             "share_rate": _safe_rate(row["shares"], denominator),
             "like_rate": _safe_rate(row["likes"], denominator),
@@ -466,20 +552,27 @@ def calculate_performance_scores(conn: sqlite3.Connection, period_start: str, pe
         "subscriber_rate": 0.15,
         "comment_rate": 0.05,
     }
-    medians: dict[str, float | None] = {}
-    for metric in weights:
-        values = [float(metrics[metric]) for _, metrics in calculated if metrics[metric] is not None]
-        median = statistics.median(values) if values else None
-        medians[metric] = median if median is not None and median > 0 else None
+    cohorts = {
+        metric: [float(metrics[metric]) for _, _, metrics in calculated if metrics[metric] is not None]
+        for metric in weights
+    }
+    sample_median = statistics.median(sample for _, sample, _ in calculated)
+    cohort_confidence = len(calculated) / (len(calculated) + 4.0)
 
-    for video_id, metrics in calculated:
+    for video_id, sample, metrics in calculated:
         components = [
-            (weights[metric], float(value) / medians[metric])
+            (weights[metric], percentile_rank(float(value), cohorts[metric]))
             for metric, value in metrics.items()
-            if value is not None and medians[metric] is not None
+            if value is not None and cohorts[metric]
         ]
         total_weight = sum(weight for weight, _ in components)
-        score = sum(weight * relative for weight, relative in components) / total_weight if total_weight else None
+        if total_weight:
+            raw_score = sum(weight * relative for weight, relative in components) / total_weight
+            sample_confidence = min(1.0, math.sqrt(sample / max(float(sample_median), 1.0)))
+            reliability = cohort_confidence * sample_confidence
+            score = 0.5 + (raw_score - 0.5) * reliability
+        else:
+            score = None
         conn.execute(
             "UPDATE analytics SET performance_score=? WHERE video_id=? AND period_start=? AND period_end=?",
             (score, video_id, period_start, period_end),
@@ -559,25 +652,51 @@ LEFT JOIN latest l ON l.video_id=v.video_id AND l.row_number=1
 """
 
 
-def _low_confidence(row: sqlite3.Row | dict[str, Any]) -> bool:
-    return max(row["engaged_views"] or 0, row["views"] or 0) < MINIMUM_SAMPLE
+def _row_sample(row: sqlite3.Row | dict[str, Any]) -> int:
+    return max(row["engaged_views"] or 0, row["views"] or 0)
 
 
-def build_report_data(conn: sqlite3.Connection) -> dict[str, Any]:
+def _cohort_confidence(scored_count: int) -> str:
+    if scored_count < 5:
+        return "초기"
+    if scored_count < 15:
+        return "성장 중"
+    return "안정화"
+
+
+def _recalculate_latest_scores(conn: sqlite3.Connection) -> None:
+    latest = conn.execute(
+        "SELECT period_start, period_end FROM analytics "
+        "ORDER BY period_end DESC, fetched_at DESC LIMIT 1"
+    ).fetchone()
+    if latest:
+        calculate_performance_scores(conn, latest["period_start"], latest["period_end"])
+
+
+def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") -> dict[str, Any]:
+    strictness = normalize_strictness(strictness)
+    profile = STRICTNESS_PROFILES[strictness]
+    # Recompute cached periods so databases created by older score formulas are
+    # safe to use even when the network refresh is temporarily unavailable.
+    _recalculate_latest_scores(conn)
     rows = conn.execute(LATEST_ANALYTICS_SQL).fetchall()
     scored = sorted(
         (row for row in rows if row["performance_score"] is not None),
         key=lambda row: row["performance_score"],
         reverse=True,
     )
+    samples = [_row_sample(row) for row in scored]
+    relative_sample_floor = quantile(samples, 0.25) or 0.0
+    top_count = min(10, max(1, math.ceil(len(scored) * profile["top_fraction"]))) if scored else 0
     top_videos = [{
         "video_id": row["video_id"],
         "title": row["title"],
         "performance_score": round(row["performance_score"], 4),
-        "low_confidence": _low_confidence(row),
-    } for row in scored[:10]]
+        "sample": _row_sample(row),
+        "low_confidence": _row_sample(row) < relative_sample_floor,
+    } for row in scored[:top_count]]
 
-    keyword_rows = conn.execute("""
+    raw_keyword_rows = conn.execute("""
         WITH latest AS (
             SELECT a.*, ROW_NUMBER() OVER (
                 PARTITION BY video_id ORDER BY period_end DESC, fetched_at DESC
@@ -586,11 +705,33 @@ def build_report_data(conn: sqlite3.Connection) -> dict[str, Any]:
         )
         SELECT k.keyword, AVG(l.performance_score) AS avg_score, COUNT(DISTINCT k.video_id) AS video_count
         FROM keywords k JOIN latest l ON l.video_id=k.video_id AND l.row_number=1
-        WHERE l.performance_score IS NOT NULL
+        WHERE l.performance_score IS NOT NULL AND k.source='title'
         GROUP BY k.keyword
-        ORDER BY avg_score DESC, video_count DESC, k.keyword
-        LIMIT 15
     """).fetchall()
+    channel_center = statistics.median(
+        float(row["performance_score"]) for row in scored
+    ) if scored else 0.5
+    prior_strength = float(profile["keyword_prior_strength"])
+    keyword_min_count = max(1, math.ceil(len(scored) * float(profile["keyword_min_fraction"])))
+    keyword_rows = []
+    for row in raw_keyword_rows:
+        count = int(row["video_count"])
+        if count < keyword_min_count:
+            continue
+        average = float(row["avg_score"])
+        adjusted = (average * count + channel_center * prior_strength) / (count + prior_strength)
+        keyword_rows.append({
+            "keyword": row["keyword"],
+            "average_score": round(average, 4),
+            "adjusted_score": round(adjusted, 4),
+            "video_count": count,
+            "support": round(count / (count + prior_strength), 4),
+        })
+    keyword_rows.sort(
+        key=lambda row: (row["adjusted_score"], row["video_count"], row["keyword"]),
+        reverse=True,
+    )
+    keyword_rows = keyword_rows[:15]
     recent = sorted(rows, key=lambda row: row["published_at"] or "", reverse=True)[:10]
     last_sync = conn.execute(
         "SELECT finished_at, video_count FROM sync_runs WHERE status='success' ORDER BY run_id DESC LIMIT 1"
@@ -599,25 +740,31 @@ def build_report_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "generated_at": iso_now(),
         "analysis_period_days": ANALYSIS_PERIOD_DAYS,
         "video_count": len(rows),
-        "minimum_sample": MINIMUM_SAMPLE,
+        "scored_video_count": len(scored),
+        "cohort_confidence": _cohort_confidence(len(scored)),
+        "strictness": strictness,
+        "strictness_label": profile["label"],
+        "relative_sample_floor": round(relative_sample_floor, 2),
+        "keyword_min_count": keyword_min_count,
+        "score_distribution": {
+            "q25": round(quantile([row["performance_score"] for row in scored], 0.25) or 0.5, 4),
+            "median": round(quantile([row["performance_score"] for row in scored], 0.50) or 0.5, 4),
+            "q75": round(quantile([row["performance_score"] for row in scored], 0.75) or 0.5, 4),
+        },
         "last_successful_sync": last_sync["finished_at"] if last_sync else None,
         "top_videos": top_videos,
         "low_sample_videos": [{
             "video_id": row["video_id"],
             "title": row["title"],
-            "sample": max(row["engaged_views"] or 0, row["views"] or 0),
-        } for row in scored if _low_confidence(row)],
+            "sample": _row_sample(row),
+        } for row in scored if _row_sample(row) < relative_sample_floor],
         "preferred_keywords": [row["keyword"] for row in keyword_rows],
-        "keyword_performance": [{
-            "keyword": row["keyword"],
-            "average_score": round(row["avg_score"], 4),
-            "video_count": row["video_count"],
-        } for row in keyword_rows],
+        "keyword_performance": keyword_rows,
         "recent_topics": [row["title"] for row in recent],
         "notes": [
             "\uc870\ud68c\uc218 \ub2e8\ub3c5 \uae30\uc900\uc73c\ub85c \ubc29\ud5a5\uc744 \ubcc0\uacbd\ud558\uc9c0 \uc54a\uc74c",
-            "\ubd84\uc11d \uacb0\uacfc\ub294 \uae30\uc874 \uc81c\uc791 \ud30c\uc774\ud504\ub77c\uc778\uc5d0 \uc790\ub3d9 \uc801\uc6a9\ud558\uc9c0 \uc54a\uc74c",
-            "\uc911\ubcf5 \ud310\uc815\uc740 \uc0ac\uc804 \uacbd\uace0\uc774\uba70 \uc790\ub3d9 \ucc28\ub2e8\ud558\uc9c0 \uc54a\uc74c",
+            "\ucc44\ub110 \ub0b4\ubd80 \ubd84\uc704\uc218\ub85c \uc815\uaddc\ud654\ud558\uba70 \ud45c\ubcf8\uc774 \uc313\uc77c\uc218\ub85d \uae30\uc900\uc774 \uc790\ub3d9 \uac31\uc2e0\ub428",
+            "\uc791\uc740 \ud45c\ubcf8\uc740 \ucc44\ub110 \uc911\uc559\uac12 \ucabd\uc73c\ub85c \ucd95\uc18c\ud574 \ud2b9\uc774\uac12 \uacfc\ub300 \ud574\uc11d\uc744 \uc904\uc784",
         ],
     }
 
@@ -629,8 +776,10 @@ def render_markdown(data: dict[str, Any]) -> str:
         f"- \uc0dd\uc131 \uc2dc\uac01: {data['generated_at']}",
         f"- \ub9c8\uc9c0\ub9c9 \uc815\uc0c1 \ub3d9\uae30\ud654: {last_sync}",
         f"- \ubd84\uc11d \uc601\uc0c1 \uc218: {data['video_count']}\uac1c",
+        f"- \uc131\uacfc \ube44\uad50 \uac00\ub2a5 \uc601\uc0c1: {data['scored_video_count']}\uac1c ({data['cohort_confidence']})",
         f"- \ubd84\uc11d \uae30\uac04: \ucd5c\uadfc {data['analysis_period_days']}\uc77c",
-        f"- \ucd5c\uc18c \uc2e0\ub8b0 \ud45c\ubcf8: {data['minimum_sample']}\ud68c", "",
+        f"- \ud310\ub2e8 \uac15\ub3c4: {data['strictness_label']}",
+        f"- \ucc44\ub110 \uc0c1\ub300 \ud45c\ubcf8 \ud558\uc704 25% \uae30\uc900: {data['relative_sample_floor']:.0f}\ud68c", "",
         "## \uc0c1\ub300 \uc131\uacfc \uc0c1\uc704 \uc601\uc0c1", "",
         "| \uc21c\uc704 | \uc81c\ubaa9 | \uc131\uacfc \uc810\uc218 | \uc2e0\ub8b0\ub3c4 |",
         "|---:|---|---:|---|",
@@ -650,12 +799,15 @@ def render_markdown(data: dict[str, Any]) -> str:
     else:
         lines.append("- \uc5c6\uc74c")
 
-    lines.extend(["", "## \uc131\uacfc\uac00 \ub192\uc740 \ud0a4\uc6cc\ub4dc", ""])
+    lines.extend([
+        "", "## \uc131\uacfc\uac00 \ub192\uc740 \ud0a4\uc6cc\ub4dc", "",
+        f"- \ucc44\ub110 \uc801\uc751 \ucd5c\uc18c \ubc18\ubcf5: {data['keyword_min_count']}\uac1c \uc601\uc0c1", "",
+    ])
     if data["keyword_performance"]:
         for keyword in data["keyword_performance"]:
             lines.append(
-                f"- {keyword['keyword']} \u2014 \ud3c9\uade0 \uc810\uc218 {keyword['average_score']:.3f}, "
-                f"\uc601\uc0c1 {keyword['video_count']}\uac1c"
+                f"- {keyword['keyword']} \u2014 \ubcf4\uc815 \uc810\uc218 {keyword['adjusted_score']:.3f}, "
+                f"\uc601\uc0c1 {keyword['video_count']}\uac1c, \uc9c0\uc9c0\ub3c4 {keyword['support']:.0%}"
             )
     else:
         lines.append("- \ubd84\uc11d \uac00\ub2a5\ud55c \ud0a4\uc6cc\ub4dc \uc5c6\uc74c")
@@ -671,8 +823,11 @@ def render_markdown(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def write_reports(conn: sqlite3.Connection) -> tuple[Path, Path, dict[str, Any]]:
-    data = build_report_data(conn)
+def write_reports(
+    conn: sqlite3.Connection,
+    strictness: str = "balanced",
+) -> tuple[Path, Path, dict[str, Any]]:
+    data = build_report_data(conn, strictness)
     markdown_target = report_path()
     json_target = strategy_path()
     markdown_target.parent.mkdir(parents=True, exist_ok=True)
@@ -682,10 +837,10 @@ def write_reports(conn: sqlite3.Connection) -> tuple[Path, Path, dict[str, Any]]
     return markdown_target, json_target, data
 
 
-def cmd_report(_args: argparse.Namespace) -> int:
+def cmd_report(args: argparse.Namespace) -> int:
     conn = connect()
     try:
-        markdown_target, json_target, data = write_reports(conn)
+        markdown_target, json_target, data = write_reports(conn, getattr(args, "strictness", "balanced"))
     finally:
         conn.close()
     print(f"\ubcf4\uace0\uc11c \uc0dd\uc131 \uc644\ub8cc: \uc601\uc0c1 {data['video_count']}\uac1c")
@@ -694,11 +849,55 @@ def cmd_report(_args: argparse.Namespace) -> int:
     return 0
 
 
-def find_similar_topics(conn: sqlite3.Connection, topic: str, limit: int = 5) -> list[dict[str, Any]]:
-    topic_words = normalize_keywords(topic)
+def _video_keyword_sets(conn: sqlite3.Connection) -> dict[str, set[str]]:
     video_words: dict[str, set[str]] = defaultdict(set)
-    for row in conn.execute("SELECT video_id, keyword FROM keywords"):
+    for row in conn.execute("SELECT video_id, keyword FROM keywords WHERE source='title'"):
         video_words[row["video_id"]].add(row["keyword"])
+    return video_words
+
+
+def adaptive_topic_thresholds(
+    conn: sqlite3.Connection,
+    strictness: str = "balanced",
+) -> dict[str, Any]:
+    strictness = normalize_strictness(strictness)
+    profile = STRICTNESS_PROFILES[strictness]
+    word_sets = list(_video_keyword_sets(conn).values())
+    positive_similarities = [
+        similarity
+        for index, left in enumerate(word_sets)
+        for right in word_sets[index + 1:]
+        if (similarity := jaccard(left, right)) > 0
+    ]
+    empirical_weight = len(word_sets) / (len(word_sets) + 12.0)
+
+    def blended(name: str) -> float:
+        empirical = quantile(positive_similarities, float(profile[f"{name}_quantile"]))
+        prior = float(profile[f"{name}_prior"])
+        if empirical is None:
+            return prior
+        return prior * (1.0 - empirical_weight) + float(empirical) * empirical_weight
+
+    review = blended("review")
+    duplicate = max(blended("duplicate"), review + 0.05)
+    return {
+        "review": round(min(review, 0.95), 4),
+        "duplicate": round(min(duplicate, 1.0), 4),
+        "baseline_video_count": len(word_sets),
+        "positive_pair_count": len(positive_similarities),
+        "empirical_weight": round(empirical_weight, 4),
+    }
+
+
+def find_similar_topics(
+    conn: sqlite3.Connection,
+    topic: str,
+    limit: int = 5,
+    strictness: str = "balanced",
+) -> list[dict[str, Any]]:
+    topic_words = normalize_keywords(topic)
+    video_words = _video_keyword_sets(conn)
+    thresholds = adaptive_topic_thresholds(conn, strictness)
     videos = {
         row["video_id"]: row
         for row in conn.execute("SELECT video_id, title, published_at FROM videos")
@@ -714,7 +913,7 @@ def find_similar_topics(conn: sqlite3.Connection, topic: str, limit: int = 5) ->
             "title": row["title"],
             "published_at": row["published_at"],
             "similarity": similarity,
-            "verdict": topic_verdict(similarity),
+            "verdict": topic_verdict(similarity, thresholds),
             "common_keywords": sorted(topic_words & words),
         })
     return sorted(
@@ -724,18 +923,126 @@ def find_similar_topics(conn: sqlite3.Connection, topic: str, limit: int = 5) ->
     )[:limit]
 
 
+def build_content_guidance(
+    conn: sqlite3.Connection,
+    topic: str,
+    strictness: str = "balanced",
+) -> dict[str, Any]:
+    strictness = normalize_strictness(strictness)
+    report = build_report_data(conn, strictness)
+    thresholds = adaptive_topic_thresholds(conn, strictness)
+    similar = find_similar_topics(conn, topic, strictness=strictness)
+    max_similarity = float(similar[0]["similarity"]) if similar else 0.0
+    verdict = topic_verdict(max_similarity, thresholds)
+    if not normalize_keywords(topic):
+        verdict = "검토"
+
+    top_videos = report["top_videos"][:5]
+    keywords = report["keyword_performance"][:8]
+    lines = [
+        "[YouTube 채널 실데이터 인사이트]",
+        f"- 판단 강도: {report['strictness_label']} ({strictness})",
+        f"- 비교 표본: 성과 영상 {report['scored_video_count']}개 / 전체 영상 {report['video_count']}개; "
+        f"신뢰 단계={report['cohort_confidence']}",
+        f"- 새 주제 중복 판단: {verdict}; 최고 유사도={max_similarity:.1%}; "
+        f"채널 적응 기준 검토={thresholds['review']:.1%}, 중복={thresholds['duplicate']:.1%}",
+    ]
+    if similar and max_similarity > 0:
+        lines.append("- 가까운 기존 영상: " + " / ".join(
+            f"{item['title']} ({item['similarity']:.0%})" for item in similar[:3]
+        ))
+    if top_videos:
+        lines.append("- 채널 내 상대 성과 상위 제목: " + " / ".join(
+            f"{item['title']} ({item['performance_score']:.3f})" for item in top_videos
+        ))
+    if keywords:
+        lines.append("- 성과 연관 키워드(작은 표본은 중앙값으로 보정): " + ", ".join(
+            f"{item['keyword']}[{item['adjusted_score']:.3f}, n={item['video_count']}]"
+            for item in keywords
+        ))
+
+    if verdict == "중복 가능성 높음":
+        lines.append("- 전략 지침: 같은 결론·제목 구조를 반복하지 말고, 시청자 질문이나 해결 각도를 명확히 바꿀 것.")
+    elif verdict == "검토":
+        lines.append("- 전략 지침: 겹치는 핵심어는 활용할 수 있지만 기존 영상과 다른 질문·사례·실천 답을 제시할 것.")
+    else:
+        lines.append("- 전략 지침: 새 주제로 진행하되 상위 콘텐츠의 명료한 제목 약속과 핵심어 사용 방식을 참고할 것.")
+    lines.extend([
+        "- 성과 데이터는 방향 선택에만 사용하고 의학적 사실과 결론은 PubMed·검증 근거를 우선할 것.",
+        "- 조회수 하나를 성공 공식으로 일반화하지 말고, 채널 상대 성과와 표본 신뢰도를 함께 고려할 것.",
+    ])
+    return {
+        "available": bool(report["video_count"]),
+        "generated_at": iso_now(),
+        "topic": topic,
+        "strictness": strictness,
+        "strictness_label": report["strictness_label"],
+        "cohort": {
+            "video_count": report["video_count"],
+            "scored_video_count": report["scored_video_count"],
+            "confidence": report["cohort_confidence"],
+            "score_distribution": report["score_distribution"],
+        },
+        "topic_assessment": {
+            "verdict": verdict,
+            "max_similarity": round(max_similarity, 4),
+            "thresholds": thresholds,
+            "similar_videos": similar,
+        },
+        "top_videos": top_videos,
+        "preferred_keywords": keywords,
+        "prompt_text": "\n".join(lines),
+    }
+
+
+def _env_enabled(name: str, default: bool = True) -> bool:
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    return value.strip().lower() not in {"0", "false", "off", "no", "n"}
+
+
+def prepare_content_guidance(
+    topic: str,
+    strictness: str | None = None,
+    auto_sync: bool | None = None,
+) -> dict[str, Any]:
+    strictness = normalize_strictness(strictness or os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS"))
+    if auto_sync is None:
+        auto_sync = _env_enabled("YOUTUBE_FEEDBACK_AUTO_SYNC", True)
+    token = _env_path("YOUTUBE_FEEDBACK_TOKEN")
+    sync_status = "skipped"
+    if auto_sync and token is not None and token.is_file():
+        sync_status = "success" if cmd_sync(argparse.Namespace()) == 0 else "stale-cache"
+
+    conn = connect()
+    try:
+        guidance = build_content_guidance(conn, topic, strictness)
+        write_reports(conn, strictness)
+    finally:
+        conn.close()
+    guidance["sync_status"] = sync_status
+    return guidance
+
+
 def cmd_check_topic(args: argparse.Namespace) -> int:
     conn = connect()
     try:
-        results = find_similar_topics(conn, args.topic)
+        strictness = normalize_strictness(getattr(args, "strictness", "balanced"))
+        thresholds = adaptive_topic_thresholds(conn, strictness)
+        results = find_similar_topics(conn, args.topic, strictness=strictness)
     finally:
         conn.close()
     print(f"\uc785\ub825 \uc8fc\uc81c: {args.topic}")
     if not normalize_keywords(args.topic):
         print("\ud310\uc815: \uac80\ud1a0 (\ube44\uad50\ud560 \uc720\ud6a8 \ud0a4\uc6cc\ub4dc\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.)")
         return 0
-    overall = topic_verdict(results[0]["similarity"] if results else 0.0)
+    overall = topic_verdict(results[0]["similarity"] if results else 0.0, thresholds)
     print(f"\ud310\uc815: {overall}")
+    print(
+        f"\ucc44\ub110 \uc801\uc751 \uae30\uc900: \uac80\ud1a0 {thresholds['review']:.1%}, "
+        f"\uc911\ubcf5 {thresholds['duplicate']:.1%} ({STRICTNESS_PROFILES[strictness]['label']})"
+    )
     print("\uc720\uc0ac \uc601\uc0c1:")
     if not results:
         print("  \uc800\uc7a5\ub41c \uc601\uc0c1\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.")
@@ -749,13 +1056,29 @@ def cmd_check_topic(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_guide(args: argparse.Namespace) -> int:
+    guidance = prepare_content_guidance(
+        args.topic,
+        strictness=args.strictness,
+        auto_sync=not args.no_sync,
+    )
+    print(guidance["prompt_text"])
+    return 0
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="YouTube API \ud53c\ub4dc\ubc31 MVP")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("sync", help="\ucc44\ub110 \uc601\uc0c1\uacfc \ucd5c\uadfc Analytics\ub97c \ub3d9\uae30\ud654")
-    subparsers.add_parser("report", help="Markdown/JSON \ubcf4\uace0\uc11c \uc0dd\uc131")
+    report_parser = subparsers.add_parser("report", help="Markdown/JSON \ubcf4\uace0\uc11c \uc0dd\uc131")
+    report_parser.add_argument("--strictness", default="balanced", choices=tuple(STRICTNESS_PROFILES))
     topic_parser = subparsers.add_parser("check-topic", help="\uae30\uc874 \uc601\uc0c1\uacfc \uc0c8 \uc8fc\uc81c\uc758 \uc911\ubcf5 \uac00\ub2a5\uc131 \ud655\uc778")
     topic_parser.add_argument("topic", help="\uac80\uc0ac\ud560 \uc0c8 \uc8fc\uc81c")
+    topic_parser.add_argument("--strictness", default="balanced", choices=tuple(STRICTNESS_PROFILES))
+    guide_parser = subparsers.add_parser("guide", help="\uc0c8 \uc8fc\uc81c\uc6a9 \uc2e4\ub370\uc774\ud130 \uc804\ub7b5 \uc0dd\uc131")
+    guide_parser.add_argument("topic", help="\ubd84\uc11d\ud560 \uc0c8 \uc8fc\uc81c")
+    guide_parser.add_argument("--strictness", default="balanced", choices=tuple(STRICTNESS_PROFILES))
+    guide_parser.add_argument("--no-sync", action="store_true", help="API \ub3d9\uae30\ud654 \uc5c6\uc774 \uae30\uc874 DB \uc0ac\uc6a9")
     return parser.parse_args(argv)
 
 
@@ -765,7 +1088,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if reconfigure:
             reconfigure(encoding="utf-8", errors="replace")
     args = parse_args(argv)
-    commands = {"sync": cmd_sync, "report": cmd_report, "check-topic": cmd_check_topic}
+    commands = {
+        "sync": cmd_sync,
+        "report": cmd_report,
+        "check-topic": cmd_check_topic,
+        "guide": cmd_guide,
+    }
     return commands[args.command](args)
 
 

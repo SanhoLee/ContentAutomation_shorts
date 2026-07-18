@@ -13,6 +13,8 @@ data/backups/
 /dev/data/telegram_state.json.tmp
 /prod/data/telegram_state.json
 /prod/data/telegram_state.json.tmp
+/data/telegram_state.json
+/data/telegram_state.json.tmp
 /dev/data/youtube_feedback.db
 /dev/data/youtube_feedback.db-*
 /dev/data/youtube_report.md

@@ -36,7 +36,7 @@
 │    → strategy.json 저장                                 │
 │                                                         │
 │  Stage 2 [Sonnet, 품질 집중]  build_prompt()           │
-│    PubMed 초록 + web_search 최신 연구 + 피드백 인사이트  │
+│ PubMed + web_search + YouTube 채널 상대성과 인사이트     │
 │    감정 여정 구조로 대본 작성                            │
 │    → script.txt / scenes.json / video_meta.json        │
 └─────────────────────────────────────────────────────────┘
@@ -84,11 +84,10 @@
     │
     ▼
 ┌─────────────────────────────────────────────────────────┐
-│  5_feedback.py  ─  피드백 & 인사이트 (신규)              │
+│  6_youtube_feedback.py  ─  API 실데이터 피드백             │
 │                                                         │
-│  영상 게시 후 평점·YT 지표·키워드 태깅 → SQLite DB        │
-│  python 5_feedback.py insights                          │
-│  → feedback_insights.json → 다음 대본에 자동 반영        │
+│  YouTube Data/Analytics → 채널 상대분포 정규화             │
+│  → 주제 중복·성과 방향 → 다음 Stage 1·2에 자동 반영       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -119,12 +118,14 @@ brain50/
 │   │   ├── 2_caption.py        # 자막 생성 (스크립트 기반)
 │   │   ├── 3_broll.py          # B-roll 수집 (Pexels)
 │   │   ├── 4_upload.py         # YouTube 업로드
-│   │   ├── 5_feedback.py       # 피드백 & 인사이트 ← 신규
+│   │   ├── 6_youtube_feedback.py # YouTube API 성과 피드백
 │   │   └── telegram_bot.py     # Telegram 승인 봇
 │   ├── sh/                     # Shell wrapper
 │   └── data/
+│       ├── youtube_feedback.db # YouTube API 성과 SQLite DB
 │       └── work/{JOB_ID}/      # 실행별 작업 폴더
-│           ├── strategy.json   # Stage 1 전략 결과 ← 신규
+│           ├── strategy.json   # Stage 1 전략 결과
+│           ├── youtube_guidance.json # 채널 실데이터 분석
 │           ├── script.txt      # 생성된 대본 (TTS 입력)
 │           ├── scenes.json     # 장면별 텍스트 + visual_query
 │           ├── video_meta.json # 제목·훅유형·해시태그 등
@@ -141,8 +142,7 @@ brain50/
 │   ├── telegram-bot.md
 │   └── with-job-id.md
 └── data/
-    ├── assets/                 # BGM, 공유 자원
-    └── feedback.db             # 피드백 SQLite DB ← 신규
+    └── assets/                 # BGM, 공유 자원
 ```
 
 ---
@@ -177,7 +177,7 @@ Claude API를 **두 번 호출**해 전략과 대본을 분리 생성합니다.
 
 **Stage 2 — 대본 작성 (`claude-sonnet`, 품질 집중)**
 
-Stage 1의 전략 + PubMed 초록 + web_search 최신 연구 + 피드백 인사이트를 결합해
+Stage 1의 전략 + PubMed 초록 + web_search 최신 연구 + YouTube 실데이터 인사이트를 결합해
 감정 여정 구조로 대본을 작성합니다.
 
 ```
@@ -232,45 +232,19 @@ PubMed 번역에 사용한 영어 쿼리를 재활용해 우선 출처에서 최
 
 ---
 
-### `5_feedback.py` — 피드백 & 인사이트 시스템 *(신규)*
+### `6_youtube_feedback.py` — YouTube API 실데이터 피드백
 
-영상 반응 데이터를 SQLite에 누적하고, 인사이트를 다음 대본 생성에 자동 반영합니다.
-
-**명령어**
+YouTube Data API와 Analytics API에서 최근 90일 성과를 가져와 다음 대본의 Stage 1·2에 자동 반영합니다.
 
 ```bash
-# 영상 게시 후 평가 입력 (video_meta.json 자동 읽기)
-python 5_feedback.py rate
-
-# 며칠 후 YouTube 조회수·시청률 추가
-python 5_feedback.py update [video_key]
-
-# 특정 단어/표현 태깅
-python 5_feedback.py tag <video_key> "치매 예방" +1 --ktype topic_word
-
-# 목록 / 통계
-python 5_feedback.py list
-python 5_feedback.py stats
-
-# 인사이트 생성 → feedback_insights.json → 다음 0_script.py에 자동 반영
-python 5_feedback.py insights
+python dev/src/6_youtube_feedback.py sync
+python dev/src/6_youtube_feedback.py report --strictness balanced
+python dev/src/6_youtube_feedback.py guide "치매 초기증상" --strictness balanced
 ```
 
-**DB 스키마**
+평균 시청률·공유율·좋아요율·순 구독자 전환율·댓글률을 채널 내부 백분위로 정규화합니다. 표본이 적을수록 중앙값 쪽으로 보정하고, 영상이 쌓일수록 실제 채널 분포가 기준값을 자동 갱신합니다.
 
-```sql
-videos   -- video_key, topic, title, hook_type
-            rating(1-5), yt_views, yt_watch_pct, yt_likes, yt_comments
-keywords -- video_key, keyword, ktype, sentiment(+1/0/-1)
-```
-
-**누적 효과**
-
-| 누적 영상 수 | 의미 있는 인사이트 |
-|------------|-----------------|
-| 5개 이상   | 훅 유형별 평점 비교 |
-| 10개 이상  | 주제 패턴 신뢰도 향상 |
-| 20개 이상  | 키워드 통계 유의미 |
+판단 강도는 `loose`(느슨함), `balanced`(중간), `strict`(엄격함) 세 단계입니다. 기본 콘텐츠 생성 명령은 최신 동기화를 먼저 시도하고 실패하면 마지막 정상 DB로 계속합니다.
 
 ---
 
@@ -379,17 +353,11 @@ python src/4_upload.py                  # YouTube 업로드
 ```
 [영상 게시]
     ↓
-python 5_feedback.py rate
-  → 평점(1-5), YT 지표, 키워드 태깅 입력
-  → feedback.db 누적
-    ↓
-python 5_feedback.py insights
-  → 훅 유형별 성과, 좋은/나쁜 키워드 분석
-  → feedback_insights.json 저장
-    ↓
 python 0_script.py "다음 주제"
-  → feedback_insights.json 자동 읽기
-  → "반응 좋았던 훅 유형" 등 프롬프트에 반영
+  → YouTube API 최신 성과 자동 동기화
+  → 채널 내부 분위수·표본 신뢰도 보정
+  → 새 주제 중복도·성과 키워드·상위 제목 분석
+  → Stage 1 전략과 Stage 2 대본 프롬프트에 반영
 ```
 
 ---
@@ -471,12 +439,14 @@ python 0_script.py "다음 주제"
 ./sh/2_render.sh --frame-mode framed --top-title "기억력경고" --top-subtitle "오늘의뇌건강" --style center-yellow 10
 ```
 
-### 피드백
+### YouTube 실데이터 피드백
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `FEEDBACK_DB` | `~/brain50/data/feedback.db` | SQLite DB 경로 |
-| `FEEDBACK_INSIGHTS` | `~/brain50/data/feedback_insights.json` | 인사이트 파일 경로 |
+| `YOUTUBE_FEEDBACK_TOKEN` | 없음 | 읽기 전용 OAuth 토큰 JSON 경로 |
+| `YOUTUBE_FEEDBACK_DB` | `dev/data/youtube_feedback.db` | API 성과 SQLite DB 경로 |
+| `YOUTUBE_FEEDBACK_STRICTNESS` | `balanced` | `loose` / `balanced` / `strict` |
+| `YOUTUBE_FEEDBACK_AUTO_SYNC` | `true` | 콘텐츠 생성 전 최신 API 동기화 여부 |
 
 ---
 

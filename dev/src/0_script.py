@@ -1,4 +1,5 @@
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -6,6 +7,7 @@ import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 from script_runtime import load_runtime_settings
@@ -44,7 +46,8 @@ CASE_RESEARCH_MAX_USES = SETTINGS.case_research_max_uses
 CASE_RESEARCH_MAX_TOKENS = SETTINGS.case_research_max_tokens
 CASE_RESEARCH_MAX_TOOL_TURNS = SETTINGS.case_research_max_tool_turns
 STRATEGY_PATH = SETTINGS.strategy_path
-INSIGHTS_PATH = SETTINGS.insights_path
+YOUTUBE_FEEDBACK_STRICTNESS = SETTINGS.youtube_feedback_strictness
+YOUTUBE_FEEDBACK_AUTO_SYNC = SETTINGS.youtube_feedback_auto_sync
 total_chars = SETTINGS.total_chars
 prompt_target_chars = SETTINGS.prompt_target_chars
 min_scenes_estimate = SETTINGS.min_scenes_estimate
@@ -548,18 +551,30 @@ def fetch_case_and_stat_research(topic, pubmed_query):
 
 
 # ─────────────────────────────────────────────
-# 피드백 인사이트 로더
+# YouTube API 실데이터 인사이트 로더
 # ─────────────────────────────────────────────
 
-def load_feedback_insights():
-    if not os.path.exists(INSIGHTS_PATH):
-        return ""
+def load_youtube_guidance(topic):
+    module_path = Path(__file__).with_name("6_youtube_feedback.py")
+    if not module_path.is_file():
+        return {}
     try:
-        with open(INSIGHTS_PATH, "r", encoding="utf-8") as f:
-            return json.load(f).get("prompt_text", "")
+        spec = importlib.util.spec_from_file_location("brain50_youtube_feedback", module_path)
+        if spec is None or spec.loader is None:
+            return {}
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        guidance = module.prepare_content_guidance(
+            topic,
+            strictness=YOUTUBE_FEEDBACK_STRICTNESS,
+            auto_sync=YOUTUBE_FEEDBACK_AUTO_SYNC,
+        )
+        with open(os.path.join(WORK_DIR, "youtube_guidance.json"), "w", encoding="utf-8") as f:
+            json.dump(guidance, f, ensure_ascii=False, indent=2)
+        return guidance
     except Exception as exc:
-        print(f"⚠️  인사이트 파일 읽기 실패: {exc}")
-        return ""
+        print(f"⚠️  YouTube 실데이터 분석 실패, 기존 생성 흐름으로 계속합니다: {exc}")
+        return {}
 
 
 # ─────────────────────────────────────────────
@@ -781,7 +796,14 @@ def local_strategy_fallback(topic, trend_context=None, reason=None):
     return strategy
 
 
-def plan_strategy(topic, abstracts="", web_research="", case_research="", trend_context=None):
+def plan_strategy(
+    topic,
+    abstracts="",
+    web_research="",
+    case_research="",
+    trend_context=None,
+    youtube_guidance="",
+):
     """
     Haiku로 빠르게 콘텐츠 전략(검색 키워드·제목·훅 유형·핵심 메시지)을 결정한다.
     Stage 2 대본 작성 전 뼈대를 확정하는 역할.
@@ -798,10 +820,14 @@ def plan_strategy(topic, abstracts="", web_research="", case_research="", trend_
     if case_research:
         research_context = (research_context + "\n\n[case_and_stat_research]\n" + case_research).strip()
     research_hint = f"\n\n[근거 자료 요약]\n{research_context}" if research_context else ""
+    channel_hint = f"\n\n{youtube_guidance}" if youtube_guidance else ""
 
-    prompt = f"""주제: {topic}{trend_hint}{research_hint}
+    prompt = f"""주제: {topic}{trend_hint}{research_hint}{channel_hint}
 
 이 주제로 50대 이상을 위한 YouTube Shorts 콘텐츠 전략을 수립하세요.
+
+채널 실데이터가 있으면 제목·핵심어·차별화 방향을 정할 때 반영하되, 작은 표본을 성공 공식으로 단정하지 마세요.
+의학적 사실과 최종 결론은 채널 성과가 아니라 검증된 근거 자료를 우선하세요.
 
 [규칙]
 main_keyword : YouTube에서 실제 검색할 핵심 키워드 (공백 포함 12자 이내)
@@ -955,7 +981,7 @@ def pace_instruction():
     return "따뜻하고 여유 있는 대화체. 자연스러운 쉼표와 호흡."
 
 
-def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedback_insights=""):
+def build_prompt(strategy, abstracts, trend_context=None, web_research="", youtube_guidance=""):
     main_keyword   = strategy.get("main_keyword", "")
     hook_type      = strategy.get("hook_type", "두려움형")
     title          = strategy.get("title", "")
@@ -1025,11 +1051,13 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
 
     research_block = stage2_research_context(strategy, abstracts, web_research)
 
-    # ── 피드백 블록
-    feedback_block = ""
-    if feedback_insights:
-        feedback_block = (f"\n{feedback_insights}\n"
-                          "※ 샘플 수 3 미만 항목은 불확실합니다. 근거 자료를 항상 우선하세요.\n")
+    # ── YouTube 채널 실데이터 블록
+    youtube_block = ""
+    if youtube_guidance:
+        youtube_block = (
+            f"\n{youtube_guidance}\n"
+            "※ 채널 성과는 구성·표현의 방향에만 사용하고 의학적 사실은 연구 근거를 우선하세요.\n"
+        )
 
     prompt_min_chars = max(1, int(total_chars * PROMPT_MIN_LENGTH_RATIO))
     prompt_max_chars = max(prompt_min_chars, int(total_chars * PROMPT_MAX_LENGTH_RATIO))
@@ -1041,7 +1069,7 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", feedb
 
 === 연구 자료 및 전략 데이터 ===
 {research_block}
-{feedback_block}{trend_block}
+{youtube_block}{trend_block}
 [콘텐츠 전략 (Stage 1 결과)]
 main_keyword       : {main_keyword}
 검색 의도          : {search_intent}
@@ -1456,6 +1484,18 @@ def main():
         f"pace={SPEECH_PACE}, density={SCRIPT_DENSITY:.2f}, 장면 수는 문맥에 따라 유연하게 구성"
     )
 
+    # ── 0. YouTube 실데이터 동기화·채널 상대분포 분석
+    youtube_guidance = load_youtube_guidance(topic)
+    youtube_prompt_text = youtube_guidance.get("prompt_text", "")
+    if youtube_guidance.get("available"):
+        assessment = youtube_guidance.get("topic_assessment", {})
+        print(
+            f"📊 YouTube 실데이터 반영: {youtube_guidance.get('strictness_label')} / "
+            f"{assessment.get('verdict', '검토')} / sync={youtube_guidance.get('sync_status')}"
+        )
+    else:
+        print("ℹ️  YouTube 성과 표본 없음 (실데이터 없이 계속)")
+
     # ── 1. PubMed 초록 수집
     try:
         abstracts = fetch_pubmed_abstracts(topic)
@@ -1487,13 +1527,6 @@ def main():
     else:
         print("ℹ️  case_research 비활성화")
 
-    # ── 3. 피드백 인사이트 로드
-    feedback_insights = load_feedback_insights()
-    if feedback_insights:
-        print(f"📊 피드백 인사이트 반영")
-    else:
-        print("ℹ️  피드백 인사이트 없음 (python 5_feedback.py insights 로 생성 가능)")
-
     # ── Stage 1: 전략 수립 (Haiku)
     if args.skip_strategy and os.path.exists(STRATEGY_PATH):
         with open(STRATEGY_PATH, "r", encoding="utf-8") as f:
@@ -1507,12 +1540,19 @@ def main():
             json.dump(strategy, f, ensure_ascii=False, indent=2)
         print(f"⏭️  Stage 1 건너뜀 (topic JSON 전략 사용): {strategy.get('title')}")
     else:
-        strategy = plan_strategy(topic, abstracts=abstracts, web_research=web_research, case_research=case_research, trend_context=trend_context)
+        strategy = plan_strategy(
+            topic,
+            abstracts=abstracts,
+            web_research=web_research,
+            case_research=case_research,
+            trend_context=trend_context,
+            youtube_guidance=youtube_prompt_text,
+        )
 
     strategy = normalize_strategy_contract(strategy, topic)
 
     # ── Stage 2: 대본 생성 (Sonnet)
-    prompt = build_prompt(strategy, abstracts, trend_context, web_research, feedback_insights)
+    prompt = build_prompt(strategy, abstracts, trend_context, web_research, youtube_prompt_text)
     with open(os.path.join(WORK_DIR, "claude_prompt.txt"), "w", encoding="utf-8") as f:
         f.write(prompt)
 

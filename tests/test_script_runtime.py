@@ -17,6 +17,7 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
         "CLAUDE_MODEL", "CLAUDE_SCRIPT_MODEL", "CLAUDE_QUERY_MODEL", "CLAUDE_RESEARCH_MODEL", "CLAUDE_STRATEGY_MODEL",
         "CLAUDE_STRATEGY_FALLBACK_MODELS", "CLAUDE_STRATEGY_MAX_TOKENS",
         "ENABLE_CASE_RESEARCH", "CASE_RESEARCH_MAX_USES",
+        "YOUTUBE_FEEDBACK_STRICTNESS", "YOUTUBE_FEEDBACK_AUTO_SYNC",
     )
 
     def load_settings(self, **values):
@@ -76,6 +77,14 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
     def test_case_research_can_be_disabled_via_env(self):
         settings = self.load_settings(ENABLE_CASE_RESEARCH="false")
         self.assertFalse(settings.enable_case_research)
+
+    def test_youtube_feedback_policy_has_three_levels_and_auto_sync(self):
+        settings = self.load_settings(
+            YOUTUBE_FEEDBACK_STRICTNESS="strict",
+            YOUTUBE_FEEDBACK_AUTO_SYNC="false",
+        )
+        self.assertEqual(settings.youtube_feedback_strictness, "strict")
+        self.assertFalse(settings.youtube_feedback_auto_sync)
 
 
 if __name__ == "__main__":

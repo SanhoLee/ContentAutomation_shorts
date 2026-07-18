@@ -534,9 +534,10 @@ def parse_key_values(text):
 
 
 def positive_int(value, name):
-    if not str(value).isdigit() or int(value) <= 0:
+    text = str(value).strip()
+    if not text.isdigit() or int(text) <= 0:
         raise ValueError(f"{name}은 양의 정수로 입력하세요: {value}")
-    return str(value)
+    return text
 
 
 def signed_int(value, name):
@@ -584,14 +585,255 @@ def display_effective_model(job, job_key, value):
     return f"{value} ({source})"
 
 
-# ── 설정 키: /set 으로 저장, run_auto/run 실행 시 자동 적용
-_PRESERVED_KEYS = {
-    "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y",
-    "frame_mode", "broll_fit_mode", "frame_header_text", "frame_top_preset", "frame_bottom_preset",
-    "frame_top_pct", "frame_bottom_pct", "frame_bottom_channel_name", "tts_voice", "web_research", "case_research",
-    "speech_pace", "target_duration_sec",
-    "claude_script_model", "claude_research_model", "claude_strategy_model", "claude_query_model",
+# ── 설정 키: /set 메뉴 또는 key=value로 저장, run_auto/run 실행 시 자동 적용
+CONFIG_CATEGORIES = (
+    ("models", "AI 모델", "스크립트·조사·전략·검색 모델"),
+    ("research", "조사 / 검색", "웹 검색과 사례 조사"),
+    ("audio", "음성 / 영상 길이", "TTS 목소리·속도·목표 길이"),
+    ("caption", "자막", "글자·여백·스타일·위치"),
+    ("frame", "프레임 / B-roll", "화면 프레임·프리셋·채널명"),
+    ("system", "시스템 (읽기 전용)", "실행 환경과 API 제한값"),
+)
+
+MODEL_CHOICES = (
+    ("Haiku 4.5", "claude-haiku-4-5-20251001"),
+    ("Sonnet 4.6", "claude-sonnet-4-6"),
+    ("Sonnet 4.5", "claude-sonnet-4-5-20250929"),
+    ("Opus 4.8", "claude-opus-4-8"),
+)
+
+# callback_data의 길이 제한을 피하기 위해 짧은 id를 쓰고 실제 값은 여기서 찾는다.
+CONFIG_SETTINGS = {
+    "script_model": {"category": "models", "label": "스크립트 모델", "job_key": "claude_script_model", "env": "CLAUDE_SCRIPT_MODEL", "default": lambda job: env_value("CLAUDE_MODEL", "claude-sonnet-4-6"), "kind": "model", "choices": MODEL_CHOICES},
+    "research_model": {"category": "models", "label": "조사 모델", "job_key": "claude_research_model", "env": "CLAUDE_RESEARCH_MODEL", "default": lambda job: _effective_setting_value(job, "script_model")[0], "kind": "model", "choices": MODEL_CHOICES},
+    "strategy_model": {"category": "models", "label": "전략 모델", "job_key": "claude_strategy_model", "env": "CLAUDE_STRATEGY_MODEL", "default": "claude-haiku-4-5-20251001", "kind": "model", "choices": MODEL_CHOICES},
+    "query_model": {"category": "models", "label": "검색어 모델", "job_key": "claude_query_model", "env": "CLAUDE_QUERY_MODEL", "default": lambda job: _effective_setting_value(job, "strategy_model")[0], "kind": "model", "choices": MODEL_CHOICES},
+    "web": {"category": "research", "label": "웹 검색", "job_key": "web_research", "env": "ENABLE_WEB_RESEARCH", "default": DEFAULT_WEB_RESEARCH, "kind": "bool", "choices": (("켜기", True), ("끄기", False))},
+    "case": {"category": "research", "label": "사례 조사", "job_key": "case_research", "env": "ENABLE_CASE_RESEARCH", "default": True, "kind": "bool", "choices": (("켜기", True), ("끄기", False))},
+    "voice": {"category": "audio", "label": "TTS 목소리", "job_key": "tts_voice", "env": "TTS_VOICE", "default": "M2", "kind": "voice", "choices": tuple((voice, voice) for voice in ("F1", "F2", "M1", "M2"))},
+    "pace": {"category": "audio", "label": "말하기 속도", "job_key": "speech_pace", "env": "SPEECH_PACE", "default": "legacy", "kind": "pace", "choices": (("느리게", "slow"), ("보통", "normal"), ("빠르게", "fast"), ("매우 빠르게", "very_fast"))},
+    "duration": {"category": "audio", "label": "목표 길이(초)", "job_key": "target_duration_sec", "env": "TARGET_DURATION_SEC", "default": "60", "kind": "positive_int"},
+    "font_size": {"category": "caption", "label": "글자 크기", "job_key": "caption_font_size", "env": "CAPTION_FONT_SIZE", "default": DEFAULT_CAPTION_FONT_SIZE, "kind": "positive_int"},
+    "margin_v": {"category": "caption", "label": "세로 여백", "job_key": "caption_margin_v", "env": "CAPTION_MARGIN_V", "default": DEFAULT_CAPTION_MARGIN_V, "kind": "positive_int"},
+    "margin_h": {"category": "caption", "label": "가로 여백", "job_key": "caption_margin_h", "env": "CAPTION_MARGIN_H", "default": DEFAULT_CAPTION_MARGIN_H, "kind": "positive_int"},
+    "style": {"category": "caption", "label": "자막 스타일", "job_key": "caption_style", "env": "CAPTION_STYLE", "default": DEFAULT_CAPTION_STYLE, "kind": "style", "choices": tuple((style, style) for style in ("default", "center-outline", "center-yellow", "center-white"))},
+    "offset_x": {"category": "caption", "label": "가로 위치 보정", "job_key": "caption_offset_x", "env": "CAPTION_OFFSET_X", "default": "0", "kind": "signed_int"},
+    "offset_y": {"category": "caption", "label": "세로 위치 보정", "job_key": "caption_offset_y", "env": "CAPTION_OFFSET_Y", "default": "0", "kind": "signed_int"},
+    "frame": {"category": "frame", "label": "프레임 모드", "job_key": "frame_mode", "env": "FRAME_MODE", "default": "full", "kind": "choice", "choices": (("전체 화면", "full"), ("상하 프레임", "framed"))},
+    "broll_fit": {"category": "frame", "label": "B-roll 맞춤", "job_key": "broll_fit_mode", "env": "BROLL_FIT_MODE", "default": "cover", "kind": "choice", "choices": (("채우기", "cover"), ("원본 유지", "contain"), ("블러 여백", "blur-contain"))},
+    "top_preset": {"category": "frame", "label": "상단 프리셋", "job_key": "frame_top_preset", "env": "FRAME_TOP_PRESET", "default": "default", "kind": "style", "choices": (("default", "default"), ("brain50", "brain50"))},
+    "bottom_preset": {"category": "frame", "label": "하단 프리셋", "job_key": "frame_bottom_preset", "env": "FRAME_BOTTOM_PRESET", "default": "default", "kind": "style", "choices": (("default", "default"), ("minimal", "minimal"))},
+    "top_pct": {"category": "frame", "label": "상단 높이(%)", "job_key": "frame_top_pct", "env": "FRAME_TOP_PCT", "default": "preset", "kind": "positive_number"},
+    "bottom_pct": {"category": "frame", "label": "하단 높이(%)", "job_key": "frame_bottom_pct", "env": "FRAME_BOTTOM_PCT", "default": "preset", "kind": "positive_number"},
+    "channel": {"category": "frame", "label": "하단 채널명", "job_key": "frame_bottom_channel_name", "env": "FRAME_BOTTOM_CHANNEL_NAME", "default": "브레인피프티", "kind": "text"},
+    "header": {"category": "frame", "label": "상단 제목", "job_key": "frame_header_text", "env": "FRAME_HEADER_TEXT", "default": "자동 생성", "kind": "text"},
 }
+
+CONFIG_INPUT_ALIASES = {
+    "caption_style": "style",
+    "frame_mode": "frame",
+    "broll_fit_mode": "broll_fit",
+    "speech_pace": "pace",
+    "target_duration_sec": "duration",
+    "web_research": "web",
+    "case_research": "case",
+}
+
+_PRESERVED_KEYS = {setting["job_key"] for setting in CONFIG_SETTINGS.values()}
+
+SYSTEM_CONFIG_FIELDS = (
+    ("ENV_NAME", "-"),
+    ("CLAUDE_MODEL", "claude-sonnet-4-6"),
+    ("MAX_TOKENS", "2600"),
+    ("CLAUDE_HTTP_RETRIES", "1"),
+    ("PUBMED_RETMAX", "3"),
+    ("PUBMED_ABSTRACT_CHAR_LIMIT", "7000"),
+    ("LOG_LEVEL", "-"),
+)
+
+
+def _env_bool(value):
+    return str(value).strip().lower() not in ("off", "0", "false", "no")
+
+
+def _effective_setting_value(job, setting_id):
+    setting = CONFIG_SETTINGS[setting_id]
+    job_key = setting["job_key"]
+    if job_key in job:
+        return job[job_key], "작업 override"
+    env_name = setting.get("env")
+    env_value_raw = os.environ.get(env_name) if env_name else None
+    if env_value_raw not in (None, ""):
+        value = _env_bool(env_value_raw) if setting["kind"] == "bool" else env_value_raw
+        return value, "환경 설정"
+    default = setting.get("default", "-")
+    if callable(default):
+        default = default(job)
+    return default, "기본값"
+
+
+def _display_setting_value(value):
+    if isinstance(value, bool):
+        return "켜짐" if value else "꺼짐"
+    return str(value) if value not in (None, "") else "(비어 있음)"
+
+
+def _validate_setting_value(setting_id, value):
+    setting = CONFIG_SETTINGS[setting_id]
+    kind = setting["kind"]
+    if kind == "positive_int":
+        return positive_int(value, setting_id)
+    if kind == "signed_int":
+        return signed_int(value, setting_id)
+    if kind == "positive_number":
+        return positive_number(value, setting_id)
+    if kind == "pace":
+        return speech_pace_profile(value)[0]
+    if kind == "model":
+        return resolve_model_alias(value)
+    if kind == "style":
+        return safe_caption_style(value)
+    if kind == "voice":
+        text = str(value).strip().upper()
+        allowed = tuple(choice_value for _, choice_value in setting.get("choices", ()))
+        if text not in allowed:
+            raise ValueError(f"voice은 {', '.join(allowed)} 중 하나여야 합니다: {value}")
+        return text
+    if kind == "bool":
+        if isinstance(value, bool):
+            return value
+        lowered = str(value).strip().lower()
+        if lowered not in ("on", "off", "true", "false", "1", "0", "yes", "no"):
+            raise ValueError(f"{setting_id}은 on 또는 off로 입력하세요: {value}")
+        return lowered in ("on", "true", "1", "yes")
+    if kind == "choice":
+        allowed = tuple(choice_value for _, choice_value in setting.get("choices", ()))
+        return safe_choice(value, setting_id, allowed)
+    text = str(value).strip()
+    if not text:
+        raise ValueError(f"{setting_id}은 빈 값으로 설정할 수 없습니다.")
+    return text
+
+
+def _set_config_value(job, setting_id, value):
+    setting = CONFIG_SETTINGS[setting_id]
+    validated = _validate_setting_value(setting_id, value)
+    job[setting["job_key"]] = validated
+    return validated
+
+
+def _category_label(category_id):
+    for current_id, label, description in CONFIG_CATEGORIES:
+        if current_id == category_id:
+            return label, description
+    return category_id, ""
+
+
+def send_config_menu(chat_id, job, notice=None):
+    job.pop("config_edit_key", None)
+    text = "설정 상자를 선택하세요. 현재값을 확인한 뒤 버튼이나 짧은 입력으로 변경할 수 있습니다."
+    if notice:
+        text = notice + "\n\n" + text
+    rows = []
+    for category_id, label, _ in CONFIG_CATEGORIES:
+        rows.append([button(label, f"cfg:cat:{category_id}")])
+    rows.append([button("전체 설정 보기", "cfg:all"), button("전체 override 초기화", "cfg:reset")])
+    return send_action_message(chat_id, text, rows)
+
+
+def send_config_category(chat_id, job, category_id, notice=None):
+    job.pop("config_edit_key", None)
+    label, description = _category_label(category_id)
+    if category_id == "system":
+        lines = [f"{label}\n{description}"]
+        lines.extend(f"{name}={env_value(name, default)}" for name, default in SYSTEM_CONFIG_FIELDS)
+        if notice:
+            lines.insert(0, notice)
+        return send_action_message(chat_id, "\n".join(lines), [[button("← 설정 상자", "cfg:root")]])
+
+    lines = [f"{label}\n{description}", ""]
+    rows = []
+    for setting_id, setting in CONFIG_SETTINGS.items():
+        if setting["category"] != category_id:
+            continue
+        value, source = _effective_setting_value(job, setting_id)
+        shown = _display_setting_value(value)
+        lines.append(f"{setting['label']}: {shown} ({source})")
+        rows.append([button(f"{setting['label']} · {shown}", f"cfg:item:{setting_id}")])
+    if notice:
+        lines.insert(0, notice)
+    rows.append([button("← 설정 상자", "cfg:root")])
+    return send_action_message(chat_id, "\n".join(lines), rows)
+
+
+def send_config_detail(chat_id, job, setting_id, notice=None):
+    setting = CONFIG_SETTINGS[setting_id]
+    job.pop("config_edit_key", None)
+    value, source = _effective_setting_value(job, setting_id)
+    lines = [
+        setting["label"],
+        f"현재값: {_display_setting_value(value)}",
+        f"적용 출처: {source}",
+    ]
+    if notice:
+        lines.insert(0, notice)
+    rows = []
+    choices = setting.get("choices", ())
+    for index in range(0, len(choices), 2):
+        row = []
+        for choice_index in range(index, min(index + 2, len(choices))):
+            choice_label, _ = choices[choice_index]
+            row.append(button(choice_label, f"cfg:pick:{setting_id}:{choice_index}"))
+        rows.append(row)
+    if setting["kind"] not in ("bool", "choice", "pace", "voice") or not choices:
+        prompt_label = "직접 입력" if choices else "수정"
+        rows.append([button(prompt_label, f"cfg:edit:{setting_id}")])
+    rows.append([
+        button("현재값 유지", f"cfg:keep:{setting_id}"),
+        button("기본값 사용", f"cfg:default:{setting_id}"),
+    ])
+    rows.append([button("← 이전 상자", f"cfg:cat:{setting['category']}"), button("설정 홈", "cfg:root")])
+    return send_action_message(chat_id, "\n".join(lines), rows)
+
+
+def begin_config_edit(chat_id, job, setting_id):
+    setting = CONFIG_SETTINGS[setting_id]
+    current, source = _effective_setting_value(job, setting_id)
+    job.pop("title_edit_field", None)
+    job.pop("title_edit_stage", None)
+    job.pop("edit_target", None)
+    job.pop("edit_stage", None)
+    job["config_edit_key"] = setting_id
+    kind_hint = {
+        "positive_int": "양의 정수만",
+        "signed_int": "음수 또는 양의 정수만",
+        "positive_number": "0보다 큰 숫자만",
+        "model": "모델 alias 또는 전체 모델 ID를",
+        "style": "프리셋 이름을",
+    }.get(setting["kind"], "새 값을")
+    return send_action_message(
+        chat_id,
+        f"{setting['label']} 수정\n현재값: {_display_setting_value(current)} ({source})\n\n다음 메시지에 {kind_hint} 입력하고 전송하세요.",
+        [[button("현재값 유지", f"cfg:keep:{setting_id}"), button("← 이전", f"cfg:item:{setting_id}")]],
+    )
+
+
+def apply_config_edit_message(chat_id, job, message):
+    setting_id = job.get("config_edit_key")
+    if not setting_id:
+        return False
+    text = message.get("text")
+    if not text or text.startswith("/"):
+        return False
+    try:
+        saved = _set_config_value(job, setting_id, text)
+    except ValueError as exc:
+        send_message(chat_id, "설정 오류: " + str(exc) + "\n값을 다시 입력하거나 '현재값 유지'를 누르세요.")
+        return True
+    job.pop("config_edit_key", None)
+    setting = CONFIG_SETTINGS[setting_id]
+    send_config_detail(chat_id, job, setting_id, f"저장했습니다: {setting['label']}={_display_setting_value(saved)}")
+    return True
 
 
 def _preserve_settings(job):
@@ -683,63 +925,24 @@ def _settings_summary(job):
 
 
 def config_summary(job):
-    effective_font_size = job.get("caption_font_size", os.environ.get("CAPTION_FONT_SIZE", DEFAULT_CAPTION_FONT_SIZE))
-    effective_margin_v = job.get("caption_margin_v", os.environ.get("CAPTION_MARGIN_V", DEFAULT_CAPTION_MARGIN_V))
-    effective_margin_h = job.get("caption_margin_h", os.environ.get("CAPTION_MARGIN_H", DEFAULT_CAPTION_MARGIN_H))
-    effective_caption_style = job.get("caption_style", os.environ.get("CAPTION_STYLE", DEFAULT_CAPTION_STYLE))
-    effective_frame_mode = job.get("frame_mode", os.environ.get("FRAME_MODE", "full"))
-    effective_broll_fit = job.get("broll_fit_mode", os.environ.get("BROLL_FIT_MODE", "cover"))
-    effective_voice = job.get("tts_voice", os.environ.get("TTS_VOICE", "F1"))
-    effective_pace = job.get("speech_pace", os.environ.get("SPEECH_PACE", "legacy"))
-    effective_duration = job.get("target_duration_sec", os.environ.get("TARGET_DURATION_SEC", "60"))
-    effective_web = job.get("web_research")
-    if effective_web is None:
-        env_web = os.environ.get("ENABLE_WEB_RESEARCH")
-        effective_web = DEFAULT_WEB_RESEARCH if env_web in (None, "") else env_web.lower() not in ("off", "0", "false", "no")
-    effective_case = job.get("case_research")
-    if effective_case is None:
-        env_case = os.environ.get("ENABLE_CASE_RESEARCH")
-        effective_case = True if env_case in (None, "") else env_case.lower() not in ("off", "0", "false", "no")
-
-    claude_model = env_value("CLAUDE_MODEL", "claude-sonnet-4-6")
-    effective_script_model = job.get("claude_script_model", os.environ.get("CLAUDE_SCRIPT_MODEL") or claude_model)
-    effective_research_model = job.get("claude_research_model", os.environ.get("CLAUDE_RESEARCH_MODEL") or effective_script_model)
-    effective_strategy_model = job.get("claude_strategy_model", env_value("CLAUDE_STRATEGY_MODEL", "claude-haiku-4-5-20251001"))
-    effective_query_model = job.get("claude_query_model", os.environ.get("CLAUDE_QUERY_MODEL") or effective_strategy_model)
-
-    saved = _preserve_settings(job)
-    saved_text = json.dumps(saved, ensure_ascii=False, indent=2) if saved else "없음"
-    return "\n".join([
-        "현재 주요 컨피그:",
-        f"ENV_NAME={env_value('ENV_NAME')}",
-        f"CLAUDE_MODEL={claude_model} (fallback base)",
-        f"CLAUDE_SCRIPT_MODEL={display_effective_model(job, 'claude_script_model', effective_script_model)}",
-        f"CLAUDE_RESEARCH_MODEL={display_effective_model(job, 'claude_research_model', effective_research_model)}",
-        f"CLAUDE_STRATEGY_MODEL={display_effective_model(job, 'claude_strategy_model', effective_strategy_model)}",
-        f"CLAUDE_QUERY_MODEL={display_effective_model(job, 'claude_query_model', effective_query_model)}",
-        f"MAX_TOKENS={env_value('MAX_TOKENS', '2600')}",
-        f"CLAUDE_HTTP_RETRIES={env_value('CLAUDE_HTTP_RETRIES', '1')}",
-        f"PUBMED_RETMAX={env_value('PUBMED_RETMAX', '3')}",
-        f"PUBMED_ABSTRACT_CHAR_LIMIT={env_value('PUBMED_ABSTRACT_CHAR_LIMIT', '7000')}",
-        f"LOG_LEVEL={env_value('LOG_LEVEL')}",
-        f"SPEECH_PACE={effective_pace}",
-        f"TARGET_DURATION_SEC={effective_duration}",
-        f"CAPTION_FONT_SIZE={effective_font_size}",
-        f"CAPTION_MARGIN_V={effective_margin_v}",
-        f"CAPTION_MARGIN_H={effective_margin_h}",
-        f"CAPTION_STYLE={effective_caption_style}",
-        f"FRAME_MODE={effective_frame_mode}",
-        f"BROLL_FIT_MODE={effective_broll_fit}",
-        f"TTS_VOICE={effective_voice}",
-        "ENABLE_WEB_RESEARCH=" + ("on" if effective_web else "off"),
-        "ENABLE_CASE_RESEARCH=" + ("on" if effective_case else "off"),
-        "",
-        "/set 저장 override:",
-        saved_text,
-    ])
+    lines = ["전체 설정"]
+    for category_id, label, _ in CONFIG_CATEGORIES:
+        lines.extend(("", f"[{label}]"))
+        if category_id == "system":
+            lines.extend(f"{name}={env_value(name, default)}" for name, default in SYSTEM_CONFIG_FIELDS)
+            continue
+        for setting_id, setting in CONFIG_SETTINGS.items():
+            if setting["category"] != category_id:
+                continue
+            value, source = _effective_setting_value(job, setting_id)
+            env_name = setting.get("env") or setting_id.upper()
+            lines.append(f"{env_name}={_display_setting_value(value)} ({source})")
+    lines.extend(("", "저장된 override:", json.dumps(_preserve_settings(job), ensure_ascii=False) if _preserve_settings(job) else "없음"))
+    return "\n".join(lines)
 
 
 def handle_set(chat_id, job, text):
+    job.pop("config_edit_key", None)
     if text.strip().lower() in ("/set reset", "/set clear"):
         for k in list(_PRESERVED_KEYS):
             job.pop(k, None)
@@ -748,110 +951,27 @@ def handle_set(chat_id, job, text):
 
     values = parse_key_values(text)
     if not values:
-        lines = [
-            config_summary(job),
-            "",
-            "사용법:",
-            "  /set font_size=62 margin_v=60 margin_h=12 style=center-yellow offset_y=-120 frame=framed broll_fit=cover",
-            "  /set top_pct=14 bottom_pct=18 top_preset=brain50 channel=브레인피프티",
-            "  /set voice=F2 web=off case=off",
-            "  /set pace=fast duration=60",
-            "  /set script_model=haiku research_model=haiku strategy_model=haiku query_model=haiku",
-            "  /set script_model=sonnet  <- 스크립트만 되돌리기",
-            f"  사용 가능 alias: {', '.join(sorted(set(MODEL_ALIASES.keys())))}",
-            "  /set reset  <- 초기화 (모델 포함 전체 override 해제)",
-        ]
-        send_message(chat_id, "\n".join(lines))
+        send_config_menu(chat_id, job)
         return
 
+    # Validate the complete batch before mutating the job.  A typo in the
+    # second key must not leave the first key half-applied.
+    validated_values = []
+    for input_key, input_value in values.items():
+        setting_id = CONFIG_INPUT_ALIASES.get(input_key, input_key)
+        if setting_id not in CONFIG_SETTINGS:
+            continue
+        try:
+            saved = _validate_setting_value(setting_id, input_value)
+        except ValueError as exc:
+            send_message(chat_id, "설정 오류: " + str(exc))
+            return
+        validated_values.append((setting_id, saved))
+
     changed = []
-    try:
-        if "font_size" in values:
-            job["caption_font_size"] = positive_int(values["font_size"], "font_size")
-            changed.append("font_size=" + job["caption_font_size"])
-        if "margin_v" in values:
-            job["caption_margin_v"] = positive_int(values["margin_v"], "margin_v")
-            changed.append("margin_v=" + job["caption_margin_v"])
-        if "margin_h" in values:
-            job["caption_margin_h"] = positive_int(values["margin_h"], "margin_h")
-            changed.append("margin_h=" + job["caption_margin_h"])
-        if "style" in values:
-            job["caption_style"] = safe_caption_style(values["style"])
-            changed.append("style=" + job["caption_style"])
-        if "caption_style" in values:
-            job["caption_style"] = safe_caption_style(values["caption_style"])
-            changed.append("style=" + job["caption_style"])
-        if "offset_x" in values:
-            job["caption_offset_x"] = signed_int(values["offset_x"], "offset_x")
-            changed.append("offset_x=" + job["caption_offset_x"])
-        if "offset_y" in values:
-            job["caption_offset_y"] = signed_int(values["offset_y"], "offset_y")
-            changed.append("offset_y=" + job["caption_offset_y"])
-        frame_value = values.get("frame") or values.get("frame_mode")
-        if frame_value is not None:
-            job["frame_mode"] = safe_choice(frame_value, "frame", ("full", "framed"))
-            changed.append("frame=" + job["frame_mode"])
-        broll_fit = values.get("broll_fit") or values.get("broll_fit_mode")
-        if broll_fit is not None:
-            job["broll_fit_mode"] = safe_choice(broll_fit, "broll_fit", ("cover", "contain", "blur-contain"))
-            changed.append("broll_fit=" + job["broll_fit_mode"])
-        if "header" in values:
-            job["frame_header_text"] = values["header"]
-            changed.append("header=" + job["frame_header_text"])
-        if "top_preset" in values:
-            job["frame_top_preset"] = safe_caption_style(values["top_preset"])
-            changed.append("top_preset=" + job["frame_top_preset"])
-        if "bottom_preset" in values:
-            job["frame_bottom_preset"] = safe_caption_style(values["bottom_preset"])
-            changed.append("bottom_preset=" + job["frame_bottom_preset"])
-        if "top_pct" in values:
-            job["frame_top_pct"] = positive_number(values["top_pct"], "top_pct")
-            changed.append("top_pct=" + job["frame_top_pct"])
-        if "bottom_pct" in values:
-            job["frame_bottom_pct"] = positive_number(values["bottom_pct"], "bottom_pct")
-            changed.append("bottom_pct=" + job["frame_bottom_pct"])
-        if "channel" in values:
-            job["frame_bottom_channel_name"] = values["channel"]
-            changed.append("channel=" + job["frame_bottom_channel_name"])
-        if "voice" in values:
-            job["tts_voice"] = values["voice"].upper()
-            changed.append("voice=" + job["tts_voice"])
-        pace_value = values.get("pace") or values.get("speech_pace")
-        if pace_value is not None:
-            pace, _ = speech_pace_profile(pace_value)
-            job["speech_pace"] = pace
-            changed.append("pace=" + pace)
-        duration_value = values.get("duration") or values.get("target_duration_sec")
-        if duration_value is not None:
-            job["target_duration_sec"] = positive_int(duration_value, "duration")
-            changed.append("duration=" + job["target_duration_sec"])
-        web_val = values.get("web") or values.get("web_research")
-        if web_val is not None:
-            job["web_research"] = web_val.lower() not in ("off", "0", "false", "no")
-            changed.append("web=" + ("on" if job["web_research"] else "off"))
-        case_val = values.get("case") or values.get("case_research")
-        if case_val is not None:
-            job["case_research"] = case_val.lower() not in ("off", "0", "false", "no")
-            changed.append("case=" + ("on" if job["case_research"] else "off"))
-        script_model_val = values.get("script_model")
-        if script_model_val is not None:
-            job["claude_script_model"] = resolve_model_alias(script_model_val)
-            changed.append("script_model=" + job["claude_script_model"])
-        research_model_val = values.get("research_model")
-        if research_model_val is not None:
-            job["claude_research_model"] = resolve_model_alias(research_model_val)
-            changed.append("research_model=" + job["claude_research_model"])
-        strategy_model_val = values.get("strategy_model")
-        if strategy_model_val is not None:
-            job["claude_strategy_model"] = resolve_model_alias(strategy_model_val)
-            changed.append("strategy_model=" + job["claude_strategy_model"])
-        query_model_val = values.get("query_model")
-        if query_model_val is not None:
-            job["claude_query_model"] = resolve_model_alias(query_model_val)
-            changed.append("query_model=" + job["claude_query_model"])
-    except ValueError as exc:
-        send_message(chat_id, "설정 오류: " + str(exc))
-        return
+    for setting_id, saved in validated_values:
+        job[CONFIG_SETTINGS[setting_id]["job_key"]] = saved
+        changed.append(f"{setting_id}={_display_setting_value(saved)}")
 
     if changed:
         send_message(chat_id,
@@ -1412,7 +1532,66 @@ def handle_callback(state, callback):
         send_message(chat_id, busy_message(job))
         return
     try:
-        if data.startswith("approve:"):
+        if data == "cfg:root":
+            send_config_menu(chat_id, job)
+        elif data == "cfg:all":
+            send_action_message(chat_id, config_summary(job), [[button("← 설정 상자", "cfg:root")]])
+        elif data == "cfg:reset":
+            send_action_message(
+                chat_id,
+                "저장된 설정 override를 모두 초기화할까요? 환경 설정 파일은 변경하지 않습니다.",
+                [[button("초기화", "cfg:reset_confirm"), button("취소", "cfg:root")]],
+            )
+        elif data == "cfg:reset_confirm":
+            for key in _PRESERVED_KEYS:
+                job.pop(key, None)
+            job.pop("config_edit_key", None)
+            send_config_menu(chat_id, job, "전체 override를 초기화했습니다.")
+        elif data.startswith("cfg:cat:"):
+            category_id = data.split(":", 2)[2]
+            if category_id not in {category[0] for category in CONFIG_CATEGORIES}:
+                raise ValueError("알 수 없는 설정 카테고리입니다.")
+            send_config_category(chat_id, job, category_id)
+        elif data.startswith("cfg:item:"):
+            setting_id = data.split(":", 2)[2]
+            if setting_id not in CONFIG_SETTINGS:
+                raise ValueError("알 수 없는 설정 항목입니다.")
+            send_config_detail(chat_id, job, setting_id)
+        elif data.startswith("cfg:edit:"):
+            setting_id = data.split(":", 2)[2]
+            if setting_id not in CONFIG_SETTINGS:
+                raise ValueError("알 수 없는 설정 항목입니다.")
+            begin_config_edit(chat_id, job, setting_id)
+        elif data.startswith("cfg:pick:"):
+            _, _, setting_id, choice_index_text = data.split(":", 3)
+            if setting_id not in CONFIG_SETTINGS:
+                raise ValueError("알 수 없는 설정 항목입니다.")
+            choices = CONFIG_SETTINGS[setting_id].get("choices", ())
+            choice_index = int(choice_index_text)
+            if choice_index < 0 or choice_index >= len(choices):
+                raise ValueError("선택할 수 없는 설정값입니다.")
+            saved = _set_config_value(job, setting_id, choices[choice_index][1])
+            job.pop("config_edit_key", None)
+            send_config_detail(
+                chat_id,
+                job,
+                setting_id,
+                f"저장했습니다: {CONFIG_SETTINGS[setting_id]['label']}={_display_setting_value(saved)}",
+            )
+        elif data.startswith("cfg:keep:"):
+            setting_id = data.split(":", 2)[2]
+            if setting_id not in CONFIG_SETTINGS:
+                raise ValueError("알 수 없는 설정 항목입니다.")
+            job.pop("config_edit_key", None)
+            send_config_category(chat_id, job, CONFIG_SETTINGS[setting_id]["category"], "현재값을 유지했습니다.")
+        elif data.startswith("cfg:default:"):
+            setting_id = data.split(":", 2)[2]
+            if setting_id not in CONFIG_SETTINGS:
+                raise ValueError("알 수 없는 설정 항목입니다.")
+            job.pop(CONFIG_SETTINGS[setting_id]["job_key"], None)
+            job.pop("config_edit_key", None)
+            send_config_detail(chat_id, job, setting_id, "override를 해제하고 기본값을 사용합니다.")
+        elif data.startswith("approve:"):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
@@ -1477,6 +1656,10 @@ def handle_callback(state, callback):
             start_background_task(state, chat_id, job, f"{target} 재생성", lambda: handle_rerun(chat_id, job, "/rerun " + target))
     except Exception as exc:
         send_message(chat_id, f"오류: {exc}")
+    finally:
+        # Inline buttons mutate the per-chat job directly.  Keep those
+        # changes durable just like the /set command path.
+        save_state(state)
 
 def go_back_to_stage(chat_id, job, target_stage):
     job_id = job.get("job_id")
@@ -1580,7 +1763,8 @@ def handle_status(chat_id, job):
 def command_specs():
     return [
         ("run", "승인형 파이프라인 시작"),
-        ("set", "실행 전 렌더/음성/웹/사례검색 설정 저장 (/set font_size=62 web=off case=off)"),
+        ("set", "카테고리별 설정 메뉴 열기"),
+        ("set_all", "현재 전체 설정 한 번에 보기"),
         ("run_auto", "승인 없이 전체 파이프라인 실행"),
         ("trend", "트렌드 후보 조회"),
         ("pick", "트렌드 후보 선택"),
@@ -1616,10 +1800,11 @@ def help_text():
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
         "/render font_size=62 margin_v=60",
-        "/set font_size=62 margin_v=60 margin_h=12  <- 실행 전 설정",
-    "/set web=off case=off voice=F2 pace=normal duration=60  <- 검색/사례검색/목소리/속도/길이 설정",
-    "/set  <- 현재 설정 확인  |  /set reset  <- 초기화",
-    "/run_auto 오메가3가 정말 뇌에 좋을까?",
+        "/set  <- 카테고리별 설정 메뉴",
+        "/set_all  <- 현재 전체 설정 보기",
+        "/set font_size=62 web=off  <- 기존 빠른 입력도 지원",
+        "/set reset  <- 저장한 override 전체 초기화",
+        "/run_auto 오메가3가 정말 뇌에 좋을까?",
         "/status",
         "/cancel",
         "",
@@ -1641,6 +1826,12 @@ def handle_message(state, message):
         if is_busy(job) and not text.startswith("/status"):
             send_message(chat_id, busy_message(job))
             return
+        if apply_config_edit_message(chat_id, job, message):
+            # A plain message is the second half of a button-initiated edit.
+            # Persist it before returning so a bot restart cannot lose the
+            # value that was just entered.
+            save_state(state)
+            return
         if apply_title_edit_message(chat_id, job, message):
             return
         if apply_edit_message(chat_id, job, message):
@@ -1649,6 +1840,10 @@ def handle_message(state, message):
             send_message(chat_id, help_text())
         elif text.startswith("/start") or text.startswith("/help"):
             send_message(chat_id, help_text())
+        elif text.startswith("/set_all") or text.startswith("/setall"):
+            job.pop("config_edit_key", None)
+            send_message(chat_id, config_summary(job))
+            save_state(state)
         elif text.startswith("/set"):
             handle_set(chat_id, job, text)
             save_state(state)

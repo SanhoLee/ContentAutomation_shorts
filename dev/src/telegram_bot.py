@@ -27,6 +27,46 @@ DEFAULT_CAPTION_STYLE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_STYLE", os.envi
 DEFAULT_CAPTION_MARGIN_H = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_H", "10")
 DEFAULT_WEB_RESEARCH = os.environ.get("TELEGRAM_DEFAULT_WEB_RESEARCH", "true").lower() not in ("off", "0", "false", "no")
 
+# ── Claude 모델 alias: /set 명령에서 짧은 이름으로 모델 지정 가능하게 함.
+#    테이블에 없는 값은 alias가 아닌 것으로 간주하고 입력값을 모델 ID로 그대로 사용한다.
+MODEL_ALIASES = {
+    # Haiku 계열 (경량/저비용)
+    "haiku": "claude-haiku-4-5-20251001",
+    "haiku4.5": "claude-haiku-4-5-20251001",
+    "haiku-4-5": "claude-haiku-4-5-20251001",
+
+    # Sonnet 계열 (기본 스크립트 작업용)
+    "sonnet": "claude-sonnet-4-6",
+    "sonnet4.6": "claude-sonnet-4-6",
+    "sonnet-4-6": "claude-sonnet-4-6",
+    "sonnet5": "claude-sonnet-5",
+    "sonnet-5": "claude-sonnet-5",
+    "sonnet4.5": "claude-sonnet-4-5-20250929",
+    "sonnet-4-5": "claude-sonnet-4-5-20250929",
+
+    # Opus 계열 (상위 모델, 필요 시 최고품질 실험용)
+    "opus": "claude-opus-4-8",
+    "opus4.8": "claude-opus-4-8",
+    "opus-4-8": "claude-opus-4-8",
+    "opus4.7": "claude-opus-4-7",
+    "opus-4-7": "claude-opus-4-7",
+    "opus4.6": "claude-opus-4-6",
+    "opus-4-6": "claude-opus-4-6",
+    "opus4.5": "claude-opus-4-5-20251101",
+    "opus-4-5": "claude-opus-4-5-20251101",
+
+    # Fable 계열 (최신 최고성능 라인업 실험용)
+    "fable": "claude-fable-5",
+    "fable5": "claude-fable-5",
+    "fable-5": "claude-fable-5",
+}
+
+
+def resolve_model_alias(value):
+    """alias면 정식 모델 ID로 치환하고, alias가 아니면 입력값을 그대로 모델 ID로 사용한다."""
+    raw = str(value).strip()
+    return MODEL_ALIASES.get(raw.lower(), raw)
+
 
 def env_value(key, default="-"):
     value = os.environ.get(key)
@@ -539,12 +579,18 @@ def display_config_value(value):
     return str(value) if value not in (None, "") else "config"
 
 
+def display_effective_model(job, job_key, value):
+    source = "override" if job_key in job else "env/default"
+    return f"{value} ({source})"
+
+
 # ── 설정 키: /set 으로 저장, run_auto/run 실행 시 자동 적용
 _PRESERVED_KEYS = {
     "caption_font_size", "caption_margin_v", "caption_margin_h", "caption_style", "caption_offset_x", "caption_offset_y",
     "frame_mode", "broll_fit_mode", "frame_header_text", "frame_top_preset", "frame_bottom_preset",
     "frame_top_pct", "frame_bottom_pct", "frame_bottom_channel_name", "tts_voice", "web_research", "case_research",
     "speech_pace", "target_duration_sec",
+    "claude_script_model", "claude_research_model", "claude_strategy_model", "claude_query_model",
 }
 
 
@@ -594,6 +640,14 @@ def _build_extra_env(job):
         env["ATEMPO"] = str(profile["atempo"])
     if "target_duration_sec" in job:
         env["TARGET_DURATION_SEC"] = str(job["target_duration_sec"])
+    if "claude_script_model" in job:
+        env["CLAUDE_SCRIPT_MODEL"] = str(job["claude_script_model"])
+    if "claude_research_model" in job:
+        env["CLAUDE_RESEARCH_MODEL"] = str(job["claude_research_model"])
+    if "claude_strategy_model" in job:
+        env["CLAUDE_STRATEGY_MODEL"] = str(job["claude_strategy_model"])
+    if "claude_query_model" in job:
+        env["CLAUDE_QUERY_MODEL"] = str(job["claude_query_model"])
     return env
 
 
@@ -647,12 +701,22 @@ def config_summary(job):
         env_case = os.environ.get("ENABLE_CASE_RESEARCH")
         effective_case = True if env_case in (None, "") else env_case.lower() not in ("off", "0", "false", "no")
 
+    claude_model = env_value("CLAUDE_MODEL", "claude-sonnet-4-6")
+    effective_script_model = job.get("claude_script_model", os.environ.get("CLAUDE_SCRIPT_MODEL") or claude_model)
+    effective_research_model = job.get("claude_research_model", os.environ.get("CLAUDE_RESEARCH_MODEL") or effective_script_model)
+    effective_strategy_model = job.get("claude_strategy_model", env_value("CLAUDE_STRATEGY_MODEL", "claude-haiku-4-5-20251001"))
+    effective_query_model = job.get("claude_query_model", os.environ.get("CLAUDE_QUERY_MODEL") or effective_strategy_model)
+
     saved = _preserve_settings(job)
     saved_text = json.dumps(saved, ensure_ascii=False, indent=2) if saved else "없음"
     return "\n".join([
         "현재 주요 컨피그:",
         f"ENV_NAME={env_value('ENV_NAME')}",
-        f"CLAUDE_MODEL={env_value('CLAUDE_MODEL', 'claude-sonnet-4-6')}",
+        f"CLAUDE_MODEL={claude_model} (fallback base)",
+        f"CLAUDE_SCRIPT_MODEL={display_effective_model(job, 'claude_script_model', effective_script_model)}",
+        f"CLAUDE_RESEARCH_MODEL={display_effective_model(job, 'claude_research_model', effective_research_model)}",
+        f"CLAUDE_STRATEGY_MODEL={display_effective_model(job, 'claude_strategy_model', effective_strategy_model)}",
+        f"CLAUDE_QUERY_MODEL={display_effective_model(job, 'claude_query_model', effective_query_model)}",
         f"MAX_TOKENS={env_value('MAX_TOKENS', '2600')}",
         f"CLAUDE_HTTP_RETRIES={env_value('CLAUDE_HTTP_RETRIES', '1')}",
         f"PUBMED_RETMAX={env_value('PUBMED_RETMAX', '3')}",
@@ -692,7 +756,10 @@ def handle_set(chat_id, job, text):
             "  /set top_pct=14 bottom_pct=18 top_preset=brain50 channel=브레인피프티",
             "  /set voice=F2 web=off case=off",
             "  /set pace=fast duration=60",
-            "  /set reset  <- 초기화",
+            "  /set script_model=haiku research_model=haiku strategy_model=haiku query_model=haiku",
+            "  /set script_model=sonnet  <- 스크립트만 되돌리기",
+            f"  사용 가능 alias: {', '.join(sorted(set(MODEL_ALIASES.keys())))}",
+            "  /set reset  <- 초기화 (모델 포함 전체 override 해제)",
         ]
         send_message(chat_id, "\n".join(lines))
         return
@@ -766,6 +833,22 @@ def handle_set(chat_id, job, text):
         if case_val is not None:
             job["case_research"] = case_val.lower() not in ("off", "0", "false", "no")
             changed.append("case=" + ("on" if job["case_research"] else "off"))
+        script_model_val = values.get("script_model")
+        if script_model_val is not None:
+            job["claude_script_model"] = resolve_model_alias(script_model_val)
+            changed.append("script_model=" + job["claude_script_model"])
+        research_model_val = values.get("research_model")
+        if research_model_val is not None:
+            job["claude_research_model"] = resolve_model_alias(research_model_val)
+            changed.append("research_model=" + job["claude_research_model"])
+        strategy_model_val = values.get("strategy_model")
+        if strategy_model_val is not None:
+            job["claude_strategy_model"] = resolve_model_alias(strategy_model_val)
+            changed.append("strategy_model=" + job["claude_strategy_model"])
+        query_model_val = values.get("query_model")
+        if query_model_val is not None:
+            job["claude_query_model"] = resolve_model_alias(query_model_val)
+            changed.append("query_model=" + job["claude_query_model"])
     except ValueError as exc:
         send_message(chat_id, "설정 오류: " + str(exc))
         return

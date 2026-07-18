@@ -126,9 +126,52 @@ source ./config.sh
 
 - 상단 여백 프리셋: `frame_top_styles.yaml`
 - 하단 여백 프리셋: `frame_bottom_styles.yaml`
-- 높이는 최종 1080×1920 캔버스 전체 높이 기준 비율(`height_pct`)로 지정하고, 렌더 직전에 px로 계산됩니다.
-- 상단은 대제목(`title`)과 소제목(`subtitle`) 2줄을 지원하며, 여백 내 상하 5px 마진 기준으로 자동 크기를 계산합니다.
-- 하단은 상단 끝에서 10px 떨어진 위치에 채널명(`channel_name`, 기본 `브레인피프티`)을 표시합니다.
+- 헤더 높이는 최종 1080×1920 캔버스 기준 `height_pct`로 고정합니다.
+- `top_margin_pct`는 헤더 높이 대비 주제목 위 여백입니다. 값을 키우면 헤더 높이는 바뀌지 않고 주제목과 부제목이 함께 아래로 이동합니다.
+- `bottom_margin_pct`와 `side_margin_pct`는 각각 아래쪽과 좌우 안전 여백입니다.
+- 주제목과 부제목은 `title_color`/`subtitle_color`, `title_size`/`subtitle_size`로 독립 조정합니다.
+- 설정한 여백 안에 글자가 들어가지 않으면 프레임 밖으로 잘리지 않도록 글자 크기만 자동 축소됩니다.
+- 하단은 `channel`, `font`, `font_style`, `color`, `size`로 채널명 모양을 조정합니다.
+- 하단의 `top_margin_px`는 하단 프레임 시작점에서 채널명까지의 거리입니다. 헤더의 비율 여백과 달리 작은 픽셀 단위 미세 조정값입니다.
+
+```yaml
+# frame_top_styles.yaml
+height_pct: 25.5       # 헤더 전체 높이
+background: black
+font: Noto Sans CJK KR
+font_style: Bold
+
+title_color: orange    # 주제목
+title_size: 150
+subtitle_color: white  # 부제목
+subtitle_size: 130
+
+top_margin_pct: 30     # 값을 키우면 제목 묶음이 아래로 이동
+bottom_margin_pct: 2
+side_margin_pct: 4
+```
+
+프리셋을 수정하지 않고 한 번만 시험하려면 `--top-margin-pct`를 사용합니다.
+
+```bash
+./sh/2_render.sh --frame-mode framed --top-margin-pct 33 10
+```
+
+하단 프레임도 같은 이름 체계를 사용합니다. `font_style: Bold`를 지정하면 실제 FFmpeg 폰트 매칭에도 Bold 스타일이 전달됩니다.
+
+```yaml
+# frame_bottom_styles.yaml
+height_pct: 23.0
+background: black
+channel: "브레인피프티"
+font: Noto Sans CJK KR
+font_style: Bold
+color: white
+size: 56
+top_margin_px: 20
+```
+
+`minimal` 프리셋처럼 `channel: ""`로 지정하면 채널명을 렌더링하지 않습니다. 상단과 하단의 `background`는 서로 독립적으로 적용됩니다.
 
 ### 스크립트 생성과 상단 프레임 헤더 자동 연계
 
@@ -172,7 +215,7 @@ source ./config.sh
 ./sh/2_render.sh --frame-mode framed --top-title "브레인피프티" --top-subtitle "오늘의 뇌건강" --bottom-channel-name "브레인피프티" --style center-yellow 10
 ```
 
-프레임 텍스트는 FFmpeg `drawtext`로 렌더링되며, 캡션 ASS 프리셋의 `FontName`과 별도입니다. 한글이 `□□□`처럼 보이면 서버에 해당 한글 폰트가 없거나 `drawtext`가 기본 라틴 폰트를 선택한 상태입니다. `fc-match "Noto Sans CJK KR"`로 실제 매칭되는 폰트를 확인하고, 필요하면 상단/하단 프리셋의 `font_file` 또는 `channel_font_file`에 `.ttf/.otf` 파일을 직접 지정하세요.
+프레임 텍스트는 FFmpeg `drawtext`로 렌더링되며, 캡션 ASS 프리셋의 `FontName`과 별도입니다. 한글이 `□□□`처럼 보이면 서버에 해당 한글 폰트가 없거나 `drawtext`가 기본 라틴 폰트를 선택한 상태입니다. `fc-match "Noto Sans CJK KR"`로 실제 매칭되는 폰트를 확인하고, 필요하면 상단/하단 프리셋의 `font_file`에 `.ttf/.otf` 파일을 직접 지정하세요.
 
 `run.sh` 전체 실행에서는 주제를 렌더 길이로 오인하지 않도록 `2_render.sh`에 별도 인자를 전달하지 않습니다.
 

@@ -11,26 +11,23 @@ CANVAS_H = 1920
 
 ALIASES = {
     "height_percent": "height_pct",
-    "height_pct": "height_pct",
-    "bg_color": "bg_color",
-    "title": "title",
-    "subtitle": "subtitle",
-    "font_name": "font_name",
-    "font_file": "font_file",
-    "font_color": "font_color",
-    "font_style": "font_style",
-    "font_size": "font_size",
-    "title_font_size": "title_font_size",
-    "subtitle_font_size": "subtitle_font_size",
-    "margin_y": "margin_y",
-    "margin_top_pct": "margin_top_pct",
-    "margin_x_pct": "margin_x_pct",
-    "channel_name": "channel_name",
-    "channel_font_name": "channel_font_name",
-    "channel_font_file": "channel_font_file",
-    "channel_font_color": "channel_font_color",
-    "channel_font_size": "channel_font_size",
-    "channel_margin_top": "channel_margin_top",
+    "bg_color": "background",
+    "font_name": "font",
+    "font_color": "color",
+    "title_font_color": "title_color",
+    "subtitle_font_color": "subtitle_color",
+    "font_size": "size",
+    "title_font_size": "title_size",
+    "subtitle_font_size": "subtitle_size",
+    "margin_y": "bottom_margin_px",
+    "margin_top_pct": "top_margin_pct",
+    "margin_x_pct": "side_margin_pct",
+    "channel_name": "channel",
+    "channel_font_name": "font",
+    "channel_font_file": "font_file",
+    "channel_font_color": "color",
+    "channel_font_size": "size",
+    "channel_margin_top": "top_margin_px",
 }
 
 
@@ -76,6 +73,10 @@ def resolve(presets: dict, name: str, seen=None) -> dict:
     raw = dict(presets[name])
     parent = raw.pop("extends", None)
     result = resolve(presets, parent, seen + [name]) if parent else {}
+    if "color" in raw:
+        for key in ("title_color", "subtitle_color"):
+            if key not in raw:
+                result.pop(key, None)
     result.update(raw)
     return result
 
@@ -91,6 +92,10 @@ def int_value(data, key, default):
     if value in (None, ""):
         value = default
     return int(round(float(value)))
+
+
+def normalize_keys(data):
+    return {ALIASES.get(key, key): value for key, value in data.items()}
 
 
 def text_width_units(text):
@@ -165,17 +170,21 @@ def fit_top_font_sizes(
 
 
 def resolve_top(data):
+    data = normalize_keys(data)
     h = int_value(data, "height_px", None) if data.get("height_px") else int_from_pct(data.get("height_pct", "13.5"), CANVAS_H)
-    margin = int_value(data, "margin_y", 5)
-    margin_top = int_from_pct(data.get("margin_top_pct", "0"), h)
-    margin_x = int_from_pct(data.get("margin_x_pct", "0"), CANVAS_W)
-    usable = max(h - margin * 2, 1)
-    requested_size = int_value(data, "font_size", usable * 0.36)
-    requested_title_size = int_value(data, "title_font_size", requested_size)
-    requested_subtitle_size = int_value(data, "subtitle_font_size", requested_size)
+    margin_top = max(int_from_pct(data.get("top_margin_pct", "0"), h), 0)
+    if data.get("bottom_margin_pct") not in (None, ""):
+        margin_bottom = max(int_from_pct(data["bottom_margin_pct"], h), 0)
+    else:
+        margin_bottom = max(int_value(data, "bottom_margin_px", 5), 0)
+    margin_x = int_from_pct(data.get("side_margin_pct", "0"), CANVAS_W)
+    usable = max(h - margin_top - margin_bottom, 1)
+    requested_size = int_value(data, "size", usable * 0.36)
+    requested_title_size = int_value(data, "title_size", requested_size)
+    requested_subtitle_size = int_value(data, "subtitle_size", requested_size)
     max_text_w = max(CANVAS_W - margin_x * 2, 1)
-    bottom_anchor_y = max(h - margin - margin_top, margin + 1)
-    max_text_h = max(bottom_anchor_y - margin, 1)
+    bottom_anchor_y = max(h - margin_bottom, margin_top + 1)
+    max_text_h = usable
     subtitle, subtitle_line_count = wrap_subtitle_if_needed(
         data.get("subtitle", ""),
         requested_subtitle_size,
@@ -193,45 +202,49 @@ def resolve_top(data):
     gap = top_line_gap(title_size, subtitle_size)
     subtitle_h = subtitle_block_height(subtitle_size, subtitle_line_count)
     total_text_h = title_size + subtitle_h + gap
-    title_y = max(bottom_anchor_y - total_text_h, margin)
+    title_y = margin_top
     subtitle_y = title_y + title_size + gap
     x_expr = f"{margin_x}+((w-{margin_x * 2})-text_w)/2" if margin_x else "(w-text_w)/2"
     return {
         "height_px": h,
-        "bg_color": data.get("bg_color", "black"),
+        "background": data.get("background", "black"),
         "title": data.get("title", ""),
         "subtitle": subtitle,
         "subtitle_line_count": subtitle_line_count,
-        "font_name": data.get("font_name", "Noto Sans CJK KR"),
+        "font": data.get("font", "Noto Sans CJK KR"),
         "font_file": data.get("font_file", ""),
-        "font_color": data.get("font_color", "white"),
+        "title_color": data.get("title_color", data.get("color", "white")),
+        "subtitle_color": data.get("subtitle_color", data.get("color", "white")),
         "font_style": data.get("font_style", ""),
-        "title_font_size": title_size,
-        "subtitle_font_size": subtitle_size,
+        "title_size": title_size,
+        "subtitle_size": subtitle_size,
         "title_y": title_y,
         "subtitle_y": subtitle_y,
         "text_x": x_expr,
-        "margin_y": margin,
-        "margin_top_pct": data.get("margin_top_pct", "0"),
-        "margin_x_pct": data.get("margin_x_pct", "0"),
-        "margin_top_px": margin_top,
-        "margin_x_px": margin_x,
+        "top_margin_pct": data.get("top_margin_pct", "0"),
+        "bottom_margin_pct": data.get("bottom_margin_pct", ""),
+        "side_margin_pct": data.get("side_margin_pct", "0"),
+        "top_margin_px": margin_top,
+        "bottom_margin_px": margin_bottom,
+        "side_margin_px": margin_x,
         "bottom_anchor_y": bottom_anchor_y,
     }
 
 
 def resolve_bottom(data):
+    data = normalize_keys(data)
     h = int_value(data, "height_px", None) if data.get("height_px") else int_from_pct(data.get("height_pct", "18.75"), CANVAS_H)
-    margin_top = int_value(data, "channel_margin_top", 10)
+    margin_top = int_value(data, "top_margin_px", 10)
     return {
         "height_px": h,
-        "bg_color": data.get("bg_color", "black"),
-        "channel_name": data.get("channel_name", "브레인피프티"),
-        "channel_font_name": data.get("channel_font_name", data.get("font_name", "Noto Sans CJK KR")),
-        "channel_font_file": data.get("channel_font_file", data.get("font_file", "")),
-        "channel_font_color": data.get("channel_font_color", data.get("font_color", "white")),
-        "channel_font_size": int_value(data, "channel_font_size", min(max(h * 0.16, 42), 72)),
-        "channel_margin_top": margin_top,
+        "background": data.get("background", "black"),
+        "channel": data.get("channel", "브레인피프티"),
+        "font": data.get("font", "Noto Sans CJK KR"),
+        "font_file": data.get("font_file", ""),
+        "font_style": data.get("font_style", ""),
+        "color": data.get("color", "white"),
+        "size": int_value(data, "size", min(max(h * 0.16, 42), 72)),
+        "top_margin_px": margin_top,
         "channel_y": CANVAS_H - h + margin_top,
     }
 
@@ -265,7 +278,7 @@ def main():
     if args.top_subtitle is not None:
         top["subtitle"] = args.top_subtitle
     if args.channel_name is not None:
-        bottom["channel_name"] = args.channel_name
+        bottom["channel"] = args.channel_name
     if args.top_height_pct is not None:
         top["height_pct"] = args.top_height_pct
         top.pop("height_px", None)
@@ -273,9 +286,9 @@ def main():
         bottom["height_pct"] = args.bottom_height_pct
         bottom.pop("height_px", None)
     if args.top_margin_pct is not None:
-        top["margin_top_pct"] = args.top_margin_pct
+        top["top_margin_pct"] = args.top_margin_pct
     if args.top_margin_x_pct is not None:
-        top["margin_x_pct"] = args.top_margin_x_pct
+        top["side_margin_pct"] = args.top_margin_x_pct
 
     top_resolved = resolve_top(top)
     bottom_resolved = resolve_bottom(bottom)
@@ -286,24 +299,27 @@ def main():
     flat = {
         "FRAME_TOP_H": top_resolved["height_px"],
         "FRAME_BOTTOM_H": bottom_resolved["height_px"],
-        "FRAME_BG_COLOR": top_resolved["bg_color"],
+        "FRAME_TOP_BACKGROUND": top_resolved["background"],
+        "FRAME_BOTTOM_BACKGROUND": bottom_resolved["background"],
         "FRAME_TOP_TITLE": top_resolved["title"],
         "FRAME_TOP_SUBTITLE": top_resolved["subtitle"],
-        "FRAME_TOP_FONT_NAME": top_resolved["font_name"],
+        "FRAME_TOP_FONT_NAME": top_resolved["font"],
         "FRAME_TOP_FONT_FILE": top_resolved["font_file"],
-        "FRAME_TOP_FONT_COLOR": top_resolved["font_color"],
+        "FRAME_TOP_TITLE_COLOR": top_resolved["title_color"],
+        "FRAME_TOP_SUBTITLE_COLOR": top_resolved["subtitle_color"],
         "FRAME_TOP_FONT_STYLE": top_resolved["font_style"],
-        "FRAME_TOP_TITLE_FONT_SIZE": top_resolved["title_font_size"],
-        "FRAME_TOP_SUBTITLE_FONT_SIZE": top_resolved["subtitle_font_size"],
+        "FRAME_TOP_TITLE_SIZE": top_resolved["title_size"],
+        "FRAME_TOP_SUBTITLE_SIZE": top_resolved["subtitle_size"],
         "FRAME_TOP_TITLE_Y": top_resolved["title_y"],
         "FRAME_TOP_SUBTITLE_Y": top_resolved["subtitle_y"],
         "FRAME_TOP_TEXT_X": top_resolved["text_x"],
-        "FRAME_BOTTOM_CHANNEL_NAME": bottom_resolved["channel_name"],
-        "FRAME_BOTTOM_FONT_NAME": bottom_resolved["channel_font_name"],
-        "FRAME_BOTTOM_FONT_FILE": bottom_resolved["channel_font_file"],
-        "FRAME_BOTTOM_FONT_COLOR": bottom_resolved["channel_font_color"],
-        "FRAME_BOTTOM_FONT_SIZE": bottom_resolved["channel_font_size"],
-        "FRAME_BOTTOM_CHANNEL_Y": bottom_resolved["channel_y"],
+        "FRAME_BOTTOM_CHANNEL": bottom_resolved["channel"],
+        "FRAME_BOTTOM_FONT": bottom_resolved["font"],
+        "FRAME_BOTTOM_FONT_FILE": bottom_resolved["font_file"],
+        "FRAME_BOTTOM_FONT_STYLE": bottom_resolved["font_style"],
+        "FRAME_BOTTOM_COLOR": bottom_resolved["color"],
+        "FRAME_BOTTOM_SIZE": bottom_resolved["size"],
+        "FRAME_BOTTOM_Y": bottom_resolved["channel_y"],
         "FRAME_CONTENT_H": content_h,
         "FRAME_JSON": json.dumps({"top": top_resolved, "bottom": bottom_resolved, "content_h": content_h}, ensure_ascii=False),
     }

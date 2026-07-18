@@ -1,7 +1,7 @@
 # Top safe-zone frame presets. height_pct is based on the full 1080x1920 canvas height.
 presets:
   default:
-    height_pct: 25.5
+    height_pct: 30
     background: black
     title: ""
     subtitle: ""
@@ -13,7 +13,7 @@ presets:
     subtitle_size: 130
     # 주제목 위 여백. 값을 키우면 헤더 높이는 그대로이고 제목만 아래로 내려갑니다.
     top_margin_pct: 30
-    bottom_margin_pct: 2
+    bottom_margin_pct: 5
     side_margin_pct: 4
 
   brain50:

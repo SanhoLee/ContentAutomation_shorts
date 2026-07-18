@@ -28,14 +28,15 @@ prod_frame_style = load_module("frame_header_prod_style", REPO_ROOT / "prod" / "
 PROD_TOP_STYLE = {
     "height_pct": "13.5",
     "title": "기억경고",
-    "font_name": "Noto Sans CJK KR",
+    "font": "Noto Sans CJK KR",
     "font_style": "Bold",
-    "font_color": "white",
-    "title_font_size": "84",
-    "subtitle_font_size": "48",
-    "margin_y": "60",
-    "margin_top_pct": "0",
-    "margin_x_pct": "6",
+    "title_color": "white",
+    "title_size": "84",
+    "subtitle_color": "white",
+    "subtitle_size": "48",
+    "top_margin_pct": "23",
+    "bottom_margin_pct": "23",
+    "side_margin_pct": "6",
 }
 
 
@@ -64,12 +65,51 @@ class FrameHeaderNormalizationTests(unittest.TestCase):
 
 
 class FrameHeaderWrappingTests(unittest.TestCase):
+    def test_top_margin_moves_header_text_down_without_changing_header_height(self):
+        data = {
+            **PROD_TOP_STYLE,
+            "subtitle": "오늘의 뇌건강",
+            "title_size": "60",
+            "subtitle_size": "40",
+            "top_margin_pct": "10",
+            "bottom_margin_pct": "5",
+        }
+        base = dev_frame_style.resolve_top(data)
+        moved_down = dev_frame_style.resolve_top({**data, "top_margin_pct": "20"})
+        self.assertEqual(base["height_px"], moved_down["height_px"])
+        self.assertEqual(base["title_size"], moved_down["title_size"])
+        self.assertEqual(base["subtitle_size"], moved_down["subtitle_size"])
+        self.assertEqual(moved_down["top_margin_px"], 52)
+        self.assertEqual(moved_down["title_y"], base["title_y"] + 26)
+        self.assertEqual(moved_down["subtitle_y"], base["subtitle_y"] + 26)
+
+    def test_title_and_subtitle_colors_can_be_configured_independently(self):
+        resolved = dev_frame_style.resolve_top(
+            {
+                **PROD_TOP_STYLE,
+                "title_color": "yellow",
+                "subtitle_color": "white",
+            }
+        )
+        self.assertEqual(resolved["title_color"], "yellow")
+        self.assertEqual(resolved["subtitle_color"], "white")
+
+    def test_legacy_font_color_remains_the_fallback_for_both_lines(self):
+        data = {
+            key: value
+            for key, value in PROD_TOP_STYLE.items()
+            if key not in ("title_color", "subtitle_color")
+        }
+        resolved = dev_frame_style.resolve_top({**data, "font_color": "yellow"})
+        self.assertEqual(resolved["title_color"], "yellow")
+        self.assertEqual(resolved["subtitle_color"], "yellow")
+
     def test_normal_subtitle_remains_a_single_unchanged_line(self):
         data = {**PROD_TOP_STYLE, "subtitle": "오늘의 뇌건강"}
         resolved = dev_frame_style.resolve_top(data)
         self.assertEqual(resolved["subtitle"], "오늘의 뇌건강")
         self.assertEqual(resolved["subtitle_line_count"], 1)
-        self.assertEqual((resolved["title_font_size"], resolved["subtitle_font_size"]), (72, 41))
+        self.assertEqual((resolved["title_size"], resolved["subtitle_size"]), (72, 41))
 
     def test_long_subtitle_wraps_once_at_a_word_boundary(self):
         subtitle = "잊힌 게 아니라 뇌가 한창 자라던 시기였기 때문입니다"
@@ -83,7 +123,7 @@ class FrameHeaderWrappingTests(unittest.TestCase):
         data = {**PROD_TOP_STYLE, "subtitle": subtitle}
         resolved = dev_frame_style.resolve_top(data)
         subtitle_bottom = resolved["subtitle_y"] + dev_frame_style.subtitle_block_height(
-            resolved["subtitle_font_size"], resolved["subtitle_line_count"]
+            resolved["subtitle_size"], resolved["subtitle_line_count"]
         )
         self.assertEqual(resolved["subtitle_line_count"], 2)
         self.assertLessEqual(subtitle_bottom, resolved["bottom_anchor_y"])
@@ -96,8 +136,8 @@ class FrameHeaderWrappingTests(unittest.TestCase):
         self.assertEqual(resolved["subtitle"], subtitle)
         self.assertEqual(resolved["subtitle_line_count"], 1)
         self.assertLessEqual(
-            dev_frame_style.max_line_width_units(resolved["subtitle"]) * resolved["subtitle_font_size"],
-            dev_frame_style.CANVAS_W - resolved["margin_x_px"] * 2,
+            dev_frame_style.max_line_width_units(resolved["subtitle"]) * resolved["subtitle_size"],
+            dev_frame_style.CANVAS_W - resolved["side_margin_px"] * 2,
         )
 
     def test_dev_and_prod_resolve_identically(self):
@@ -106,6 +146,35 @@ class FrameHeaderWrappingTests(unittest.TestCase):
             "subtitle": "잊힌 게 아니라 뇌가 한창 자라던 시기였기 때문입니다",
         }
         self.assertEqual(dev_frame_style.resolve_top(data), prod_frame_style.resolve_top(data))
+
+
+class FrameBottomStyleTests(unittest.TestCase):
+    def test_dev_bottom_uses_simple_keys_and_bold_style(self):
+        presets = dev_frame_style.load_presets(REPO_ROOT / "dev" / "frame_bottom_styles.yaml")
+        resolved = dev_frame_style.resolve_bottom(dev_frame_style.resolve(presets, "default"))
+        self.assertEqual(resolved["height_px"], 442)
+        self.assertEqual(resolved["background"], "black")
+        self.assertEqual(resolved["channel"], "브레인피프티")
+        self.assertEqual(resolved["font"], "Noto Sans CJK KR")
+        self.assertEqual(resolved["font_style"], "Bold")
+        self.assertEqual(resolved["color"], "white")
+        self.assertEqual(resolved["size"], 56)
+        self.assertEqual(resolved["top_margin_px"], 20)
+        self.assertEqual(resolved["channel_y"], 1498)
+
+    def test_minimal_bottom_hides_the_channel(self):
+        presets = dev_frame_style.load_presets(REPO_ROOT / "dev" / "frame_bottom_styles.yaml")
+        resolved = dev_frame_style.resolve_bottom(dev_frame_style.resolve(presets, "minimal"))
+        self.assertEqual(resolved["channel"], "")
+        self.assertEqual(resolved["font_style"], "Bold")
+
+    def test_prod_bottom_preserves_its_existing_height_and_position(self):
+        presets = prod_frame_style.load_presets(REPO_ROOT / "prod" / "frame_bottom_styles.yaml")
+        resolved = prod_frame_style.resolve_bottom(prod_frame_style.resolve(presets, "default"))
+        self.assertEqual(resolved["height_px"], 360)
+        self.assertEqual(resolved["top_margin_px"], 10)
+        self.assertEqual(resolved["channel_y"], 1570)
+        self.assertEqual(resolved["font_style"], "Bold")
 
 
 if __name__ == "__main__":

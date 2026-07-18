@@ -450,6 +450,7 @@ python 0_script.py "다음 주제"
 | `FRAME_MODE` | `full` | 최종 렌더 프레임 모드. `full`은 기존 전체 화면, `framed`는 상하 검정 safe-zone 프레임 |
 | `FRAME_TOP_STYLE_FILE` / `FRAME_BOTTOM_STYLE_FILE` | `{dev|prod}/frame_*_styles.yaml` | 상단/하단 safe-zone 프레임 프리셋 파일 |
 | `FRAME_TOP_PRESET` / `FRAME_BOTTOM_PRESET` | `default` | 상단/하단 safe-zone 프레임 프리셋 이름 |
+| `FRAME_TOP_MARGIN_PCT` | 프리셋 값 | 헤더 높이를 유지하면서 주제목 위 여백을 조정하는 비율. 값이 클수록 제목 묶음이 아래로 이동 |
 | `BROLL_FIT_MODE` | `cover` | 프레임 내부 B-roll 배치 방식. `cover`, `contain`, `blur-contain` |
 | `TELEGRAM_DEFAULT_CAPTION_FONT_SIZE` | `62` | 텔레그램 실행 기본 자막 폰트 크기 |
 | `TELEGRAM_DEFAULT_CAPTION_MARGIN_V` | `60` | 텔레그램 실행 기본 자막 수직 위치 |
@@ -459,6 +460,8 @@ python 0_script.py "다음 주제"
 ### 프레임 헤더 자동 생성
 
 스크립트 생성 단계(`0_script.py`)는 상단 검정 safe-zone에 들어갈 2줄 훅 `frame_header`를 함께 생성합니다. 이 문구는 원본 주제어를 그대로 쓰지 않고, 전체 대본 맥락을 압축한 대제목/소제목으로 설계됩니다. 생성된 값은 `data/work/{JOB_ID}/video_meta.json`과 `data/work/{JOB_ID}/frame_header.json`에 저장되며, `2_render.sh --frame-mode framed` 실행 시 `--top-title`/`--top-subtitle`이 없으면 자동으로 적용됩니다.
+
+상단 프레임은 `title_*`/`subtitle_*`, 하단 프레임은 `channel`, `font`, `font_style`, `color`, `size`, `top_margin_px`처럼 역할이 바로 드러나는 키를 사용합니다. 하단 `font_style: Bold`는 렌더 시 실제 Bold 폰트 선택에 반영됩니다. 자세한 예시는 `docs/usage/environment.md`를 참고하세요.
 
 ```bash
 # 자동 생성된 frame_header를 상단 프레임에 적용

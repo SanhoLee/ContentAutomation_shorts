@@ -24,12 +24,11 @@ FRAME_TOP_PRESET="${FRAME_TOP_PRESET:-default}"
 FRAME_BOTTOM_PRESET="${FRAME_BOTTOM_PRESET:-default}"
 FRAME_TOP_PCT="${FRAME_TOP_PCT:-}"
 FRAME_BOTTOM_PCT="${FRAME_BOTTOM_PCT:-}"
-FRAME_BG_COLOR="${FRAME_BG_COLOR:-black}"
 FRAME_TOP_TITLE="${FRAME_TOP_TITLE:-}"
 FRAME_TOP_SUBTITLE="${FRAME_TOP_SUBTITLE:-}"
 FRAME_TOP_MARGIN_PCT="${FRAME_TOP_MARGIN_PCT:-}"
 FRAME_TOP_MARGIN_X_PCT="${FRAME_TOP_MARGIN_X_PCT:-}"
-FRAME_BOTTOM_CHANNEL_NAME="${FRAME_BOTTOM_CHANNEL_NAME:-브레인피프티}"
+FRAME_BOTTOM_CHANNEL_NAME="${FRAME_BOTTOM_CHANNEL_NAME:-}"
 BROLL_FIT_MODE="${BROLL_FIT_MODE:-cover}"
 
 while [ "$#" -gt 0 ]; do
@@ -219,7 +218,6 @@ PY
         --top-preset "$FRAME_TOP_PRESET"
         --bottom-file "$FRAME_BOTTOM_STYLE_FILE"
         --bottom-preset "$FRAME_BOTTOM_PRESET"
-        --channel-name "$FRAME_BOTTOM_CHANNEL_NAME"
     )
     if [ -n "$FRAME_TOP_TITLE" ]; then
         FRAME_ARGS+=(--top-title "$FRAME_TOP_TITLE")
@@ -239,11 +237,15 @@ PY
     if [ -n "$FRAME_BOTTOM_PCT" ]; then
         FRAME_ARGS+=(--bottom-height-pct "$FRAME_BOTTOM_PCT")
     fi
+    if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then
+        FRAME_ARGS+=(--channel-name "$FRAME_BOTTOM_CHANNEL_NAME")
+    fi
     eval "$(python3 "$SRC_DIR/frame_style.py" "${FRAME_ARGS[@]}" --shell)"
 
     CONTENT_W=1080
     CONTENT_H="$FRAME_CONTENT_H"
     CONTENT_Y="$FRAME_TOP_H"
+    BOTTOM_Y=$((CONTENT_Y + CONTENT_H))
     if [ "$CONTENT_H" -le 0 ]; then
         echo "오류: FRAME_TOP_H + FRAME_BOTTOM_H가 1920보다 작아야 합니다."
         exit 1
@@ -254,7 +256,7 @@ PY
             BROLL_FILTER="[0:v]scale=${CONTENT_W}:${CONTENT_H}:force_original_aspect_ratio=increase,crop=${CONTENT_W}:${CONTENT_H},fps=30[broll];"
             ;;
         contain)
-            BROLL_FILTER="[0:v]scale=${CONTENT_W}:${CONTENT_H}:force_original_aspect_ratio=decrease,pad=${CONTENT_W}:${CONTENT_H}:(ow-iw)/2:(oh-ih)/2:${FRAME_BG_COLOR},fps=30[broll];"
+            BROLL_FILTER="[0:v]scale=${CONTENT_W}:${CONTENT_H}:force_original_aspect_ratio=decrease,pad=${CONTENT_W}:${CONTENT_H}:(ow-iw)/2:(oh-ih)/2:${FRAME_TOP_BACKGROUND},fps=30[broll];"
             ;;
         blur-contain)
             BROLL_FILTER="[0:v]split=2[bga][fga];[bga]scale=${CONTENT_W}:${CONTENT_H}:force_original_aspect_ratio=increase,crop=${CONTENT_W}:${CONTENT_H},boxblur=20:1,fps=30[bg];[fga]scale=${CONTENT_W}:${CONTENT_H}:force_original_aspect_ratio=decrease,pad=${CONTENT_W}:${CONTENT_H}:(ow-iw)/2:(oh-ih)/2:color=black,fps=30[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[broll];"
@@ -265,26 +267,26 @@ PY
             ;;
     esac
 
-    FILTER_COMPLEX="color=c=${FRAME_BG_COLOR}:s=1080x1920:d=${DURATION}[base];${BROLL_FILTER}[base][broll]overlay=0:${CONTENT_Y}[framed]"
+    FILTER_COMPLEX="color=c=${FRAME_TOP_BACKGROUND}:s=1080x1920:d=${DURATION}[base];[base]drawbox=x=0:y=${BOTTOM_Y}:w=1080:h=${FRAME_BOTTOM_H}:color=${FRAME_BOTTOM_BACKGROUND}:t=fill[frame_base];${BROLL_FILTER}[frame_base][broll]overlay=0:${CONTENT_Y}[framed]"
     TOP_FONT_OPTION="$(drawtext_font_option "$FRAME_TOP_FONT_NAME" "$FRAME_TOP_FONT_FILE" "$FRAME_TOP_FONT_STYLE")"
-    BOTTOM_FONT_OPTION="$(drawtext_font_option "$FRAME_BOTTOM_FONT_NAME" "$FRAME_BOTTOM_FONT_FILE")"
+    BOTTOM_FONT_OPTION="$(drawtext_font_option "$FRAME_BOTTOM_FONT" "$FRAME_BOTTOM_FONT_FILE" "$FRAME_BOTTOM_FONT_STYLE")"
     CURRENT_LABEL="[framed]"
     if [ -n "$FRAME_TOP_TITLE" ]; then
         TOP_TITLE_FILE="$WORK_DIR/frame_top_title.txt"
         printf "%s" "$FRAME_TOP_TITLE" > "$TOP_TITLE_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_TITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_FONT_COLOR}:fontsize=${FRAME_TOP_TITLE_FONT_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_TITLE_Y}[with_top_title]"
+        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_TITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_TITLE_COLOR}:fontsize=${FRAME_TOP_TITLE_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_TITLE_Y}[with_top_title]"
         CURRENT_LABEL="[with_top_title]"
     fi
     if [ -n "$FRAME_TOP_SUBTITLE" ]; then
         TOP_SUBTITLE_FILE="$WORK_DIR/frame_top_subtitle.txt"
         printf "%s" "$FRAME_TOP_SUBTITLE" > "$TOP_SUBTITLE_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_SUBTITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_FONT_COLOR}:fontsize=${FRAME_TOP_SUBTITLE_FONT_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_SUBTITLE_Y}[with_top_subtitle]"
+        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_SUBTITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_SUBTITLE_COLOR}:fontsize=${FRAME_TOP_SUBTITLE_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_SUBTITLE_Y}[with_top_subtitle]"
         CURRENT_LABEL="[with_top_subtitle]"
     fi
-    if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then
+    if [ -n "$FRAME_BOTTOM_CHANNEL" ]; then
         BOTTOM_CHANNEL_FILE="$WORK_DIR/frame_bottom_channel.txt"
-        printf "%s" "$FRAME_BOTTOM_CHANNEL_NAME" > "$BOTTOM_CHANNEL_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${BOTTOM_CHANNEL_FILE}${BOTTOM_FONT_OPTION}:fontcolor=${FRAME_BOTTOM_FONT_COLOR}:fontsize=${FRAME_BOTTOM_FONT_SIZE}:x=(w-text_w)/2:y=${FRAME_BOTTOM_CHANNEL_Y}[with_bottom_channel]"
+        printf "%s" "$FRAME_BOTTOM_CHANNEL" > "$BOTTOM_CHANNEL_FILE"
+        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${BOTTOM_CHANNEL_FILE}${BOTTOM_FONT_OPTION}:fontcolor=${FRAME_BOTTOM_COLOR}:fontsize=${FRAME_BOTTOM_SIZE}:x=(w-text_w)/2:y=${FRAME_BOTTOM_Y}[with_bottom_channel]"
         CURRENT_LABEL="[with_bottom_channel]"
     fi
     if [ "$CURRENT_LABEL" != "[framed]" ]; then

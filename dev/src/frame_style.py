@@ -22,6 +22,12 @@ ALIASES = {
     "margin_y": "bottom_margin_px",
     "margin_top_pct": "top_margin_pct",
     "margin_x_pct": "side_margin_pct",
+    "channel_name": "channel",
+    "channel_font_name": "font",
+    "channel_font_file": "font_file",
+    "channel_font_color": "color",
+    "channel_font_size": "size",
+    "channel_margin_top": "top_margin_px",
 }
 
 
@@ -228,16 +234,17 @@ def resolve_top(data):
 def resolve_bottom(data):
     data = normalize_keys(data)
     h = int_value(data, "height_px", None) if data.get("height_px") else int_from_pct(data.get("height_pct", "18.75"), CANVAS_H)
-    margin_top = int_value(data, "channel_margin_top", 10)
+    margin_top = int_value(data, "top_margin_px", 10)
     return {
         "height_px": h,
-        "bg_color": data.get("background", "black"),
-        "channel_name": data.get("channel_name", "브레인피프티"),
-        "channel_font_name": data.get("channel_font_name", data.get("font", "Noto Sans CJK KR")),
-        "channel_font_file": data.get("channel_font_file", data.get("font_file", "")),
-        "channel_font_color": data.get("channel_font_color", data.get("color", "white")),
-        "channel_font_size": int_value(data, "channel_font_size", min(max(h * 0.16, 42), 72)),
-        "channel_margin_top": margin_top,
+        "background": data.get("background", "black"),
+        "channel": data.get("channel", "브레인피프티"),
+        "font": data.get("font", "Noto Sans CJK KR"),
+        "font_file": data.get("font_file", ""),
+        "font_style": data.get("font_style", ""),
+        "color": data.get("color", "white"),
+        "size": int_value(data, "size", min(max(h * 0.16, 42), 72)),
+        "top_margin_px": margin_top,
         "channel_y": CANVAS_H - h + margin_top,
     }
 
@@ -271,7 +278,7 @@ def main():
     if args.top_subtitle is not None:
         top["subtitle"] = args.top_subtitle
     if args.channel_name is not None:
-        bottom["channel_name"] = args.channel_name
+        bottom["channel"] = args.channel_name
     if args.top_height_pct is not None:
         top["height_pct"] = args.top_height_pct
         top.pop("height_px", None)
@@ -292,7 +299,8 @@ def main():
     flat = {
         "FRAME_TOP_H": top_resolved["height_px"],
         "FRAME_BOTTOM_H": bottom_resolved["height_px"],
-        "FRAME_BG_COLOR": top_resolved["background"],
+        "FRAME_TOP_BACKGROUND": top_resolved["background"],
+        "FRAME_BOTTOM_BACKGROUND": bottom_resolved["background"],
         "FRAME_TOP_TITLE": top_resolved["title"],
         "FRAME_TOP_SUBTITLE": top_resolved["subtitle"],
         "FRAME_TOP_FONT_NAME": top_resolved["font"],
@@ -305,12 +313,13 @@ def main():
         "FRAME_TOP_TITLE_Y": top_resolved["title_y"],
         "FRAME_TOP_SUBTITLE_Y": top_resolved["subtitle_y"],
         "FRAME_TOP_TEXT_X": top_resolved["text_x"],
-        "FRAME_BOTTOM_CHANNEL_NAME": bottom_resolved["channel_name"],
-        "FRAME_BOTTOM_FONT_NAME": bottom_resolved["channel_font_name"],
-        "FRAME_BOTTOM_FONT_FILE": bottom_resolved["channel_font_file"],
-        "FRAME_BOTTOM_FONT_COLOR": bottom_resolved["channel_font_color"],
-        "FRAME_BOTTOM_FONT_SIZE": bottom_resolved["channel_font_size"],
-        "FRAME_BOTTOM_CHANNEL_Y": bottom_resolved["channel_y"],
+        "FRAME_BOTTOM_CHANNEL": bottom_resolved["channel"],
+        "FRAME_BOTTOM_FONT": bottom_resolved["font"],
+        "FRAME_BOTTOM_FONT_FILE": bottom_resolved["font_file"],
+        "FRAME_BOTTOM_FONT_STYLE": bottom_resolved["font_style"],
+        "FRAME_BOTTOM_COLOR": bottom_resolved["color"],
+        "FRAME_BOTTOM_SIZE": bottom_resolved["size"],
+        "FRAME_BOTTOM_Y": bottom_resolved["channel_y"],
         "FRAME_CONTENT_H": content_h,
         "FRAME_JSON": json.dumps({"top": top_resolved, "bottom": bottom_resolved, "content_h": content_h}, ensure_ascii=False),
     }

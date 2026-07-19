@@ -1,6 +1,6 @@
 # Slack Bot Workflow
 
-Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, `/trend`, `/pick`, `/approve`, `/rerun`, `/render`, `/set`, `/status`, `/cancel`)을 실행합니다. 실제 단계 전환과 산출물 처리는 각 환경의 `telegram_bot.py`를 공유하고, `slack_bot.py`는 Slack 전송·버튼·파일 업로드만 담당합니다.
+Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, `/trend`, `/pick`, `/approve`, `/rerun`, `/render`, `/set`, `/status`, `/cancel`)을 실행합니다. 각 환경의 `slack_bot.py`에 단계 전환·산출물 처리·Slack 전송 로직이 모두 포함되어 Telegram 프로세스·토큰·소스코드 없이 독립 실행됩니다.
 
 ## Slack에서 추가된 동작
 

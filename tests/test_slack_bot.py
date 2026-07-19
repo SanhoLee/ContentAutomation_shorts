@@ -189,8 +189,19 @@ class SlackBotTests(unittest.TestCase):
     def test_block_buttons_keep_workflow_callback_data(self):
         blocks = slack_bot._blocks("승인", [[{"text": "승인", "callback_data": "approve:await_script_approval"}]])
         button = blocks[1]["elements"][0]
-        self.assertEqual(button["action_id"], "workflow_action")
+        self.assertEqual(button["action_id"], "workflow_action_0_0")
         self.assertEqual(button["value"], "approve:await_script_approval")
+
+    def test_every_button_action_id_is_unique_in_a_home_view(self):
+        for module in (slack_bot, prod_slack_bot):
+            blocks = module._blocks(module.home_screen_text({}), module.home_button_rows())
+            action_ids = [
+                element["action_id"]
+                for block in blocks if block.get("type") == "actions"
+                for element in block["elements"]
+            ]
+            self.assertEqual(len(action_ids), len(set(action_ids)))
+            self.assertTrue(all(module.re.fullmatch(r"workflow_action_\d+_\d+", action_id) for action_id in action_ids))
 
     def test_event_conversion_preserves_text_and_file(self):
         event = {"channel": "C1", "text": "/run 테스트", "files": [{"url_private": "https://example.invalid/a"}]}

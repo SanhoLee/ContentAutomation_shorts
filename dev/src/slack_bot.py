@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import signal
 import shlex
 import subprocess
@@ -80,10 +81,10 @@ def send_file_or_path(channel_id, path, caption=None, as_video=False):
 
 def _blocks(text, rows):
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text[:MAX_BLOCK_TEXT]}}]
-    for row in rows:
+    for row_index, row in enumerate(rows):
         elements = [
-            {"type": "button", "action_id": "workflow_action", "text": {"type": "plain_text", "text": item["text"][:75]}, "value": item["callback_data"]}
-            for item in row
+            {"type": "button", "action_id": f"workflow_action_{row_index}_{element_index}", "text": {"type": "plain_text", "text": item["text"][:75]}, "value": item["callback_data"]}
+            for element_index, item in enumerate(row)
         ]
         if elements:
             blocks.append({"type": "actions", "elements": elements})
@@ -2270,7 +2271,7 @@ def main():
     app = App(token=BOT_TOKEN)
     app.event("message")(_dispatch_message)
     app.event("app_home_opened")(_dispatch_home_opened)
-    app.action("workflow_action")(lambda ack, body: (ack(), _dispatch_action(body)))
+    app.action(re.compile(r"^workflow_action_\d+_\d+$"))(lambda ack, body: (ack(), _dispatch_action(body)))
     for name, _ in command_specs():
         app.command(f"/{name}")(_dispatch_command)
     try:

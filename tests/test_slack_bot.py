@@ -15,6 +15,177 @@ PROD_SPEC.loader.exec_module(prod_slack_bot)
 
 
 class SlackBotTests(unittest.TestCase):
+    def test_home_screen_exposes_safe_content_entry_points(self):
+        expected = {
+            "start_content:review", "start_content:auto", "start_content:trend",
+            "show_status", "open_settings", "show_home",
+        }
+        for module in (slack_bot, prod_slack_bot):
+            callbacks = {
+                item["callback_data"]
+                for row in module.home_button_rows()
+                for item in row
+            }
+            self.assertTrue(expected.issubset(callbacks))
+            text = module.home_screen_text({})
+            self.assertIn("Brain50 콘텐츠 제작 홈", text)
+            self.assertIn("주제를 입력하고 실행 전 확인", text)
+
+    def test_start_button_waits_for_topic_and_confirmation(self):
+        for module in (slack_bot, prod_slack_bot):
+            state = {"chats": {"C1": {}}}
+            screens, started = [], []
+            old_send_action = module.send_action_message
+            old_start_background = module.start_background_task
+            old_save_state = module.save_state
+            try:
+                module.send_action_message = lambda channel_id, text, rows: screens.append((text, rows))
+                module.start_background_task = lambda *args: started.append(args)
+                module.save_state = lambda state: None
+
+                callback = {"message": {"chat": {"id": "C1"}}, "data": "start_content:review"}
+                module.handle_callback(state, callback)
+                job = state["chats"]["C1"]
+                self.assertEqual(job["start_draft"], {"mode": "review"})
+                self.assertFalse(started)
+                self.assertIn("1/2 주제 입력", screens[-1][0])
+
+                module.handle_message(state, {"chat": {"id": "C1"}, "text": "오메가3와 기억력"})
+                self.assertEqual(job["start_draft"]["topic"], "오메가3와 기억력")
+                self.assertFalse(started)
+                self.assertIn("2/2 실행 확인", screens[-1][0])
+                confirm_callbacks = {item["callback_data"] for row in screens[-1][1] for item in row}
+                self.assertIn("start_confirm:review", confirm_callbacks)
+                self.assertIn("start_reenter_topic", confirm_callbacks)
+                self.assertIn("start_cancel", confirm_callbacks)
+
+                callback["data"] = "start_confirm:review"
+                module.handle_callback(state, callback)
+                self.assertTrue(started)
+            finally:
+                module.send_action_message = old_send_action
+                module.start_background_task = old_start_background
+                module.save_state = old_save_state
+
+    def test_run_slash_commands_also_require_confirmation(self):
+        commands = {
+            "/run 주제 A": "review",
+            "/run_auto 주제 B": "auto",
+            "/trend 주제 C": "trend",
+        }
+        for module in (slack_bot, prod_slack_bot):
+            for text, mode in commands.items():
+                state = {"chats": {"C1": {}}}
+                screens, started = [], []
+                old_send_action = module.send_action_message
+                old_start_background = module.start_background_task
+                try:
+                    module.send_action_message = lambda channel_id, body, rows: screens.append(body)
+                    module.start_background_task = lambda *args: started.append(args)
+                    module.handle_message(state, {"chat": {"id": "C1"}, "text": text})
+                finally:
+                    module.send_action_message = old_send_action
+                    module.start_background_task = old_start_background
+                draft = state["chats"]["C1"]["start_draft"]
+                self.assertEqual(draft["mode"], mode)
+                self.assertTrue(draft["topic"].startswith("주제"))
+                self.assertFalse(started)
+                self.assertIn("2/2 실행 확인", screens[-1])
+
+    def test_start_flow_back_preserves_existing_job(self):
+        for module in (slack_bot, prod_slack_bot):
+            job = {"job_id": "existing", "topic": "기존 주제", "stage": "await_caption_approval"}
+            state = {"chats": {"C1": job}}
+            homes = []
+            old_send_action = module.send_action_message
+            old_send_home = module.send_home_screen
+            old_save_state = module.save_state
+            try:
+                module.send_action_message = lambda *args, **kwargs: None
+                module.send_home_screen = lambda *args, **kwargs: homes.append(args)
+                module.save_state = lambda state: None
+                module.handle_callback(state, {"message": {"chat": {"id": "C1"}}, "data": "start_content:auto"})
+                module.handle_callback(state, {"message": {"chat": {"id": "C1"}}, "data": "start_cancel"})
+            finally:
+                module.send_action_message = old_send_action
+                module.send_home_screen = old_send_home
+                module.save_state = old_save_state
+            self.assertNotIn("start_draft", job)
+            self.assertEqual(job["job_id"], "existing")
+            self.assertEqual(job["stage"], "await_caption_approval")
+            self.assertTrue(homes)
+
+    def test_confirmed_start_uses_the_selected_mode(self):
+        for module in (slack_bot, prod_slack_bot):
+            calls = []
+            old_start_background = module.start_background_task
+            old_handle_run = module.handle_run
+            old_handle_run_auto = module.handle_run_auto
+            try:
+                module.start_background_task = lambda state, chat_id, job, label, target: target()
+                module.handle_run = lambda chat_id, job, text, trend=False: calls.append(("trend" if trend else "review", text))
+                module.handle_run_auto = lambda chat_id, job, text: calls.append(("auto", text))
+                for mode in ("review", "auto", "trend"):
+                    job = {"start_draft": {"mode": mode, "topic": "테스트 주제"}}
+                    module.confirm_start_flow({"chats": {"C1": job}}, "C1", job, mode)
+            finally:
+                module.start_background_task = old_start_background
+                module.handle_run = old_handle_run
+                module.handle_run_auto = old_handle_run_auto
+            self.assertEqual(calls, [
+                ("review", "/run 테스트 주제"),
+                ("auto", "/run_auto 테스트 주제"),
+                ("trend", "/trend 테스트 주제"),
+            ])
+
+    def test_startup_posts_a_top_level_home_when_channel_is_configured(self):
+        for module in (slack_bot, prod_slack_bot):
+            old_channel, old_state = module.ALLOWED_CHANNEL_ID, module._STATE
+            old_send_home, old_save_state = module.send_home_screen, module.save_state
+            calls = []
+            try:
+                module.ALLOWED_CHANNEL_ID = "C1"
+                module._STATE = {"chats": {"C1": {"slack_thread_ts": "old-thread"}}}
+                module.send_home_screen = lambda *args, **kwargs: calls.append((args, kwargs))
+                module.save_state = lambda state: None
+                self.assertTrue(module.announce_startup_home())
+            finally:
+                module.ALLOWED_CHANNEL_ID = old_channel
+                module._STATE = old_state
+                module.send_home_screen = old_send_home
+                module.save_state = old_save_state
+            self.assertTrue(calls)
+            self.assertTrue(calls[0][1]["top_level"])
+
+    def test_app_home_publishes_the_same_entry_points(self):
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            def views_publish(self, **kwargs):
+                self.calls.append(kwargs)
+
+        for module in (slack_bot, prod_slack_bot):
+            old_channel, old_state = module.ALLOWED_CHANNEL_ID, module._STATE
+            client = FakeClient()
+            try:
+                module.ALLOWED_CHANNEL_ID = "C1"
+                module._STATE = {"chats": {"C1": {}}}
+                module.publish_home("U1", client=client)
+            finally:
+                module.ALLOWED_CHANNEL_ID = old_channel
+                module._STATE = old_state
+            self.assertEqual(client.calls[0]["user_id"], "U1")
+            view = client.calls[0]["view"]
+            self.assertEqual(view["type"], "home")
+            values = {
+                element["value"]
+                for block in view["blocks"] if block.get("type") == "actions"
+                for element in block["elements"]
+            }
+            self.assertIn("start_content:review", values)
+            self.assertIn("start_content:auto", values)
+
     def test_block_buttons_keep_workflow_callback_data(self):
         blocks = slack_bot._blocks("승인", [[{"text": "승인", "callback_data": "approve:await_script_approval"}]])
         button = blocks[1]["elements"][0]

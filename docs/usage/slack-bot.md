@@ -4,6 +4,10 @@ Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, 
 
 ## Slack에서 추가된 동작
 
+- 봇 서비스가 시작되면 `SLACK_CHANNEL_ID` 채널에 최상위 웰컴 홈을 게시합니다. `단계별 검수 제작`, `자동 제작`, `트렌드에서 시작`, `현재 작업`, `제작 설정` 버튼으로 진입할 수 있습니다.
+- 제작 버튼은 즉시 파이프라인을 실행하지 않습니다. `제작 방식 선택 → 주제 입력 → 실행 확인`의 2단계 입력을 완료하고 `실행하기`를 눌러야 실제 작업이 시작됩니다.
+- `/run 주제`, `/run_auto 주제`, `/trend 주제`로 직접 입력해도 즉시 실행되지 않고 같은 실행 확인 화면을 거칩니다. 주제 없이 명령하면 주제 입력 단계가 열립니다.
+- 주제 입력과 실행 확인 화면에는 `← 홈으로`와 `시작 취소`가 있습니다. 기존 작업을 보던 중 새 제작 버튼을 잘못 눌러도 홈으로 돌아가면 기존 작업 상태가 유지됩니다.
 - 모든 작업 메시지와 산출물은 명령을 보낸 메시지의 **스레드**에 모입니다. 여러 작업이 섞이는 것을 줄일 수 있습니다.
 - `SLACK_ALLOWED_USER_ID`를 설정하면 채널뿐 아니라 사용자도 제한할 수 있습니다. Telegram의 chat ID 제한보다 세밀합니다.
 - Slack 파일 업로드로 `script.txt`, `subs.srt`, `video_meta.json` 수정본을 스레드에 올릴 수 있습니다.
@@ -34,15 +38,16 @@ Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, 
 3. Bot Token Scopes에 다음을 추가합니다.
    - `chat:write`, `files:write`, `files:read`
    - 명령을 읽을 채널 유형에 맞는 `channels:history`, `groups:history`, `im:history`, `mpim:history`
-4. Event Subscriptions에서 Socket Mode 이벤트로 `message.channels`(비공개 채널이면 `message.groups`)를 구독합니다. 봇을 대상 채널에 초대합니다.
+4. Event Subscriptions에서 Socket Mode 이벤트로 `message.channels`(비공개 채널이면 `message.groups`)와 `app_home_opened`를 구독합니다. 봇을 대상 채널에 초대합니다.
 5. Slash Commands에 아래 명령을 등록하고 Request URL은 Slack이 Socket Mode로 수신하도록 설정합니다: `/run`, `/run_auto`, `/trend`, `/pick`, `/approve`, `/edit`, `/retry`, `/proceed`, `/rerun`, `/render`, `/set`, `/set_all`, `/app_status`, `/cancel`, `/help`. Slack 예약 명령인 `/status`는 등록하지 않습니다.
+6. Slack 앱 설정의 **App Home**에서 Home Tab을 활성화합니다. 앱을 직접 열었을 때도 채널 웰컴 카드와 동일한 제작 홈을 사용할 수 있습니다.
 
 `secrets.sh`에 토큰과 접근 범위를 넣습니다. 값은 저장소에 커밋하지 않습니다.
 
 ```bash
 export SLACK_BOT_TOKEN="xoxb-..."
 export SLACK_APP_TOKEN="xapp-..."
-export SLACK_CHANNEL_ID="C0123456789"       # 권장: 작업 채널 1개로 제한
+export SLACK_CHANNEL_ID="C0123456789"       # 웰컴 홈·App Home 작업 대상 채널로 필수
 export SLACK_ALLOWED_USER_ID="U0123456789"  # 선택: 특정 운영자만 허용
 ```
 

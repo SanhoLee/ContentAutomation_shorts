@@ -149,6 +149,134 @@ def button(text, callback_data):
     return {"text": text, "callback_data": callback_data}
 
 
+START_MODES = {
+    "review": {"label": "단계별로 검수하며 제작", "command": "/run"},
+    "auto": {"label": "처음부터 끝까지 자동 제작", "command": "/run_auto"},
+    "trend": {"label": "트렌드 후보에서 시작", "command": "/trend"},
+}
+
+
+def home_button_rows():
+    return [
+        [button("단계별 검수 제작", "start_content:review"), button("자동 제작", "start_content:auto")],
+        [button("트렌드에서 시작", "start_content:trend")],
+        [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("⌂ 홈 새로고침", "show_home")],
+    ]
+
+
+def home_screen_text(job=None, notice=None):
+    job = job or {}
+    lines = [
+        "*Brain50 콘텐츠 제작 홈*",
+        "① 제작 방식을 선택하세요.",
+        "② 주제를 입력하고 실행 전 확인하세요.",
+        "③ 필요한 단계만 검수한 뒤 원하는 지점에서 끝까지 자동 처리할 수 있습니다.",
+    ]
+    if notice:
+        lines.extend(("", notice))
+    draft = job.get("start_draft") or {}
+    if draft:
+        mode = START_MODES.get(draft.get("mode"), {})
+        state = "실행 확인 대기" if draft.get("topic") else "주제 입력 대기"
+        lines.extend(("", f"시작 준비: {mode.get('label', draft.get('mode'))} · {state}"))
+    elif job.get("job_id") or job.get("stage"):
+        lines.extend(("", workflow_status_text(job)))
+    else:
+        lines.extend(("", "현재 진행 중인 작업이 없습니다."))
+    return "\n".join(lines)
+
+
+def send_home_screen(chat_id, notice=None, top_level=False):
+    job = _STATE.get("chats", {}).get(str(chat_id), {})
+    text = home_screen_text(job, notice)
+    rows = home_button_rows()
+    if not top_level:
+        return send_action_message(chat_id, text, rows)
+    return _slack_client().chat_postMessage(
+        channel=str(chat_id),
+        text=text[:MAX_BLOCK_TEXT],
+        blocks=_blocks(text, rows),
+    )
+
+
+def publish_home(user_id, client=None):
+    channel_id = ALLOWED_CHANNEL_ID
+    job = _STATE.get("chats", {}).get(str(channel_id), {}) if channel_id else {}
+    text = home_screen_text(job, None if channel_id else "채널 작업을 시작하려면 SLACK_CHANNEL_ID를 설정하세요.")
+    client = client or _slack_client()
+    return client.views_publish(user_id=user_id, view={"type": "home", "blocks": _blocks(text, home_button_rows())})
+
+
+def prompt_start_topic(chat_id, job):
+    draft = job.get("start_draft") or {}
+    mode = START_MODES.get(draft.get("mode"))
+    if not mode:
+        send_home_screen(chat_id, "시작 정보를 찾지 못했습니다. 제작 방식을 다시 선택하세요.")
+        return
+    send_action_message(
+        chat_id,
+        f"*새 콘텐츠 · 1/2 주제 입력*\n선택: {mode['label']}\n\n제작할 주제를 다음 메시지로 입력하세요. 아직 실행되지 않습니다.",
+        [[button("← 홈으로", "start_cancel"), button("시작 취소", "start_cancel")]],
+    )
+
+
+def begin_start_flow(chat_id, job, mode, topic=None):
+    if mode not in START_MODES:
+        raise ValueError(f"알 수 없는 제작 방식입니다: {mode}")
+    job["start_draft"] = {"mode": mode}
+    if str(topic or "").strip():
+        capture_start_topic(chat_id, job, topic)
+    else:
+        prompt_start_topic(chat_id, job)
+
+
+def capture_start_topic(chat_id, job, topic):
+    draft = job.get("start_draft") or {}
+    mode = START_MODES.get(draft.get("mode"))
+    topic = str(topic or "").strip()
+    if not mode:
+        send_home_screen(chat_id, "제작 방식을 다시 선택하세요.")
+        return
+    if not topic:
+        prompt_start_topic(chat_id, job)
+        return
+    draft["topic"] = topic
+    job["start_draft"] = draft
+    send_action_message(
+        chat_id,
+        "\n".join([
+            "*새 콘텐츠 · 2/2 실행 확인*",
+            f"방식: {mode['label']}",
+            f"주제: {topic}",
+            "",
+            "아직 실행되지 않았습니다. 이 내용으로 시작할까요?",
+            "기존 작업이 있다면 상태는 새 작업으로 교체되지만 기존 산출물은 보존됩니다.",
+        ]),
+        [[button("실행하기", f"start_confirm:{draft['mode']}"), button("주제 다시 입력", "start_reenter_topic")],
+         [button("← 홈으로", "start_cancel"), button("시작 취소", "start_cancel")]],
+    )
+
+
+def confirm_start_flow(state, chat_id, job, mode):
+    draft = job.get("start_draft") or {}
+    topic = str(draft.get("topic") or "").strip()
+    if draft.get("mode") != mode or mode not in START_MODES or not topic:
+        send_home_screen(chat_id, "시작 정보가 완전하지 않습니다. 제작 방식을 다시 선택하세요.")
+        return
+    job.pop("start_draft", None)
+    command = START_MODES[mode]["command"] + " " + topic
+    if mode == "auto":
+        target = lambda: handle_run_auto(chat_id, job, command)
+        label = "자동 제작"
+    elif mode == "trend":
+        target = lambda: handle_run(chat_id, job, command, trend=True)
+        label = "트렌드 조회"
+    else:
+        target = lambda: handle_run(chat_id, job, command, trend=False)
+        label = "스크립트 생성"
+    start_background_task(state, chat_id, job, label, target)
+
+
 def workflow_status_text(job, detail=None):
     stage = job.get("stage")
     topic = str(job.get("topic") or "").strip()
@@ -208,6 +336,7 @@ def approval_buttons(stage):
     rows.append([
         button("🚀 여기서부터 끝까지", f"auto_finish:{stage}"),
         button("↻ 상태", "show_status"),
+        button("⌂ 홈", "show_home"),
         button("전체 취소", "cancel_all"),
     ])
     return rows
@@ -568,7 +697,7 @@ def send_render_ready(chat_id, job):
             [button("← 이전 단계", "back:await_render_config:await_broll_approval"),
              button("현재 설정으로 렌더 ▶", "approve:await_render_config")],
             [button("🚀 여기서부터 끝까지", "auto_finish:await_render_config"),
-             button("↻ 상태", "show_status"), button("전체 취소", "cancel_all")],
+             button("↻ 상태", "show_status"), button("⌂ 홈", "show_home"), button("전체 취소", "cancel_all")],
         ],
     )
 
@@ -1096,7 +1225,7 @@ def send_title_edit_menu(chat_id, job):
              button("본문 수정", "edit_body:await_script_approval")],
             [button("다음 단계 ▶", "approve:await_script_approval")],
             [button("🚀 여기서부터 끝까지", "auto_finish:await_script_approval"),
-             button("↻ 상태", "show_status"), button("전체 취소", "cancel_all")],
+             button("↻ 상태", "show_status"), button("⌂ 홈", "show_home"), button("전체 취소", "cancel_all")],
         ],
     )
 
@@ -1188,11 +1317,29 @@ def handle_callback(state, callback):
     if not chat_id:
         return
     job = chat_state(state, chat_id)
-    if is_busy(job) and data not in ("cancel_all", "cancel_confirm", "show_status"):
+    if is_busy(job) and data not in ("cancel_all", "cancel_confirm", "show_status", "show_home"):
         send_message(chat_id, busy_message(job))
         return
     try:
-        if data == "show_status":
+        if data in ("show_home", "start_cancel"):
+            job.pop("start_draft", None)
+            send_home_screen(chat_id, "홈으로 돌아왔습니다." if data == "start_cancel" else None)
+        elif data.startswith("start_content:"):
+            begin_start_flow(chat_id, job, data.split(":", 1)[1])
+        elif data == "start_reenter_topic":
+            draft = job.get("start_draft") or {}
+            draft.pop("topic", None)
+            job["start_draft"] = draft
+            prompt_start_topic(chat_id, job)
+        elif data.startswith("start_confirm:"):
+            confirm_start_flow(state, chat_id, job, data.split(":", 1)[1])
+        elif data == "open_settings":
+            send_action_message(
+                chat_id,
+                "현재 제작 설정\n" + json.dumps(_build_extra_env(job), ensure_ascii=False, indent=2),
+                [[button("← 홈으로", "show_home")]],
+            )
+        elif data == "show_status":
             handle_status(chat_id, job)
         elif data == "cancel_all":
             send_action_message(
@@ -1406,8 +1553,8 @@ def handle_render(chat_id, job, text):
 
 
 def handle_status(chat_id, job):
-    if not job:
-        send_message(chat_id, "진행 중인 작업이 없습니다.")
+    if not job or not (job.get("job_id") or job.get("stage") or job.get("busy")):
+        send_home_screen(chat_id, "현재 진행 중인 작업이 없습니다.")
         return
     stage = job.get("stage")
     if stage == "await_render_config" and not is_busy(job):
@@ -1489,6 +1636,9 @@ def handle_message(state, message):
         if is_busy(job) and not (text.startswith("/app_status") or text.startswith("/cancel")):
             send_message(chat_id, busy_message(job))
             return
+        if job.get("start_draft") and text and not text.startswith("/"):
+            capture_start_topic(chat_id, job, text)
+            return
         if job.get("retry_topic_input") and text and not text.startswith("/"):
             job.pop("retry_topic_input", None)
             start_background_task(state, chat_id, job, "새 주제로 스크립트 재생성", lambda: handle_retry(chat_id, job, "/retry " + text))
@@ -1498,21 +1648,21 @@ def handle_message(state, message):
         if apply_edit_message(chat_id, job, message):
             return
         if not text:
-            send_message(chat_id, help_text())
+            send_home_screen(chat_id)
         elif text.startswith("/start") or text.startswith("/help"):
-            send_message(chat_id, help_text())
+            send_home_screen(chat_id)
         elif text.startswith("/set_all") or text.startswith("/setall"):
             send_message(chat_id, json.dumps(_build_extra_env(job), ensure_ascii=False, indent=2))
             save_state(state)
         elif text.startswith("/set"):
             handle_set(chat_id, job, text)
             save_state(state)
-        elif text.startswith("/run_auto "):
-            start_background_task(state, chat_id, job, "자동 실행", lambda: handle_run_auto(chat_id, job, text))
-        elif text.startswith("/run "):
-            start_background_task(state, chat_id, job, "스크립트 생성", lambda: handle_run(chat_id, job, text, trend=False))
-        elif text.startswith("/trend "):
-            start_background_task(state, chat_id, job, "트렌드 조회", lambda: handle_run(chat_id, job, text, trend=True))
+        elif text == "/run_auto" or text.startswith("/run_auto "):
+            begin_start_flow(chat_id, job, "auto", text.partition(" ")[2])
+        elif text == "/run" or text.startswith("/run "):
+            begin_start_flow(chat_id, job, "review", text.partition(" ")[2])
+        elif text == "/trend" or text.startswith("/trend "):
+            begin_start_flow(chat_id, job, "trend", text.partition(" ")[2])
         elif text.startswith("/pick"):
             start_background_task(state, chat_id, job, "스크립트 생성", lambda: handle_pick(chat_id, job, text))
         elif text.startswith("/approve"):
@@ -1567,8 +1717,13 @@ def _dispatch_message(event):
     save_state(_STATE)
 
 
+def _dispatch_home_opened(event, client):
+    if event.get("tab") == "home" and event.get("user"):
+        publish_home(event["user"], client=client)
+
+
 def _dispatch_action(body):
-    channel_id = body.get("channel", {}).get("id")
+    channel_id = body.get("channel", {}).get("id") or ALLOWED_CHANNEL_ID
     user_id = body.get("user", {}).get("id")
     actions = body.get("actions") or []
     if not channel_id or not actions:
@@ -1580,6 +1735,8 @@ def _dispatch_action(body):
     job["slack_thread_ts"] = body.get("message", {}).get("thread_ts") or body.get("message", {}).get("ts")
     handle_callback(_STATE, {"message": {"chat": {"id": channel_id}}, "data": actions[0].get("value", "")})
     save_state(_STATE)
+    if body.get("view", {}).get("type") == "home" and user_id:
+        publish_home(user_id)
 
 
 def _dispatch_command(command, ack):
@@ -1597,6 +1754,17 @@ def _dispatch_command(command, ack):
     save_state(_STATE)
 
 
+def announce_startup_home():
+    if not ALLOWED_CHANNEL_ID:
+        print("Slack welcome screen skipped: SLACK_CHANNEL_ID is not set.")
+        return False
+    job = chat_state(_STATE, ALLOWED_CHANNEL_ID)
+    job.pop("slack_thread_ts", None)
+    send_home_screen(ALLOWED_CHANNEL_ID, "봇이 시작되었습니다. 아래에서 제작 방식을 선택하세요.", top_level=True)
+    save_state(_STATE)
+    return True
+
+
 def main():
     global _STATE
     _require_tokens()
@@ -1611,9 +1779,14 @@ def main():
 
     app = App(token=BOT_TOKEN)
     app.event("message")(_dispatch_message)
+    app.event("app_home_opened")(_dispatch_home_opened)
     app.action("workflow_action")(lambda ack, body: (ack(), _dispatch_action(body)))
     for name, _ in command_specs():
         app.command(f"/{name}")(_dispatch_command)
+    try:
+        announce_startup_home()
+    except Exception as exc:
+        print(f"Slack welcome screen failed: {exc}")
     SocketModeHandler(app, APP_TOKEN).start()
 
 

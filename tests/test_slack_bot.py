@@ -78,6 +78,162 @@ class SlackBotTests(unittest.TestCase):
         self.assertEqual(job["caption_font_size"], "64")
         self.assertFalse(job["web_research"])
 
+    def test_slack_uses_non_reserved_app_status_command(self):
+        for module in (slack_bot, prod_slack_bot):
+            command_names = {name for name, _ in module.command_specs()}
+            self.assertIn("app_status", command_names)
+            self.assertNotIn("status", command_names)
+            self.assertIn("/app_status", module.help_text())
+
+            state = {"chats": {"C1": {"busy": "렌더링", "stage": "await_render_approval"}}}
+            messages = []
+            old_send_message, old_send_action_message = module.send_message, module.send_action_message
+            try:
+                module.send_message = lambda channel_id, text: messages.append(text)
+                module.send_action_message = lambda channel_id, text, rows: messages.append(text)
+                module.handle_message(state, {"chat": {"id": "C1"}, "text": "/app_status"})
+            finally:
+                module.send_message = old_send_message
+                module.send_action_message = old_send_action_message
+            self.assertTrue(any("최종 영상 확인" in message for message in messages))
+
+    def test_every_review_stage_has_safe_navigation(self):
+        for module in (slack_bot, prod_slack_bot):
+            for index, stage in enumerate(module.WORKFLOW_STAGES):
+                callbacks = {
+                    item["callback_data"]
+                    for row in module.approval_buttons(stage)
+                    for item in row
+                }
+                self.assertIn(f"approve:{stage}", callbacks)
+                self.assertIn(f"auto_finish:{stage}", callbacks)
+                self.assertIn("show_status", callbacks)
+                self.assertIn("cancel_all", callbacks)
+                if index:
+                    self.assertIn(f"back:{stage}:{module.WORKFLOW_STAGES[index - 1]}", callbacks)
+
+    def test_progress_card_summarizes_current_stage(self):
+        for module in (slack_bot, prod_slack_bot):
+            text = module.workflow_status_text({
+                "job_id": "job-123",
+                "topic": "오메가3와 기억력",
+                "stage": "await_caption_approval",
+            })
+            self.assertIn("3/7 자막 확인", text)
+            self.assertIn("오메가3와 기억력", text)
+            self.assertIn("job-123", text)
+
+    def test_forward_moves_to_the_next_review_stage(self):
+        expected_next = {
+            "await_script_approval": "await_tts_approval",
+            "await_tts_approval": "await_caption_approval",
+            "await_caption_approval": "await_broll_approval",
+            "await_broll_approval": "await_render_config",
+            "await_render_config": "await_render_approval",
+            "await_render_approval": "await_upload_meta_approval",
+            "await_upload_meta_approval": "done",
+        }
+        sender_names = ("send_tts", "send_caption", "send_broll", "send_render_ready", "send_rendered_video", "send_upload_meta", "send_message")
+        for module in (slack_bot, prod_slack_bot):
+            originals = {name: getattr(module, name) for name in sender_names}
+            old_run_command, old_run_render = module.run_command, module.run_render
+            try:
+                module.run_command = lambda *a, **k: None
+                for name in sender_names:
+                    setattr(module, name, lambda *a, **k: None)
+                module.run_render = lambda chat_id, job: job.update(stage="await_render_approval")
+                for stage, next_stage in expected_next.items():
+                    job = {"job_id": f"job-{stage}", "topic": "테스트", "stage": stage}
+                    module.run_next_stage("C1", job)
+                    self.assertEqual(job["stage"], next_stage)
+            finally:
+                module.run_command = old_run_command
+                module.run_render = old_run_render
+                for name, original in originals.items():
+                    setattr(module, name, original)
+
+    def test_auto_finish_can_resume_from_every_review_stage(self):
+        expected_commands = {
+            "await_script_approval": ["1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh"],
+            "await_tts_approval": ["1_caption.sh", "1_broll.sh", "3_upload.sh"],
+            "await_caption_approval": ["1_broll.sh", "3_upload.sh"],
+            "await_broll_approval": ["3_upload.sh"],
+            "await_render_config": ["3_upload.sh"],
+            "await_render_approval": ["3_upload.sh"],
+            "await_upload_meta_approval": ["3_upload.sh"],
+        }
+        render_stages = {
+            "await_script_approval", "await_tts_approval", "await_caption_approval",
+            "await_broll_approval", "await_render_config",
+        }
+        for module in (slack_bot, prod_slack_bot):
+            for stage in module.WORKFLOW_STAGES:
+                commands, renders = [], []
+                old_run_command = module.run_command
+                old_run_render_silent = module._run_render_silent
+                old_send_message = module.send_message
+                try:
+                    module.run_command = lambda args, *a, **k: commands.append(Path(args[0]).name)
+                    module._run_render_silent = lambda *a, **k: renders.append("render")
+                    module.send_message = lambda *a, **k: None
+                    job = {"job_id": f"job-{stage}", "topic": "테스트", "stage": stage}
+                    module.run_remaining_to_upload("C1", job)
+                finally:
+                    module.run_command = old_run_command
+                    module._run_render_silent = old_run_render_silent
+                    module.send_message = old_send_message
+                self.assertEqual(commands, expected_commands[stage])
+                self.assertEqual(len(renders), 1 if stage in render_stages else 0)
+                self.assertEqual(job["stage"], "done")
+
+    def test_cancel_request_is_available_while_busy(self):
+        for module in (slack_bot, prod_slack_bot):
+            job_id = f"cancel-{module.__name__}"
+            job = {"job_id": job_id, "stage": "running_after_review", "busy": "끝까지 자동 처리"}
+            messages = []
+            old_send_message = module.send_message
+            try:
+                module.send_message = lambda channel_id, text: messages.append(text)
+                module.request_workflow_cancel("C1", job)
+                self.assertTrue(job["cancel_requested"])
+                with self.assertRaises(module.WorkflowCancelled):
+                    module.run_command(["unused"], job_id)
+            finally:
+                module.CANCELLED_JOB_IDS.discard(job_id)
+                module.send_message = old_send_message
+            self.assertTrue(any("취소 요청" in message for message in messages))
+
+    def test_destructive_buttons_require_confirmation(self):
+        for module in (slack_bot, prod_slack_bot):
+            state = {"chats": {"C1": {"job_id": "job-1", "topic": "테스트", "stage": "await_caption_approval"}}}
+            confirmations, started = [], []
+            old_send_action_message = module.send_action_message
+            old_start_background_task = module.start_background_task
+            old_save_state = module.save_state
+            try:
+                module.send_action_message = lambda channel_id, text, rows: confirmations.append(rows)
+                module.start_background_task = lambda *args: started.append(args)
+                module.save_state = lambda state: None
+                callback = {"message": {"chat": {"id": "C1"}}, "data": "auto_finish:await_caption_approval"}
+                module.handle_callback(state, callback)
+                self.assertFalse(started)
+                confirm_callbacks = {item["callback_data"] for row in confirmations[-1] for item in row}
+                self.assertIn("auto_finish_confirm:await_caption_approval", confirm_callbacks)
+
+                callback["data"] = "auto_finish_confirm:await_caption_approval"
+                module.handle_callback(state, callback)
+                self.assertTrue(started)
+
+                confirmations.clear()
+                callback["data"] = "cancel_all"
+                module.handle_callback(state, callback)
+                cancel_callbacks = {item["callback_data"] for row in confirmations[-1] for item in row}
+                self.assertIn("cancel_confirm", cancel_callbacks)
+            finally:
+                module.send_action_message = old_send_action_message
+                module.start_background_task = old_start_background_task
+                module.save_state = old_save_state
+
 
 if __name__ == "__main__":
     unittest.main()

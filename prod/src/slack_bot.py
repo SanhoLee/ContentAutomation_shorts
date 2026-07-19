@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import shlex
 import subprocess
 import threading
@@ -26,9 +27,15 @@ DEFAULT_CAPTION_STYLE = os.environ.get("SLACK_DEFAULT_CAPTION_STYLE", os.environ
 DEFAULT_CAPTION_MARGIN_H = os.environ.get("SLACK_DEFAULT_CAPTION_MARGIN_H", "10")
 DEFAULT_WEB_RESEARCH = os.environ.get("SLACK_DEFAULT_WEB_RESEARCH", "true").lower() not in ("off", "0", "false", "no")
 STATE_LOCK = threading.Lock()
-STOP_REQUESTED = False
+ACTIVE_PROCESS_LOCK = threading.Lock()
+ACTIVE_PROCESSES = {}
+CANCELLED_JOB_IDS = set()
 _STATE = {"chats": {}}
 MAX_BLOCK_TEXT = 3000
+
+
+class WorkflowCancelled(RuntimeError):
+    pass
 
 
 def _require_tokens():
@@ -112,39 +119,101 @@ def editable_stage_info(stage, job_id):
     return mapping.get(stage)
 
 
+WORKFLOW_STAGES = (
+    "await_script_approval",
+    "await_tts_approval",
+    "await_caption_approval",
+    "await_broll_approval",
+    "await_render_config",
+    "await_render_approval",
+    "await_upload_meta_approval",
+)
+STAGE_LABELS = {
+    "await_script_approval": "스크립트 확인",
+    "await_tts_approval": "음성 확인",
+    "await_caption_approval": "자막 확인",
+    "await_broll_approval": "B-roll 확인",
+    "await_render_config": "렌더 설정",
+    "await_render_approval": "최종 영상 확인",
+    "await_upload_meta_approval": "업로드 정보 확인",
+    "await_trend_choice": "트렌드 선택",
+    "await_pubmed_retry": "근거 검색 재시도",
+    "running_auto": "끝까지 자동 처리",
+    "running_after_review": "끝까지 자동 처리",
+    "done": "완료",
+    "cancelled": "취소됨",
+}
+
+
+def button(text, callback_data):
+    return {"text": text, "callback_data": callback_data}
+
+
+def workflow_status_text(job, detail=None):
+    stage = job.get("stage")
+    topic = str(job.get("topic") or "").strip()
+    job_id = job.get("job_id")
+    display_stage = job.get("auto_from_stage") if stage == "running_after_review" else stage
+    if display_stage in WORKFLOW_STAGES:
+        current = WORKFLOW_STAGES.index(display_stage)
+        markers = ["✅" if i < current else "🔎" if i == current else "▫️" for i in range(len(WORKFLOW_STAGES))]
+        progress = " ".join(markers)
+        title = f"*콘텐츠 제작 · {current + 1}/{len(WORKFLOW_STAGES)} {STAGE_LABELS[display_stage]}*"
+    elif stage == "done":
+        progress = " ".join(["✅"] * len(WORKFLOW_STAGES))
+        title = "*콘텐츠 제작 완료*"
+    else:
+        progress = ""
+        title = f"*콘텐츠 제작 · {STAGE_LABELS.get(stage, stage or '대기')}*"
+    lines = [title]
+    if progress:
+        lines.append(progress)
+    if topic:
+        lines.append(f"주제: {topic[:180]}")
+    if job_id:
+        lines.append(f"작업 ID: `{job_id}`")
+    if stage == "running_after_review":
+        lines.append(f"자동 처리: {job.get('auto_progress', '다음 단계 준비 중')}")
+    elif job.get("busy"):
+        lines.append(f"처리 중: {job['busy']}")
+    if job.get("last_error"):
+        lines.append(f"최근 오류: {str(job['last_error'])[:300]}")
+    if detail:
+        lines.extend(("", detail))
+    return "\n".join(lines)
+
+
 def approval_buttons(stage):
-    rows = [[button("승인", f"approve:{stage}"), button("전체 취소", "cancel_all")]]
+    rows = []
+    if stage == "await_script_approval":
+        rows.append([button("본문 수정", f"edit_body:{stage}"), button("제목 수정", f"edit_title_menu:{stage}")])
+    elif stage == "await_tts_approval":
+        rows.append([button("음성 재생성", f"rerun:{stage}:tts")])
+    elif stage == "await_caption_approval":
+        rows.append([button("자막 수정", f"edit:{stage}"), button("자막 재생성", f"rerun:{stage}:caption")])
+    elif stage == "await_broll_approval":
+        rows.append([button("B-roll 재생성", f"rerun:{stage}:broll")])
+    elif stage == "await_render_approval":
+        rows.append([button("렌더 설정 수정", f"back:{stage}:await_render_config")])
+    elif stage == "await_upload_meta_approval":
+        rows.append([button("업로드 정보 수정", f"edit:{stage}")])
+
+    navigation = []
     previous = previous_stage_button(stage)
     if previous:
-        rows.insert(0, [previous])
-    if stage == "await_script_approval":
-        rows.insert(0, [
-            button("본문 수정", f"edit_body:{stage}"),
-            button("타이틀 수정", f"edit_title_menu:{stage}"),
-        ])
-        rows.insert(1, [button("이후 자동 업로드", f"auto_upload:{stage}")])
-    elif stage in ("await_caption_approval", "await_upload_meta_approval"):
-        rows.insert(0, [button("수정", f"edit:{stage}")])
-    if stage == "await_tts_approval":
-        rows.insert(0, [button("스크립트 수정", "back:await_tts_approval:await_script_approval"), button("TTS 재생성", f"rerun:{stage}:tts")])
-    elif stage == "await_caption_approval":
-        rows.insert(1, [button("자막 재생성", f"rerun:{stage}:caption")])
-    elif stage == "await_broll_approval":
-        rows.insert(0, [button("B-roll 재생성", f"rerun:{stage}:broll")])
-    elif stage == "await_render_approval":
-        rows.insert(0, [button("렌더 다시 조정", f"back:{stage}:await_render_config")])
+        navigation.append(previous)
+    next_label = "업로드 ▶" if stage == "await_upload_meta_approval" else "다음 단계 ▶"
+    navigation.append(button(next_label, f"approve:{stage}"))
+    rows.append(navigation)
+    rows.append([
+        button("🚀 여기서부터 끝까지", f"auto_finish:{stage}"),
+        button("↻ 상태", "show_status"),
+        button("전체 취소", "cancel_all"),
+    ])
     return rows
 
 
 def previous_stage_button(stage):
-    labels = {
-        "await_tts_approval": "스크립트로 돌아가기",
-        "await_caption_approval": "TTS로 돌아가기",
-        "await_broll_approval": "자막으로 돌아가기",
-        "await_render_config": "B-roll로 돌아가기",
-        "await_render_approval": "렌더 설정으로 돌아가기",
-        "await_upload_meta_approval": "최종 영상으로 돌아가기",
-    }
     targets = {
         "await_tts_approval": "await_script_approval",
         "await_caption_approval": "await_tts_approval",
@@ -156,11 +225,12 @@ def previous_stage_button(stage):
     target = targets.get(stage)
     if not target:
         return None
-    return button(labels[stage], f"back:{stage}:{target}")
+    return button("← 이전 단계", f"back:{stage}:{target}")
 
 
 def send_approval_prompt(chat_id, stage, text):
-    return send_action_message(chat_id, text, approval_buttons(stage))
+    job = _STATE.get("chats", {}).get(str(chat_id), {"stage": stage})
+    return send_action_message(chat_id, workflow_status_text(job, text), approval_buttons(stage))
 
 
 def load_state():
@@ -200,11 +270,42 @@ def chat_state(state, chat_id):
 
 def busy_message(job):
     label = job.get("busy") or "작업"
-    return f"현재 {label} 진행 중입니다. 완료 메시지가 올 때까지 다른 입력은 처리하지 않습니다."
+    return f"현재 {label} 진행 중입니다. `상태` 또는 `전체 취소` 버튼은 언제든 사용할 수 있습니다."
 
 
 def is_busy(job):
     return bool(job.get("busy"))
+
+
+def _mark_workflow_cancelled(job):
+    job["stage"] = "cancelled"
+    job["cancelled_at"] = datetime.now().isoformat(timespec="seconds")
+    for key in ("cancel_requested", "auto_from_stage", "auto_progress", "edit_target", "edit_stage", "title_edit_field", "title_edit_stage"):
+        job.pop(key, None)
+
+
+def request_workflow_cancel(chat_id, job):
+    job_id = job.get("job_id")
+    if not job_id and not is_busy(job):
+        send_message(chat_id, "취소할 작업이 없습니다.")
+        return
+    if is_busy(job):
+        job["cancel_requested"] = True
+        if job_id:
+            CANCELLED_JOB_IDS.add(job_id)
+        with ACTIVE_PROCESS_LOCK:
+            process = ACTIVE_PROCESSES.get(job_id)
+        if process and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                process.terminate()
+        send_message(chat_id, "취소 요청을 받았습니다. 실행 중인 명령을 중단하고 상태를 정리합니다.")
+        return
+    if job_id:
+        CANCELLED_JOB_IDS.discard(job_id)
+    _mark_workflow_cancelled(job)
+    send_message(chat_id, workflow_status_text(job, "전체 작업을 취소했습니다. 기존 산출물은 보존됩니다."))
 
 
 def start_background_task(state, chat_id, job, label, target):
@@ -218,7 +319,12 @@ def start_background_task(state, chat_id, job, label, target):
     def runner():
         try:
             target()
+        except WorkflowCancelled:
+            current = chat_state(state, chat_id)
+            _mark_workflow_cancelled(current)
+            send_message(chat_id, workflow_status_text(current, "작업을 중단했습니다. 이미 생성된 산출물은 보존됩니다."))
         except Exception as exc:
+            chat_state(state, chat_id)["last_error"] = str(exc)
             send_message(chat_id, f"오류: {exc}")
         finally:
             current = chat_state(state, chat_id)
@@ -326,26 +432,48 @@ def pubmed_retry_message(status):
 
 
 def run_command(args, job_id, topic=None, extra_env=None):
+    if job_id in CANCELLED_JOB_IDS:
+        CANCELLED_JOB_IDS.discard(job_id)
+        raise WorkflowCancelled("사용자가 작업을 취소했습니다.")
     env = os.environ.copy()
     env["JOB_ID"] = job_id
     if topic:
         env["TOPIC"] = topic
     if extra_env:
         env.update(extra_env)
-    result = subprocess.run(args, cwd=BASE_DIR, env=env, text=True, capture_output=True)
+    process = subprocess.Popen(
+        args,
+        cwd=BASE_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    with ACTIVE_PROCESS_LOCK:
+        ACTIVE_PROCESSES[job_id] = process
+    try:
+        stdout, stderr = process.communicate()
+    finally:
+        with ACTIVE_PROCESS_LOCK:
+            if ACTIVE_PROCESSES.get(job_id) is process:
+                ACTIVE_PROCESSES.pop(job_id, None)
     log_dir = work_dir(job_id)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_name = f"slack_{Path(args[0]).name}_{int(time.time())}.log"
-    (log_dir / log_name).write_text((result.stdout or "") + "\n" + (result.stderr or ""), encoding="utf-8")
-    if result.returncode != 0:
-        tail = (result.stderr or result.stdout or "")[-1600:]
+    (log_dir / log_name).write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+    if job_id in CANCELLED_JOB_IDS:
+        CANCELLED_JOB_IDS.discard(job_id)
+        raise WorkflowCancelled("사용자가 작업을 취소했습니다.")
+    if process.returncode != 0:
+        tail = (stderr or stdout or "")[-1600:]
         hint = ""
         if "ReadTimeout" in tail and "api.anthropic.com" in tail:
             hint = "\n\n진단: Claude API 응답이 설정된 시간 안에 끝나지 않았습니다. 주제 문제가 아니라 네트워크 지연이나 응답 생성 지연일 가능성이 큽니다. 잠시 후 같은 /pick 번호를 다시 실행하거나 /retry 새 주제로 재시도하세요. 반복되면 CLAUDE_TIMEOUT 값을 더 크게 설정하세요."
         elif "api.anthropic.com" in tail:
             hint = "\n\n진단: Claude API 호출 단계에서 실패했습니다. 로그 파일의 HTTP 상태와 메시지를 확인하세요."
         raise RuntimeError(f"명령 실패: {' '.join(shlex.quote(a) for a in args)}\n로그: {log_dir / log_name}{hint}\n\n{tail}")
-    return result.stdout
+    return stdout
 
 
 def preview_file(path, limit=MAX_TEXT_PREVIEW):
@@ -424,19 +552,23 @@ def send_render_ready(chat_id, job):
     offset_y = job.get("caption_offset_y")
     frame_mode = job.get("frame_mode")
     broll_fit = job.get("broll_fit_mode")
-    send_action_message(
-        chat_id,
+    msg = (
         "렌더 설정 확인 단계입니다.\n"
         "현재값: font_size=" + display_config_value(font_size) + ", margin_v=" + display_config_value(margin_v) +
         ", margin_h=" + display_config_value(margin_h) + ", style=" + display_config_value(caption_style) +
         ", offset_x=" + display_config_value(offset_x) + ", offset_y=" + display_config_value(offset_y) +
         ", frame=" + display_config_value(frame_mode) + ", broll_fit=" + display_config_value(broll_fit) + "\n"
-        "값 조정 후 렌더: /render style=center-yellow frame=framed broll_fit=cover offset_y=-120",
+        "값 조정 후 렌더: /render style=center-yellow frame=framed broll_fit=cover offset_y=-120"
+    )
+    send_action_message(
+        chat_id,
+        workflow_status_text(job, msg),
         [
-            [button("B-roll로 돌아가기", "back:await_render_config:await_broll_approval")],
-            [button("현재값으로 렌더", "approve:await_render_config")],
             [button("기본 스타일", "render:await_render_config:62:60:default"), button("중앙 노랑", "render:await_render_config:72:0:center-yellow")],
-            [button("전체 취소", "cancel_all")],
+            [button("← 이전 단계", "back:await_render_config:await_broll_approval"),
+             button("현재 설정으로 렌더 ▶", "approve:await_render_config")],
+            [button("🚀 여기서부터 끝까지", "auto_finish:await_render_config"),
+             button("↻ 상태", "show_status"), button("전체 취소", "cancel_all")],
         ],
     )
 
@@ -745,7 +877,7 @@ def run_next_stage(chat_id, job):
         send_message(chat_id, "YouTube 비공개 업로드 시작")
         run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "done"
-        send_message(chat_id, "업로드 완료. YouTube Studio에서 비공개 영상을 확인하세요.")
+        send_message(chat_id, workflow_status_text(job, "업로드 완료. YouTube Studio에서 비공개 영상을 확인하세요."))
     else:
         send_message(chat_id, f"승인할 단계가 없습니다. 현재 단계: {stage}")
 
@@ -755,41 +887,54 @@ def run_remaining_to_upload(chat_id, job):
     if not job_id:
         send_message(chat_id, "진행 중인 작업이 없습니다.")
         return
-    if job.get("stage") != "await_script_approval":
-        send_message(chat_id, f"이후 자동 업로드는 스크립트 승인 단계에서만 가능합니다. 현재 단계: {job.get('stage')}")
+    start_stage = job.get("stage")
+    if start_stage not in WORKFLOW_STAGES:
+        send_message(chat_id, f"현재 단계에서는 끝까지 자동 처리를 시작할 수 없습니다: {start_stage}")
         return
 
     job.pop("edit_target", None)
     job.pop("edit_stage", None)
     job.pop("title_edit_field", None)
     job.pop("title_edit_stage", None)
-    header = load_frame_header(job_id)
-    sync_frame_header_to_job(job, header)
+    if start_stage == "await_script_approval":
+        header = load_frame_header(job_id)
+        sync_frame_header_to_job(job, header)
     extra_env = _build_extra_env(job)
     job["approval_required"] = False
-    job["stage"] = "running_after_script_auto"
-    send_message(chat_id, "스크립트/타이틀 승인 완료. 이후 단계를 YouTube 업로드까지 자동 진행합니다.")
+    job["auto_from_stage"] = start_stage
+    job["stage"] = "running_after_review"
+    job.pop("last_error", None)
+    send_message(chat_id, f"{STAGE_LABELS[start_stage]} 승인 완료. 여기서부터 업로드까지 자동 진행합니다.")
 
-    send_message(chat_id, "1/5 TTS 음성 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "1/5 TTS 완료")
+    start_index = WORKFLOW_STAGES.index(start_stage)
+    steps = []
+    if start_index <= WORKFLOW_STAGES.index("await_script_approval"):
+        steps.append(("TTS 음성 생성", lambda: run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)))
+    if start_index <= WORKFLOW_STAGES.index("await_tts_approval"):
+        steps.append(("자막 생성", lambda: run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)))
+    if start_index <= WORKFLOW_STAGES.index("await_caption_approval"):
+        steps.append(("B-roll 생성", lambda: run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)))
+    if start_index <= WORKFLOW_STAGES.index("await_render_config"):
+        steps.append(("최종 영상 렌더링", lambda: _run_render_silent(chat_id, job, extra_env)))
+    steps.append(("YouTube 비공개 업로드", lambda: run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic, extra_env=extra_env)))
 
-    send_message(chat_id, "2/5 자막 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "2/5 자막 완료")
-
-    send_message(chat_id, "3/5 B-roll 수집 중...")
-    run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "3/5 B-roll 완료")
-
-    send_message(chat_id, "4/5 렌더링 중...")
-    _run_render_silent(chat_id, job, extra_env)
-    send_message(chat_id, "4/5 렌더링 완료")
-
-    send_message(chat_id, "5/5 YouTube 비공개 업로드 중...")
-    run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic)
-    job["stage"] = "done"
-    send_message(chat_id, "완료! YouTube Studio에서 비공개 영상을 확인하세요.")
+    try:
+        for index, (label, action) in enumerate(steps, start=1):
+            job["auto_progress"] = f"{index}/{len(steps)} {label}"
+            send_message(chat_id, f"{index}/{len(steps)} {label} 중...")
+            action()
+        job["stage"] = "done"
+        job.pop("auto_from_stage", None)
+        job.pop("auto_progress", None)
+        send_message(chat_id, workflow_status_text(job, "YouTube Studio에서 비공개 영상을 확인하세요."))
+    except WorkflowCancelled:
+        raise
+    except Exception as exc:
+        job["stage"] = start_stage
+        job["last_error"] = str(exc)
+        job.pop("auto_from_stage", None)
+        job.pop("auto_progress", None)
+        raise
 
 
 def run_script_generation(chat_id, job, args):
@@ -804,7 +949,12 @@ def run_script_generation(chat_id, job, args):
         if status and status.get("status") == "no_results":
             job["stage"] = "await_pubmed_retry"
             job["pending_script_args"] = args[1:]
-            send_message(chat_id, pubmed_retry_message(status))
+            send_action_message(
+                chat_id,
+                workflow_status_text(job, pubmed_retry_message(status)),
+                [[button("근거 부족 감수하고 계속", "proceed_no_pubmed"), button("주제 바꿔 재시도", "retry_topic")],
+                 [button("전체 취소", "cancel_all")]],
+            )
             send_file_or_path(chat_id, pubmed_status_path(job_id), "pubmed_status.json")
             return False
         raise
@@ -824,14 +974,14 @@ def handle_run_auto(chat_id, job, text):
     send_message(chat_id, f"자동 실행 시작: JOB_ID={job_id}")
     run_command([str(BASE_DIR / "run.sh"), topic, job_id], job_id, topic)
     job["stage"] = "done"
-    send_message(chat_id, "자동 실행 완료. YouTube Studio에서 비공개 영상을 확인하세요.")
+    send_message(chat_id, workflow_status_text(job, "자동 실행 완료. YouTube Studio에서 비공개 영상을 확인하세요."))
 
 def handle_run(chat_id, job, text, trend=False):
     topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
     if not topic:
         send_message(chat_id, "주제를 입력하세요. 예: /run 오메가3가 정말 뇌에 좋을까?")
         return
-    job_id = new_job_id("trend" if trend else "tg")
+    job_id = new_job_id("trend" if trend else "slack")
     busy = job.get("busy")
     job.clear()
     job.update({"job_id": job_id, "topic": topic, "approval_required": True})
@@ -843,10 +993,13 @@ def handle_run(chat_id, job, text, trend=False):
         run_command([str(BASE_DIR / "sh" / "0_script.sh"), "--trend", topic], job_id, topic)
         candidates_path = work_dir(job_id) / "trend_candidates.json"
         payload = json.loads(candidates_path.read_text(encoding="utf-8"))
-        lines = ["후보를 선택하세요: /pick 번호"]
+        lines = ["후보를 선택하세요. 번호를 입력하지 않고 버튼만 누르면 됩니다."]
+        rows = []
         for i, item in enumerate(payload.get("candidates", []), start=1):
             lines.append(f"{i}. {item.get('keyword')} ({', '.join(item.get('sources', []))})")
-        send_message(chat_id, "\n".join(lines))
+            rows.append([button(f"{i}. {str(item.get('keyword') or '')[:55]}", f"pick_trend:{i}")])
+        rows.append([button("전체 취소", "cancel_all")])
+        send_action_message(chat_id, workflow_status_text(job, "\n".join(lines)), rows)
         send_file_or_path(chat_id, candidates_path, "trend_candidates.json")
     else:
         job["stage"] = "await_script_approval"
@@ -907,7 +1060,7 @@ def handle_edit(chat_id, job):
     job["edit_stage"] = stage
     send_message(
         chat_id,
-        f"수정 모드입니다. 아래 {name} 파일을 열어 필요한 부분만 고친 뒤, 수정한 파일을 텔레그램으로 다시 보내세요. "
+        f"수정 모드입니다. 아래 {name} 파일을 열어 필요한 부분만 고친 뒤, 수정한 파일을 Slack으로 다시 보내세요. "
         "짧은 수정이면 다음 메시지에 전체 수정본을 보내도 됩니다.",
     )
     if path.exists():
@@ -933,16 +1086,17 @@ def send_title_edit_menu(chat_id, job):
     subtitle = header.get("subtitle") or "(비어 있음)"
     send_action_message(
         chat_id,
-        "타이틀 수정 단계입니다.\n"
+        workflow_status_text(job, "타이틀 수정\n"
         f"현재 주제목: {title}\n"
         f"현재 부제목: {subtitle}\n\n"
-        "수정할 항목을 선택하세요. 선택 후 다음 메시지에 새 문구를 보내면 띄어쓰기 포함 그대로 저장됩니다.",
+        "수정할 항목을 선택하세요. 선택 후 다음 메시지에 새 문구를 보내면 띄어쓰기 포함 그대로 저장됩니다."),
         [
-            [button("주제목 수정", "edit_title_field:await_script_approval:title")],
-            [button("부제목 수정", "edit_title_field:await_script_approval:subtitle")],
-            [button("본문 수정", "edit_body:await_script_approval")],
-            [button("이후 자동 업로드", "auto_upload:await_script_approval")],
-            [button("승인", "approve:await_script_approval"), button("전체 취소", "cancel_all")],
+            [button("주제목 수정", "edit_title_field:await_script_approval:title"),
+             button("부제목 수정", "edit_title_field:await_script_approval:subtitle"),
+             button("본문 수정", "edit_body:await_script_approval")],
+            [button("다음 단계 ▶", "approve:await_script_approval")],
+            [button("🚀 여기서부터 끝까지", "auto_finish:await_script_approval"),
+             button("↻ 상태", "show_status"), button("전체 취소", "cancel_all")],
         ],
     )
 
@@ -1034,19 +1188,26 @@ def handle_callback(state, callback):
     if not chat_id:
         return
     job = chat_state(state, chat_id)
-    if is_busy(job):
+    if is_busy(job) and data not in ("cancel_all", "cancel_confirm", "show_status"):
         send_message(chat_id, busy_message(job))
         return
     try:
-        if data.startswith("approve:"):
+        if data == "show_status":
+            handle_status(chat_id, job)
+        elif data == "cancel_all":
+            send_action_message(
+                chat_id,
+                workflow_status_text(job, "정말 전체 작업을 취소할까요? 이미 생성된 산출물은 삭제하지 않습니다."),
+                [[button("취소 확정", "cancel_confirm"), button("계속 작업", "show_status")]],
+            )
+        elif data == "cancel_confirm":
+            request_workflow_cancel(chat_id, job)
+        elif data.startswith("approve:"):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
             start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
-        elif data == "cancel_all":
-            job.clear()
-            send_message(chat_id, "전체 작업을 취소했습니다.")
         elif data.startswith("edit:"):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:
@@ -1071,12 +1232,33 @@ def handle_callback(state, callback):
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
             handle_title_edit_field(chat_id, job, field)
-        elif data.startswith("auto_upload:"):
+        elif data.startswith(("auto_upload:", "auto_finish:")):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
-            start_background_task(state, chat_id, job, "이후 자동 업로드", lambda: run_remaining_to_upload(chat_id, job))
+            send_action_message(
+                chat_id,
+                workflow_status_text(job, "현재 산출물을 승인하고 남은 검수를 건너뛴 뒤 YouTube 비공개 업로드까지 진행할까요?"),
+                [[button("확인: 끝까지 실행", f"auto_finish_confirm:{expected_stage}"), button("돌아가기", "show_status")]],
+            )
+        elif data.startswith("auto_finish_confirm:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"현재 단계가 바뀌어 실행하지 않았습니다. 현재 단계: {job.get('stage')}")
+                return
+            start_background_task(state, chat_id, job, "끝까지 자동 처리", lambda: run_remaining_to_upload(chat_id, job))
+        elif data == "proceed_no_pubmed":
+            start_background_task(state, chat_id, job, "근거 부족 상태로 계속", lambda: handle_proceed(chat_id, job))
+        elif data == "retry_topic":
+            job["retry_topic_input"] = True
+            send_message(chat_id, "새 주제를 다음 메시지로 보내주세요. 받는 즉시 스크립트를 다시 생성합니다.")
+        elif data.startswith("pick_trend:"):
+            choice = data.split(":", 1)[1]
+            if job.get("stage") != "await_trend_choice":
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            start_background_task(state, chat_id, job, "선택한 트렌드로 스크립트 생성", lambda: handle_pick(chat_id, job, "/pick " + choice))
         elif data.startswith("back:"):
             _, expected_stage, target_stage = data.split(":", 2)
             if job.get("stage") != expected_stage:
@@ -1227,7 +1409,23 @@ def handle_status(chat_id, job):
     if not job:
         send_message(chat_id, "진행 중인 작업이 없습니다.")
         return
-    send_message(chat_id, json.dumps(job, ensure_ascii=False, indent=2))
+    stage = job.get("stage")
+    if stage == "await_render_config" and not is_busy(job):
+        send_render_ready(chat_id, job)
+        return
+    if is_busy(job):
+        rows = [[button("↻ 새로고침", "show_status"), button("전체 취소", "cancel_all")]]
+    elif stage in WORKFLOW_STAGES:
+        rows = approval_buttons(stage)
+    elif stage == "await_pubmed_retry":
+        rows = [[button("근거 부족 감수하고 계속", "proceed_no_pubmed"), button("주제 바꿔 재시도", "retry_topic")], [button("전체 취소", "cancel_all")]]
+    else:
+        rows = []
+    text = workflow_status_text(job, "현재 산출물은 유지됩니다. 이전 단계로 돌아가 수정하거나, 다음 단계 또는 끝까지 자동 처리를 선택하세요.")
+    if rows:
+        send_action_message(chat_id, text, rows)
+    else:
+        send_message(chat_id, text)
 
 
 def command_specs():
@@ -1244,7 +1442,7 @@ def command_specs():
         ("proceed", "PubMed 실패 후 근거 부족 상태로 진행"),
         ("rerun", "tts/caption/broll 재생성"),
         ("render", "자막 렌더 설정 변경"),
-        ("status", "현재 상태 확인"),
+        ("app_status", "현재 상태 확인"),
         ("cancel", "전체 작업 취소"),
         ("help", "명령어 도움말"),
     ]
@@ -1252,7 +1450,11 @@ def command_specs():
 
 def help_text():
     return "\n".join([
-        "명령어",
+        "콘텐츠 제작 도우미",
+        "검수 화면의 버튼만으로 이전/다음/수정/끝까지 자동 처리/취소가 가능합니다.",
+        "/app_status를 실행하면 현재 단계 카드와 버튼을 다시 표시합니다.",
+        "",
+        "시작 명령어",
         "/run 오메가3가 정말 뇌에 좋을까?",
         "/trend 오메가3",
         "/pick 1",
@@ -1266,10 +1468,10 @@ def help_text():
         "/set_all",
         "/set reset",
         "/run_auto 오메가3가 정말 뇌에 좋을까?",
-        "/status",
+        "/app_status",
         "/cancel",
         "",
-        "흐름: run/trend -> approve 반복 -> 렌더 확인 -> 메타데이터 승인 -> 비공개 업로드",
+        "흐름: 시작 -> 필요한 단계만 꼼꼼히 확인 -> 원하는 지점에서 끝까지 자동 처리 -> 비공개 업로드",
     ])
 
 
@@ -1284,8 +1486,12 @@ def handle_message(state, message):
 
     job = chat_state(state, chat_id)
     try:
-        if is_busy(job) and not text.startswith("/status"):
+        if is_busy(job) and not (text.startswith("/app_status") or text.startswith("/cancel")):
             send_message(chat_id, busy_message(job))
+            return
+        if job.get("retry_topic_input") and text and not text.startswith("/"):
+            job.pop("retry_topic_input", None)
+            start_background_task(state, chat_id, job, "새 주제로 스크립트 재생성", lambda: handle_retry(chat_id, job, "/retry " + text))
             return
         if apply_title_edit_message(chat_id, job, message):
             return
@@ -1321,11 +1527,10 @@ def handle_message(state, message):
             start_background_task(state, chat_id, job, "재생성", lambda: handle_rerun(chat_id, job, text))
         elif text.startswith("/render"):
             start_background_task(state, chat_id, job, "렌더링", lambda: handle_render(chat_id, job, text))
-        elif text.startswith("/status"):
+        elif text.startswith("/app_status"):
             handle_status(chat_id, job)
         elif text.startswith("/cancel"):
-            job.clear()
-            send_message(chat_id, "전체 작업을 취소했습니다.")
+            request_workflow_cancel(chat_id, job)
         else:
             send_message(chat_id, help_text())
     except Exception as exc:

@@ -152,6 +152,83 @@ def button(text, callback_data):
     return {"text": text, "callback_data": callback_data}
 
 
+def log_event(level, event, **fields):
+    """Write a compact, journalctl-friendly Slack event without message bodies."""
+    parts = [f"[{str(level).upper()}]", str(event)]
+    for key, value in fields.items():
+        if value in (None, ""):
+            continue
+        normalized = str(value).replace("\n", " ").replace("\r", " ")[:500]
+        parts.append(f"{key}={json.dumps(normalized, ensure_ascii=False)}")
+    print(" ".join(parts), flush=True)
+
+
+def action_request_label(data):
+    exact = {
+        "show_home": "콘텐츠 홈 열기",
+        "start_cancel": "시작 취소 후 홈으로 이동",
+        "start_reenter_topic": "제작 주제 다시 입력",
+        "open_settings": "제작 설정 열기",
+        "show_status": "현재 작업 상태 확인",
+        "cancel_all": "전체 작업 취소 확인",
+        "cancel_confirm": "전체 작업 취소 실행",
+        "cfg:root": "제작 설정 홈 열기",
+        "cfg:all": "전체 설정 확인",
+        "cfg:reset": "설정 초기화 확인",
+        "cfg:reset_confirm": "설정 초기화 실행",
+        "proceed_no_pubmed": "근거 부족 상태로 계속 진행",
+        "retry_topic": "새 주제로 다시 시도",
+    }
+    if data in exact:
+        return exact[data]
+    if data.startswith("start_content:") or data.startswith("start_confirm:"):
+        mode = data.split(":", 1)[1]
+        mode_label = START_MODES.get(mode, {}).get("label", mode)
+        suffix = "선택" if data.startswith("start_content:") else "실행 확인"
+        return f"{mode_label} {suffix}"
+    if data.startswith("cfg:cat:"):
+        category_id = data.split(":", 2)[2]
+        category = next((item for item in CONFIG_CATEGORIES if item[0] == category_id), None)
+        return f"{category[1] if category else '설정 카테고리'} 열기"
+    if data.startswith(("cfg:item:", "cfg:edit:", "cfg:keep:", "cfg:default:")):
+        setting_id = data.split(":", 2)[2]
+        setting = CONFIG_SETTINGS.get(setting_id, {})
+        action = "값 입력" if data.startswith("cfg:edit:") else "기본값 적용" if data.startswith("cfg:default:") else "현재값 유지" if data.startswith("cfg:keep:") else "설정 열기"
+        return f"{setting.get('label', setting_id)} {action}"
+    if data.startswith("cfg:pick:"):
+        parts = data.split(":", 3)
+        setting = CONFIG_SETTINGS.get(parts[2], {}) if len(parts) > 2 else {}
+        return f"{setting.get('label', parts[2] if len(parts) > 2 else '설정')} 값 선택"
+    prefix_labels = {
+        "approve:": "현재 단계 승인 및 다음 단계 실행",
+        "edit:": "현재 산출물 수정",
+        "edit_body:": "스크립트 본문 수정",
+        "edit_title_menu:": "제목 수정 메뉴 열기",
+        "edit_title_field:": "제목 항목 수정",
+        "auto_upload:": "여기서부터 끝까지 실행 확인",
+        "auto_finish:": "여기서부터 끝까지 실행 확인",
+        "auto_finish_confirm:": "여기서부터 끝까지 자동 실행",
+        "pick_trend:": "트렌드 선택 및 제작",
+        "back:": "이전 단계로 이동",
+        "render:": "선택한 설정으로 렌더링",
+        "rerun:": "현재 산출물 재생성",
+    }
+    for prefix, label in prefix_labels.items():
+        if data.startswith(prefix):
+            return label
+    return "선택한 버튼 작업"
+
+
+def _send_recovery_error(chat_id, data, exc, label=None):
+    label = label or action_request_label(data)
+    text = f"요청 처리 실패: {label}\n오류: {exc}\n\n아래 버튼으로 안전하게 돌아가 다시 선택할 수 있습니다."
+    rows = [[button("⌂ 홈", "show_home"), button("제작 설정", "open_settings"), button("현재 작업", "show_status")]]
+    try:
+        send_action_message(chat_id, text, rows)
+    except Exception:
+        send_message(chat_id, text)
+
+
 START_MODES = {
     "review": {"label": "단계별로 검수하며 제작", "command": "/run"},
     "auto": {"label": "처음부터 끝까지 자동 제작", "command": "/run_auto"},
@@ -447,21 +524,28 @@ def start_background_task(state, chat_id, job, label, target):
     job["busy"] = label
     save_state(state)
     send_message(chat_id, f"진행 중입니다: {label}")
+    log_event("INFO", "slack_task_queued", channel=chat_id, job_id=job.get("job_id"), task=label, stage=job.get("stage"))
 
     def runner():
+        outcome = "completed"
+        log_event("INFO", "slack_task_started", channel=chat_id, job_id=job.get("job_id"), task=label, stage=job.get("stage"))
         try:
             target()
         except WorkflowCancelled:
+            outcome = "cancelled"
             current = chat_state(state, chat_id)
             _mark_workflow_cancelled(current)
             send_message(chat_id, workflow_status_text(current, "작업을 중단했습니다. 이미 생성된 산출물은 보존됩니다."))
         except Exception as exc:
+            outcome = "failed"
             chat_state(state, chat_id)["last_error"] = str(exc)
-            send_message(chat_id, f"오류: {exc}")
+            _send_recovery_error(chat_id, "show_status", exc, label=f"{label} 작업")
+            log_event("ERROR", "slack_task_failed", channel=chat_id, job_id=job.get("job_id"), task=label, error=exc)
         finally:
             current = chat_state(state, chat_id)
             current.pop("busy", None)
             save_state(state)
+            log_event("INFO", "slack_task_finished", channel=chat_id, job_id=current.get("job_id"), task=label, result=outcome, stage=current.get("stage"))
 
     threading.Thread(target=runner, daemon=True).start()
 
@@ -573,6 +657,8 @@ def run_command(args, job_id, topic=None, extra_env=None):
         env["TOPIC"] = topic
     if extra_env:
         env.update(extra_env)
+    command_name = Path(args[0]).name
+    log_event("INFO", "slack_command_started", job_id=job_id, command=command_name)
     process = subprocess.Popen(
         args,
         cwd=BASE_DIR,
@@ -596,6 +682,7 @@ def run_command(args, job_id, topic=None, extra_env=None):
     (log_dir / log_name).write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
     if job_id in CANCELLED_JOB_IDS:
         CANCELLED_JOB_IDS.discard(job_id)
+        log_event("INFO", "slack_command_cancelled", job_id=job_id, command=command_name, log=log_dir / log_name)
         raise WorkflowCancelled("사용자가 작업을 취소했습니다.")
     if process.returncode != 0:
         tail = (stderr or stdout or "")[-1600:]
@@ -604,7 +691,9 @@ def run_command(args, job_id, topic=None, extra_env=None):
             hint = "\n\n진단: Claude API 응답이 설정된 시간 안에 끝나지 않았습니다. 주제 문제가 아니라 네트워크 지연이나 응답 생성 지연일 가능성이 큽니다. 잠시 후 같은 /pick 번호를 다시 실행하거나 /retry 새 주제로 재시도하세요. 반복되면 CLAUDE_TIMEOUT 값을 더 크게 설정하세요."
         elif "api.anthropic.com" in tail:
             hint = "\n\n진단: Claude API 호출 단계에서 실패했습니다. 로그 파일의 HTTP 상태와 메시지를 확인하세요."
+        log_event("ERROR", "slack_command_failed", job_id=job_id, command=command_name, return_code=process.returncode, log=log_dir / log_name)
         raise RuntimeError(f"명령 실패: {' '.join(shlex.quote(a) for a in args)}\n로그: {log_dir / log_name}{hint}\n\n{tail}")
+    log_event("INFO", "slack_command_finished", job_id=job_id, command=command_name, return_code=process.returncode, log=log_dir / log_name)
     return stdout
 
 
@@ -792,6 +881,11 @@ def display_config_value(value):
 def display_effective_model(job, job_key, value):
     source = "override" if job_key in job else "env/default"
     return f"{value} ({source})"
+
+
+def env_value(key, default="-"):
+    value = os.environ.get(key)
+    return default if value in (None, "") else value
 
 
 # ── 설정 키: /set 메뉴 또는 key=value로 저장, run_auto/run 실행 시 자동 적용
@@ -1770,7 +1864,7 @@ def handle_callback(state, callback):
     job = chat_state(state, chat_id)
     if is_busy(job) and data not in ("cancel_all", "cancel_confirm", "show_status", "show_home"):
         send_message(chat_id, busy_message(job))
-        return
+        return True
     try:
         if data in ("show_home", "start_cancel"):
             job.pop("start_draft", None)
@@ -1937,11 +2031,14 @@ def handle_callback(state, callback):
                 return
             start_background_task(state, chat_id, job, f"{target} 재생성", lambda: handle_rerun(chat_id, job, "/rerun " + target))
     except Exception as exc:
-        send_message(chat_id, f"오류: {exc}")
+        job["last_error"] = str(exc)
+        _send_recovery_error(chat_id, data, exc)
+        return False
     finally:
         # Inline buttons mutate the per-chat job directly.  Keep those
         # changes durable just like the /set command path.
         save_state(state)
+    return True
 
 def go_back_to_stage(chat_id, job, target_stage):
     job_id = job.get("job_id")
@@ -2175,7 +2272,11 @@ def handle_message(state, message):
         else:
             send_message(chat_id, help_text())
     except Exception as exc:
-        send_message(chat_id, f"오류: {exc}")
+        job["last_error"] = str(exc)
+        log_event("ERROR", "slack_message_failed", channel=chat_id, job_id=job.get("job_id"), stage=job.get("stage"), error=exc)
+        _send_recovery_error(chat_id, "show_status", exc, label="메시지 또는 명령 처리")
+        return False
+    return True
 
 
 
@@ -2204,8 +2305,11 @@ def _dispatch_message(event):
         return
     job = chat_state(_STATE, channel_id)
     job["slack_thread_ts"] = event.get("thread_ts") or event.get("ts")
-    handle_message(_STATE, _event_to_message(event))
+    request = "파일 또는 텍스트 입력" if event.get("files") else "텍스트 입력"
+    log_event("INFO", "slack_message_received", channel=channel_id, user=user_id, request=request, stage=job.get("stage"), job_id=job.get("job_id"))
+    succeeded = handle_message(_STATE, _event_to_message(event))
     save_state(_STATE)
+    log_event("INFO" if succeeded is not False else "ERROR", "slack_message_processed", channel=channel_id, user=user_id, result="accepted" if succeeded is not False else "failed", stage=job.get("stage"), job_id=job.get("job_id"))
 
 
 def _dispatch_home_opened(event, client):
@@ -2224,8 +2328,27 @@ def _dispatch_action(body):
         return
     job = chat_state(_STATE, channel_id)
     job["slack_thread_ts"] = body.get("message", {}).get("thread_ts") or body.get("message", {}).get("ts")
-    handle_callback(_STATE, {"message": {"chat": {"id": channel_id}}, "data": actions[0].get("value", "")})
+    data = actions[0].get("value", "")
+    label = action_request_label(data)
+    log_event("INFO", "slack_action_requested", channel=channel_id, user=user_id, action=data, request=label, stage=job.get("stage"), job_id=job.get("job_id"))
+    try:
+        send_message(channel_id, f"요청됨: {label}")
+    except Exception as exc:
+        # The acknowledgement is helpful context, but it must never prevent
+        # the requested settings/status screen from opening.
+        log_event("WARNING", "slack_action_notice_failed", channel=channel_id, user=user_id, action=data, error=exc)
+    succeeded = handle_callback(_STATE, {"message": {"chat": {"id": channel_id}}, "data": data})
     save_state(_STATE)
+    log_event(
+        "INFO" if succeeded is not False else "ERROR",
+        "slack_action_finished",
+        channel=channel_id,
+        user=user_id,
+        action=data,
+        result="handled" if succeeded is not False else "failed",
+        stage=job.get("stage"),
+        job_id=job.get("job_id"),
+    )
     if body.get("view", {}).get("type") == "home" and user_id:
         publish_home(user_id)
 
@@ -2241,8 +2364,11 @@ def _dispatch_command(command, ack):
     text = "/" + command["command"].rsplit("/", 1)[-1]
     if command.get("text"):
         text += " " + command["text"]
-    handle_message(_STATE, {"chat": {"id": channel_id}, "text": text})
+    command_name = text.split(None, 1)[0]
+    log_event("INFO", "slack_slash_command_received", channel=channel_id, user=user_id, command=command_name, has_arguments=bool(command.get("text")), stage=job.get("stage"), job_id=job.get("job_id"))
+    succeeded = handle_message(_STATE, {"chat": {"id": channel_id}, "text": text})
     save_state(_STATE)
+    log_event("INFO" if succeeded is not False else "ERROR", "slack_slash_command_processed", channel=channel_id, user=user_id, command=command_name, result="accepted" if succeeded is not False else "failed", stage=job.get("stage"), job_id=job.get("job_id"))
 
 
 def announce_startup_home():

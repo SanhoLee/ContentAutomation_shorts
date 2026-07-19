@@ -70,4 +70,6 @@ cd ~/brain50/dev
 ./deploy/lightsail/stop_slack_service.sh dev
 ```
 
+버튼, 슬래시 명령, 메시지 입력, 백그라운드 작업 및 셸 명령의 요청·완료·실패 상태는 별도 파일 설정 없이 서비스 표준 출력에 기록됩니다. 위 `logs_slack_service.sh` 명령으로 `slack_action_requested`, `slack_action_finished`, `slack_task_finished`, `slack_command_failed` 등의 이벤트와 작업 ID·현재 단계를 바로 확인할 수 있습니다. 메시지 본문과 주제 원문은 로그에 남기지 않습니다.
+
 서비스 유닛의 기본 배포 경로는 기존 Telegram 유닛과 동일하게 `/home/ubuntu/brain50`입니다.

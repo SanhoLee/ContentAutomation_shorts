@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 import unittest
@@ -15,6 +17,75 @@ PROD_SPEC.loader.exec_module(prod_slack_bot)
 
 
 class SlackBotTests(unittest.TestCase):
+    def test_ai_model_settings_screen_uses_environment_default(self):
+        state = {"chats": {"C1": {}}}
+        screens = []
+        old_send_action = slack_bot.send_action_message
+        old_save_state = slack_bot.save_state
+        try:
+            slack_bot.send_action_message = lambda channel_id, text, rows: screens.append((text, rows))
+            slack_bot.save_state = lambda state: None
+            result = slack_bot.handle_callback(
+                state,
+                {"message": {"chat": {"id": "C1"}}, "data": "cfg:cat:models"},
+            )
+        finally:
+            slack_bot.send_action_message = old_send_action
+            slack_bot.save_state = old_save_state
+        self.assertTrue(result)
+        self.assertTrue(screens)
+        self.assertIn("AI 모델", screens[-1][0])
+        self.assertIn("스크립트 모델", screens[-1][0])
+        self.assertNotIn("env_value", state["chats"]["C1"].get("last_error", ""))
+        self.assertEqual(slack_bot.action_request_label("cfg:cat:models"), "AI 모델 열기")
+
+    def test_button_dispatch_announces_request_and_logs_result(self):
+        for module in (slack_bot, prod_slack_bot):
+            notices = []
+            original_state = module._STATE
+            old_allow = module._allow
+            old_send_message = module.send_message
+            old_handle_callback = module.handle_callback
+            old_save_state = module.save_state
+            try:
+                module._STATE = {"chats": {}}
+                module._allow = lambda channel_id, user_id: True
+                module.send_message = lambda channel_id, text: notices.append(text)
+                module.handle_callback = lambda state, callback: True
+                module.save_state = lambda state: None
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    module._dispatch_action({
+                        "channel": {"id": "C1"},
+                        "user": {"id": "U1"},
+                        "message": {"ts": "123.456"},
+                        "actions": [{"value": "show_status"}],
+                    })
+            finally:
+                module._STATE = original_state
+                module._allow = old_allow
+                module.send_message = old_send_message
+                module.handle_callback = old_handle_callback
+                module.save_state = old_save_state
+            self.assertIn("요청됨: 현재 작업 상태 확인", notices)
+            self.assertIn("slack_action_requested", output.getvalue())
+            self.assertIn("slack_action_finished", output.getvalue())
+            self.assertIn('result="handled"', output.getvalue())
+
+    def test_button_error_screen_has_safe_recovery_navigation(self):
+        for module in (slack_bot, prod_slack_bot):
+            screens = []
+            old_send_action = module.send_action_message
+            try:
+                module.send_action_message = lambda channel_id, text, rows: screens.append((text, rows))
+                module._send_recovery_error("C1", "open_settings", RuntimeError("설정 오류"))
+            finally:
+                module.send_action_message = old_send_action
+            text, rows = screens[-1]
+            self.assertIn("요청 처리 실패", text)
+            callbacks = {item["callback_data"] for row in rows for item in row}
+            self.assertEqual(callbacks, {"show_home", "open_settings", "show_status"})
+
     def test_home_screen_exposes_safe_content_entry_points(self):
         expected = {
             "start_content:review", "start_content:auto", "start_content:trend",

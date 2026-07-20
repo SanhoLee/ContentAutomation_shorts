@@ -168,6 +168,9 @@ def action_request_label(data):
         "show_home": "콘텐츠 홈 열기",
         "start_cancel": "시작 취소 후 홈으로 이동",
         "start_reenter_topic": "제작 주제 다시 입력",
+        "start_goal": "목표 기반 자동 기획 열기",
+        "goal:confirm": "목표 기반 기획 실행",
+        "goal:cancel": "목표 기획 취소 후 홈으로 이동",
         "open_settings": "제작 설정 열기",
         "show_status": "현재 작업 상태 확인",
         "cancel_all": "전체 작업 취소 확인",
@@ -186,6 +189,13 @@ def action_request_label(data):
         mode_label = START_MODES.get(mode, {}).get("label", mode)
         suffix = "선택" if data.startswith("start_content:") else "실행 확인"
         return f"{mode_label} {suffix}"
+    if data.startswith("goal:objective:"):
+        objective = data.split(":", 2)[2]
+        return f"{GOAL_OBJECTIVES.get(objective, {}).get('label', objective)} 목표 선택"
+    if data.startswith("goal:seed:"):
+        return "목표 기획 씨드 방식 선택"
+    if data.startswith("goal:back:"):
+        return "목표 기획 이전 단계로 이동"
     if data.startswith("cfg:cat:"):
         category_id = data.split(":", 2)[2]
         category = next((item for item in CONFIG_CATEGORIES if item[0] == category_id), None)
@@ -235,11 +245,34 @@ START_MODES = {
     "trend": {"label": "트렌드 후보에서 시작", "command": "/trend"},
 }
 
+GOAL_OBJECTIVES = {
+    "subscriber_growth": {
+        "label": "구독자 증가",
+        "description": "조회수 대비 순 구독 전환을 우선합니다.",
+    },
+    "reach": {
+        "label": "조회수·도달",
+        "description": "도달, 초반 몰입, 새로움을 우선합니다.",
+    },
+    "retention": {
+        "label": "평균 시청률",
+        "description": "시청 유지와 반복 시청 가능성을 우선합니다.",
+    },
+    "share_growth": {
+        "label": "공유율 강화",
+        "description": "공유할 이유와 실천 가능성을 우선합니다.",
+    },
+    "balanced": {
+        "label": "균형 성장",
+        "description": "채널의 여러 성과 지표를 균형 있게 봅니다.",
+    },
+}
+
 
 def home_button_rows():
     return [
         [button("단계별 검수 제작", "start_content:review"), button("자동 제작", "start_content:auto")],
-        [button("트렌드에서 시작", "start_content:trend")],
+        [button("목표 기반 자동 기획", "start_goal"), button("트렌드에서 시작", "start_content:trend")],
         [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("⌂ 홈 새로고침", "show_home")],
     ]
 
@@ -248,14 +281,19 @@ def home_screen_text(job=None, notice=None):
     job = job or {}
     lines = [
         "*Brain50 콘텐츠 제작 홈*",
-        "① 제작 방식을 선택하세요.",
-        "② 주제를 입력하고 실행 전 확인하세요.",
+        "① 제작 방식이나 목표 기반 자동 기획을 선택하세요.",
+        "② 주제를 입력하고 실행 전 확인하세요. 목표 기반 기획은 목표와 씨드를 선택합니다.",
         "③ 필요한 단계만 검수한 뒤 원하는 지점에서 끝까지 자동 처리할 수 있습니다.",
     ]
     if notice:
         lines.extend(("", notice))
+    goal_draft = job.get("goal_draft") or {}
     draft = job.get("start_draft") or {}
-    if draft:
+    if goal_draft:
+        objective = GOAL_OBJECTIVES.get(goal_draft.get("objective"), {})
+        state = "씨드 입력 대기" if goal_draft.get("awaiting_seed") else "선택 진행 중"
+        lines.extend(("", f"목표 기획 준비: {objective.get('label', '목표 선택')} · {state}"))
+    elif draft:
         mode = START_MODES.get(draft.get("mode"), {})
         state = "실행 확인 대기" if draft.get("topic") else "주제 입력 대기"
         lines.extend(("", f"시작 준비: {mode.get('label', draft.get('mode'))} · {state}"))
@@ -303,6 +341,7 @@ def prompt_start_topic(chat_id, job):
 def begin_start_flow(chat_id, job, mode, topic=None):
     if mode not in START_MODES:
         raise ValueError(f"알 수 없는 제작 방식입니다: {mode}")
+    job.pop("goal_draft", None)
     job["start_draft"] = {"mode": mode}
     if str(topic or "").strip():
         capture_start_topic(chat_id, job, topic)
@@ -355,6 +394,141 @@ def confirm_start_flow(state, chat_id, job, mode):
         target = lambda: handle_run(chat_id, job, command, trend=False)
         label = "스크립트 생성"
     start_background_task(state, chat_id, job, label, target)
+
+
+def goal_objective_rows():
+    return [
+        [button("구독자 증가", "goal:objective:subscriber_growth"), button("조회수·도달", "goal:objective:reach")],
+        [button("평균 시청률", "goal:objective:retention"), button("공유율 강화", "goal:objective:share_growth")],
+        [button("균형 성장", "goal:objective:balanced")],
+        [button("← 홈으로", "goal:cancel")],
+    ]
+
+
+def send_goal_objective_menu(chat_id, job, notice=None):
+    text = "*목표 기반 자동 기획 · 1/3 목표 선택*\n달성하고 싶은 핵심 성과를 선택하세요. 아직 실행되지 않습니다."
+    if notice:
+        text = notice + "\n\n" + text
+    send_action_message(chat_id, text, goal_objective_rows())
+
+
+def begin_goal_flow(chat_id, job):
+    job.pop("start_draft", None)
+    job["goal_draft"] = {}
+    send_goal_objective_menu(chat_id, job)
+
+
+def send_goal_seed_menu(chat_id, job):
+    draft = job.get("goal_draft") or {}
+    objective = GOAL_OBJECTIVES.get(draft.get("objective"))
+    if not objective:
+        send_goal_objective_menu(chat_id, job, "목표를 다시 선택하세요.")
+        return
+    send_action_message(
+        chat_id,
+        "\n".join([
+            "*목표 기반 자동 기획 · 2/3 씨드 선택*",
+            f"목표: {objective['label']}",
+            f"기준: {objective['description']}",
+            "",
+            "채널 데이터만으로 주제를 자동 선정하거나, 아이디어 범위를 좁힐 씨드를 입력할 수 있습니다.",
+        ]),
+        [[button("씨드 없이 자동 선정", "goal:seed:none"), button("씨드 직접 입력", "goal:seed:input")],
+         [button("← 목표 다시 선택", "goal:back:objectives"), button("시작 취소", "goal:cancel")]],
+    )
+
+
+def select_goal_objective(chat_id, job, objective):
+    if objective not in GOAL_OBJECTIVES:
+        raise ValueError(f"알 수 없는 목표입니다: {objective}")
+    job["goal_draft"] = {"objective": objective}
+    send_goal_seed_menu(chat_id, job)
+
+
+def prompt_goal_seed(chat_id, job):
+    draft = job.get("goal_draft") or {}
+    objective = GOAL_OBJECTIVES.get(draft.get("objective"))
+    if not objective:
+        send_goal_objective_menu(chat_id, job, "목표를 다시 선택하세요.")
+        return
+    draft.pop("seed", None)
+    draft["awaiting_seed"] = True
+    job["goal_draft"] = draft
+    send_action_message(
+        chat_id,
+        f"*목표 기반 자동 기획 · 2/3 씨드 입력*\n목표: {objective['label']}\n\n예: 수면, 기억력, 혈당\n아이디어 범위를 좁힐 단어나 문장을 다음 메시지로 입력하세요.",
+        [[button("씨드 없이 진행", "goal:seed:none"), button("← 이전", "goal:back:seed")],
+         [button("시작 취소", "goal:cancel")]],
+    )
+
+
+def send_goal_confirmation(chat_id, job):
+    draft = job.get("goal_draft") or {}
+    objective = GOAL_OBJECTIVES.get(draft.get("objective"))
+    if not objective or "seed" not in draft:
+        send_goal_objective_menu(chat_id, job, "목표 기획 정보가 완전하지 않습니다. 다시 선택하세요.")
+        return
+    seed = str(draft.get("seed") or "").strip()
+    send_action_message(
+        chat_id,
+        "\n".join([
+            "*목표 기반 자동 기획 · 3/3 실행 확인*",
+            f"목표: {objective['label']}",
+            f"씨드: {seed or '없음 — 채널 데이터 기반 자동 선정'}",
+            "",
+            "실행하면 채널 성과를 분석해 주제를 선정하고 스크립트를 생성합니다.",
+            "스크립트 생성 후에는 기존 승인형 검수 흐름에서 멈춥니다.",
+            "기존 작업 상태는 이 버튼을 누르는 시점에 교체되며 기존 산출물은 보존됩니다.",
+        ]),
+        [[button("실행하기", "goal:confirm"), button("씨드 변경", "goal:back:seed")],
+         [button("목표 변경", "goal:back:objectives"), button("시작 취소", "goal:cancel")]],
+    )
+
+
+def select_goal_seed_mode(chat_id, job, mode):
+    draft = job.get("goal_draft") or {}
+    if draft.get("objective") not in GOAL_OBJECTIVES:
+        send_goal_objective_menu(chat_id, job, "목표를 먼저 선택하세요.")
+        return
+    if mode == "input":
+        prompt_goal_seed(chat_id, job)
+        return
+    if mode != "none":
+        raise ValueError(f"알 수 없는 씨드 방식입니다: {mode}")
+    draft["seed"] = ""
+    draft.pop("awaiting_seed", None)
+    job["goal_draft"] = draft
+    send_goal_confirmation(chat_id, job)
+
+
+def capture_goal_seed(chat_id, job, seed):
+    draft = job.get("goal_draft") or {}
+    seed = str(seed or "").strip()
+    if not draft.get("awaiting_seed"):
+        return False
+    if not seed:
+        prompt_goal_seed(chat_id, job)
+        return True
+    draft["seed"] = seed
+    draft.pop("awaiting_seed", None)
+    job["goal_draft"] = draft
+    send_goal_confirmation(chat_id, job)
+    return True
+
+
+def confirm_goal_flow(state, chat_id, job):
+    draft = job.get("goal_draft") or {}
+    objective = draft.get("objective")
+    if objective not in GOAL_OBJECTIVES or "seed" not in draft:
+        send_goal_objective_menu(chat_id, job, "목표 기획 정보가 완전하지 않습니다. 다시 선택하세요.")
+        return
+    seed = str(draft.get("seed") or "").strip()
+    job.pop("goal_draft", None)
+    command = f"/run_goal {objective}" + (f" {seed}" if seed else "")
+    start_background_task(
+        state, chat_id, job, "목표 기반 기획",
+        lambda: handle_run_goal(chat_id, job, command),
+    )
 
 
 def workflow_status_text(job, detail=None):
@@ -1924,9 +2098,26 @@ def handle_callback(state, callback):
         send_message(chat_id, busy_message(job))
         return True
     try:
-        if data in ("show_home", "start_cancel"):
+        if data in ("show_home", "start_cancel", "goal:cancel"):
             job.pop("start_draft", None)
-            send_home_screen(chat_id, "홈으로 돌아왔습니다." if data == "start_cancel" else None)
+            job.pop("goal_draft", None)
+            send_home_screen(chat_id, "홈으로 돌아왔습니다." if data in ("start_cancel", "goal:cancel") else None)
+        elif data == "start_goal":
+            begin_goal_flow(chat_id, job)
+        elif data.startswith("goal:objective:"):
+            select_goal_objective(chat_id, job, data.split(":", 2)[2])
+        elif data.startswith("goal:seed:"):
+            select_goal_seed_mode(chat_id, job, data.split(":", 2)[2])
+        elif data == "goal:back:objectives":
+            job["goal_draft"] = {}
+            send_goal_objective_menu(chat_id, job)
+        elif data == "goal:back:seed":
+            draft = job.get("goal_draft") or {}
+            draft.pop("awaiting_seed", None)
+            job["goal_draft"] = draft
+            send_goal_seed_menu(chat_id, job)
+        elif data == "goal:confirm":
+            confirm_goal_flow(state, chat_id, job)
         elif data.startswith("start_content:"):
             begin_start_flow(chat_id, job, data.split(":", 1)[1])
         elif data == "start_reenter_topic":
@@ -2282,6 +2473,9 @@ def handle_message(state, message):
             or text.startswith("/goal_status") or text.startswith("/goal_report")
         ):
             send_message(chat_id, busy_message(job))
+            return
+        if (job.get("goal_draft") or {}).get("awaiting_seed") and text and not text.startswith("/"):
+            capture_goal_seed(chat_id, job, text)
             return
         if job.get("start_draft") and text and not text.startswith("/"):
             capture_start_topic(chat_id, job, text)

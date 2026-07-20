@@ -4,8 +4,10 @@ Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, 
 
 ## Slack에서 추가된 동작
 
-- 봇 서비스가 시작되면 `SLACK_CHANNEL_ID` 채널에 최상위 웰컴 홈을 게시합니다. `단계별 검수 제작`, `자동 제작`, `트렌드에서 시작`, `현재 작업`, `제작 설정` 버튼으로 진입할 수 있습니다.
+- 봇 서비스가 시작되면 `SLACK_CHANNEL_ID` 채널에 최상위 웰컴 홈을 게시합니다. `단계별 검수 제작`, `자동 제작`, `목표 기반 자동 기획`, `트렌드에서 시작`, `현재 작업`, `제작 설정` 버튼으로 진입할 수 있습니다.
 - 제작 버튼은 즉시 파이프라인을 실행하지 않습니다. `제작 방식 선택 → 주제 입력 → 실행 확인`의 2단계 입력을 완료하고 `실행하기`를 눌러야 실제 작업이 시작됩니다.
+- `목표 기반 자동 기획`은 `목표 선택 → 씨드 방식 선택 → 실행 확인` 순서로 진행합니다. 목표는 `구독자 증가`, `조회수·도달`, `평균 시청률`, `공유율 강화`, `균형 성장` 중에서 고릅니다. 씨드는 생략해 채널 데이터로 자동 선정하거나 다음 Slack 메시지로 직접 입력할 수 있습니다.
+- 목표 기획은 실행 확인 전까지 기존 작업 상태를 바꾸지 않습니다. 실행하면 채널 성과를 분석해 주제를 선정하고, 스크립트 생성 후 기존 승인형 검수 단계에서 멈춥니다. 판단이 `manual_review` 또는 `rejected`이면 기획 결과만 보존하고 제작을 시작하지 않습니다.
 - `/run 주제`, `/run_auto 주제`, `/trend 주제`로 직접 입력해도 즉시 실행되지 않고 같은 실행 확인 화면을 거칩니다. 주제 없이 명령하면 주제 입력 단계가 열립니다.
 - 주제 입력과 실행 확인 화면에는 `← 홈으로`와 `시작 취소`가 있습니다. 기존 작업을 보던 중 새 제작 버튼을 잘못 눌러도 홈으로 돌아가면 기존 작업 상태가 유지됩니다.
 - 모든 작업 메시지와 산출물은 명령을 보낸 메시지의 **스레드**에 모입니다. 여러 작업이 섞이는 것을 줄일 수 있습니다.
@@ -39,7 +41,7 @@ Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, 
    - `chat:write`, `files:write`, `files:read`
    - 명령을 읽을 채널 유형에 맞는 `channels:history`, `groups:history`, `im:history`, `mpim:history`
 4. Event Subscriptions에서 Socket Mode 이벤트로 `message.channels`(비공개 채널이면 `message.groups`)와 `app_home_opened`를 구독합니다. 봇을 대상 채널에 초대합니다.
-5. Slash Commands에 아래 명령을 등록하고 Request URL은 Slack이 Socket Mode로 수신하도록 설정합니다: `/run`, `/run_auto`, `/trend`, `/pick`, `/approve`, `/edit`, `/retry`, `/proceed`, `/rerun`, `/render`, `/set`, `/set_all`, `/app_status`, `/cancel`, `/help`. Slack 예약 명령인 `/status`는 등록하지 않습니다.
+5. Slash Commands를 함께 사용할 경우 아래 명령을 등록하고 Request URL은 Slack이 Socket Mode로 수신하도록 설정합니다: `/run`, `/run_auto`, `/run_goal`, `/trend`, `/pick`, `/approve`, `/edit`, `/retry`, `/proceed`, `/rerun`, `/render`, `/set`, `/set_all`, `/goal_status`, `/goal_report`, `/app_status`, `/cancel`, `/help`. 버튼만 사용할 때는 Slash Commands 등록이 필요하지 않습니다. Slack 예약 명령인 `/status`는 등록하지 않습니다.
 6. Slack 앱 설정의 **App Home**에서 Home Tab을 활성화합니다. 앱을 직접 열었을 때도 채널 웰컴 카드와 동일한 제작 홈을 사용할 수 있습니다.
 
 `secrets.sh`에 토큰과 접근 범위를 넣습니다. 값은 저장소에 커밋하지 않습니다.
@@ -69,6 +71,17 @@ cd ~/brain50/dev
 ./deploy/lightsail/logs_slack_service.sh dev
 ./deploy/lightsail/stop_slack_service.sh dev
 ```
+
+목표 기반 기획을 처음 수동으로 확인하려면 서비스를 재시작한 뒤 Slack에서 앱 Home 또는 채널의 새 홈 카드에서 다음 순서로 누릅니다.
+
+```text
+목표 기반 자동 기획
+→ 구독자 증가
+→ 씨드 없이 자동 선정
+→ 실행하기
+```
+
+기존 메시지에 게시된 홈 카드는 자동 갱신되지 않습니다. 서비스를 재시작한 뒤 기존 카드의 `⌂ 홈 새로고침`을 누르거나, 앱 Home을 다시 열거나, 등록돼 있다면 `/help`를 입력해 새 홈 카드에서 버튼을 사용합니다.
 
 버튼, 슬래시 명령, 메시지 입력, 백그라운드 작업 및 셸 명령의 요청·완료·실패 상태는 별도 파일 설정 없이 서비스 표준 출력에 기록됩니다. 위 `logs_slack_service.sh` 명령으로 `slack_action_requested`, `slack_action_finished`, `slack_task_finished`, `slack_command_failed` 등의 이벤트와 작업 ID·현재 단계를 바로 확인할 수 있습니다. 메시지 본문과 주제 원문은 로그에 남기지 않습니다.
 

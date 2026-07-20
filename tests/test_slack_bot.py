@@ -138,6 +138,96 @@ class SlackBotTests(unittest.TestCase):
                 module.start_background_task = old_start_background
                 module.save_state = old_save_state
 
+    def test_dev_goal_button_collects_objective_seed_and_confirms_before_start(self):
+        state = {"chats": {"C1": {"job_id": "existing", "stage": "await_script_approval"}}}
+        screens, started, commands = [], [], []
+        old_send_action = slack_bot.send_action_message
+        old_start_background = slack_bot.start_background_task
+        old_handle_run_goal = slack_bot.handle_run_goal
+        old_save_state = slack_bot.save_state
+        try:
+            slack_bot.send_action_message = lambda channel_id, text, rows: screens.append((text, rows))
+            slack_bot.start_background_task = lambda *args: started.append(args)
+            slack_bot.handle_run_goal = lambda channel_id, job, command: commands.append(command)
+            slack_bot.save_state = lambda state: None
+            callback = {"message": {"chat": {"id": "C1"}}, "data": "start_goal"}
+
+            slack_bot.handle_callback(state, callback)
+            job = state["chats"]["C1"]
+            self.assertEqual(job["job_id"], "existing")
+            self.assertEqual(job["goal_draft"], {})
+            self.assertIn("1/3 목표 선택", screens[-1][0])
+            self.assertFalse(started)
+
+            callback["data"] = "goal:objective:subscriber_growth"
+            slack_bot.handle_callback(state, callback)
+            self.assertEqual(job["goal_draft"]["objective"], "subscriber_growth")
+            self.assertIn("2/3 씨드 선택", screens[-1][0])
+
+            callback["data"] = "goal:seed:input"
+            slack_bot.handle_callback(state, callback)
+            self.assertTrue(job["goal_draft"]["awaiting_seed"])
+            self.assertIn("2/3 씨드 입력", screens[-1][0])
+
+            slack_bot.handle_message(state, {"chat": {"id": "C1"}, "text": "수면"})
+            self.assertEqual(job["goal_draft"]["seed"], "수면")
+            self.assertNotIn("awaiting_seed", job["goal_draft"])
+            self.assertIn("3/3 실행 확인", screens[-1][0])
+            self.assertIn("씨드: 수면", screens[-1][0])
+            self.assertEqual(job["job_id"], "existing")
+            self.assertFalse(started)
+
+            callback["data"] = "goal:confirm"
+            slack_bot.handle_callback(state, callback)
+            self.assertNotIn("goal_draft", job)
+            self.assertEqual(len(started), 1)
+            started[0][-1]()
+            self.assertEqual(commands, ["/run_goal subscriber_growth 수면"])
+        finally:
+            slack_bot.send_action_message = old_send_action
+            slack_bot.start_background_task = old_start_background
+            slack_bot.handle_run_goal = old_handle_run_goal
+            slack_bot.save_state = old_save_state
+
+    def test_dev_goal_button_supports_channel_data_only_selection(self):
+        state = {"chats": {"C1": {}}}
+        screens, started, commands = [], [], []
+        old_send_action = slack_bot.send_action_message
+        old_start_background = slack_bot.start_background_task
+        old_handle_run_goal = slack_bot.handle_run_goal
+        old_save_state = slack_bot.save_state
+        try:
+            slack_bot.send_action_message = lambda channel_id, text, rows: screens.append((text, rows))
+            slack_bot.start_background_task = lambda *args: started.append(args)
+            slack_bot.handle_run_goal = lambda channel_id, job, command: commands.append(command)
+            slack_bot.save_state = lambda state: None
+            callback = {"message": {"chat": {"id": "C1"}}, "data": "start_goal"}
+            slack_bot.handle_callback(state, callback)
+            callback["data"] = "goal:objective:balanced"
+            slack_bot.handle_callback(state, callback)
+            callback["data"] = "goal:seed:none"
+            slack_bot.handle_callback(state, callback)
+
+            self.assertIn("채널 데이터 기반 자동 선정", screens[-1][0])
+            callback["data"] = "goal:confirm"
+            slack_bot.handle_callback(state, callback)
+            started[0][-1]()
+            self.assertEqual(commands, ["/run_goal balanced"])
+        finally:
+            slack_bot.send_action_message = old_send_action
+            slack_bot.start_background_task = old_start_background
+            slack_bot.handle_run_goal = old_handle_run_goal
+            slack_bot.save_state = old_save_state
+
+    def test_dev_home_exposes_goal_planning_button(self):
+        callbacks = {
+            item["callback_data"]
+            for row in slack_bot.home_button_rows()
+            for item in row
+        }
+        self.assertIn("start_goal", callbacks)
+        self.assertEqual(slack_bot.action_request_label("start_goal"), "목표 기반 자동 기획 열기")
+
     def test_run_slash_commands_also_require_confirmation(self):
         commands = {
             "/run 주제 A": "review",

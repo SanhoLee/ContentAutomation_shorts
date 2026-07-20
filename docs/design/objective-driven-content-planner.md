@@ -76,6 +76,8 @@ python3 src/0_topic_plan.py refresh --objective subscriber_growth
 
 봇의 `/run_goal`은 기획 후 기존 승인형 스크립트 검수 흐름으로 연결한다. `manual_review` 또는 `rejected`이면 `topic_plan.json`을 보존하고 제작을 시작하지 않는다.
 
+Slack `dev` 홈에서는 명령 입력 없이 `목표 기반 자동 기획` 버튼으로 같은 흐름을 시작할 수 있다. 버튼 UI는 목표 선택, 씨드 없음/직접 입력 선택, 최종 실행 확인의 3단계로 구성한다. 최종 확인 전에는 기존 작업 상태를 유지한다. 이 UI는 dev 제한 원칙에 따라 `prod`에는 아직 반영하지 않는다.
+
 ## 목표 프로필
 
 지원 목표:

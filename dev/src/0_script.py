@@ -6,10 +6,10 @@ import re
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+from claude_cost import assert_budget, record_usage, web_search_total
 from script_runtime import load_runtime_settings
 
 SETTINGS = load_runtime_settings()
@@ -27,7 +27,6 @@ CLAUDE_HTTP_RETRIES = SETTINGS.claude_http_retries
 PUBMED_QUERY_TIMEOUT = SETTINGS.pubmed_query_timeout
 PUBMED_RETMAX = SETTINGS.pubmed_retmax
 PUBMED_ABSTRACT_CHAR_LIMIT = SETTINGS.pubmed_abstract_char_limit
-CLAUDE_MODEL = SETTINGS.claude_model
 CLAUDE_SCRIPT_MODEL = SETTINGS.claude_script_model
 CLAUDE_QUERY_MODEL = SETTINGS.claude_query_model
 CLAUDE_RESEARCH_MODEL = SETTINGS.claude_research_model
@@ -45,6 +44,7 @@ CASE_RESEARCH_TIMEOUT = SETTINGS.case_research_timeout
 CASE_RESEARCH_MAX_USES = SETTINGS.case_research_max_uses
 CASE_RESEARCH_MAX_TOKENS = SETTINGS.case_research_max_tokens
 CASE_RESEARCH_MAX_TOOL_TURNS = SETTINGS.case_research_max_tool_turns
+RESEARCH_MODE = SETTINGS.research_mode
 STRATEGY_PATH = SETTINGS.strategy_path
 YOUTUBE_FEEDBACK_STRICTNESS = SETTINGS.youtube_feedback_strictness
 YOUTUBE_FEEDBACK_AUTO_SYNC = SETTINGS.youtube_feedback_auto_sync
@@ -160,23 +160,36 @@ def strategy_model_candidates():
 # ─────────────────────────────────────────────
 
 
-def record_claude_usage(stage, model, response):
-    usage = response.get("usage") or {}
-    entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "stage": stage,
-        "model": model,
-        "response_id": response.get("id"),
-        "request_id": response.get("_request_id"),
-        "stop_reason": response.get("stop_reason"),
-        "input_tokens": usage.get("input_tokens", 0),
-        "output_tokens": usage.get("output_tokens", 0),
-        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
-        "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
-        "web_search_requests": ((usage.get("server_tool_use") or {}).get("web_search_requests", 0)),
-    }
-    with open(CLAUDE_USAGE_PATH, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+def record_claude_usage(stage, model, response, attempt=1, success=True):
+    return record_usage(
+        stage,
+        model,
+        response,
+        jsonl_path=CLAUDE_USAGE_PATH,
+        job_id=os.environ.get("JOB_ID"),
+        plan_id=_active_plan_id(),
+        attempt=attempt,
+        success=success,
+    )
+
+
+def _active_plan_id():
+    plan_path = Path(WORK_DIR) / "topic_plan.json"
+    if not plan_path.is_file():
+        return None
+    try:
+        return int((json.loads(plan_path.read_text(encoding="utf-8")).get("objective") or {}).get("plan_id"))
+    except (TypeError, ValueError, json.JSONDecodeError, OSError):
+        return None
+
+
+def enforce_claude_budget(anticipated_cost_usd=0.0):
+    assert_budget(
+        job_id=os.environ.get("JOB_ID"),
+        job_budget_usd=SETTINGS.claude_job_budget_usd,
+        daily_budget_usd=SETTINGS.claude_daily_budget_usd,
+        anticipated_cost_usd=anticipated_cost_usd,
+    )
 
 
 def call_claude_api(payload, timeout, label, stage):
@@ -196,6 +209,7 @@ def call_claude_api(payload, timeout, label, stage):
 
     for attempt in range(1, attempts + 1):
         try:
+            enforce_claude_budget()
             print(f"{label} 호출 시도 {attempt}/{attempts} (timeout={timeout}s)")
             res = requests.post(
                 "https://api.anthropic.com/v1/messages",
@@ -203,6 +217,16 @@ def call_claude_api(payload, timeout, label, stage):
                 json=payload,
                 timeout=timeout,
             )
+            if res.status_code >= 400:
+                try:
+                    failed_response = res.json()
+                except Exception:
+                    failed_response = {}
+                failed_response["_request_id"] = res.headers.get("request-id")
+                record_claude_usage(
+                    stage, payload.get("model", ""), failed_response,
+                    attempt=attempt, success=False,
+                )
             if res.status_code in CLAUDE_TRANSIENT_STATUSES:
                 last_error = requests.HTTPError(f"Claude transient status {res.status_code}: {res.text[:500]}")
                 if attempt <= CLAUDE_HTTP_RETRIES:
@@ -219,11 +243,13 @@ def call_claude_api(payload, timeout, label, stage):
             record_claude_usage(stage, payload.get("model", ""), data)
             return data
         except requests.ReadTimeout as exc:
+            record_claude_usage(stage, payload.get("model", ""), {}, attempt=attempt, success=False)
             raise RuntimeError(
                 f"{label} 응답 대기 시간이 초과되었습니다. 이미 서버에서 처리 중일 수 있어 "
                 "자동 재시도하지 않습니다. 같은 JOB을 바로 재시작하면 중복 과금될 수 있습니다."
             ) from exc
         except (requests.ConnectTimeout, requests.ConnectionError, requests.Timeout) as exc:
+            record_claude_usage(stage, payload.get("model", ""), {}, attempt=attempt, success=False)
             raise RuntimeError(
                 f"{label} 네트워크 타임아웃/연결 오류가 발생했습니다. 중복 과금 방지를 위해 "
                 "자동 재시도하지 않습니다."
@@ -394,7 +420,10 @@ def fetch_pubmed_abstracts(topic):
 # Claude 공통 호출 (tool_use 멀티턴 루프)
 # ─────────────────────────────────────────────
 
-def _call_claude_loop(messages, tools=None, max_tokens=1500, model=None, timeout=None, max_turns=10):
+def _call_claude_loop(
+    messages, tools=None, max_tokens=1500, model=None, timeout=None,
+    max_turns=10, stage="claude_loop",
+):
     import requests
     headers = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
                "anthropic-version": "2023-06-01", "content-type": "application/json"}
@@ -402,14 +431,33 @@ def _call_claude_loop(messages, tools=None, max_tokens=1500, model=None, timeout
     model   = model or CLAUDE_SCRIPT_MODEL
     current_messages = list(messages)
 
-    for _ in range(max_turns):
+    for turn_index in range(max_turns):
+        enforce_claude_budget()
+        if tools and web_search_total(job_id=os.environ.get("JOB_ID")) >= SETTINGS.claude_max_web_searches_per_job:
+            raise RuntimeError("작업별 Claude web_search 상한에 도달했습니다.")
         payload = {"model": model, "max_tokens": max_tokens, "messages": current_messages}
         if tools:
             payload["tools"] = tools
         res = requests.post("https://api.anthropic.com/v1/messages",
                             headers=headers, json=payload, timeout=timeout)
+        if res.status_code >= 400:
+            try:
+                failed_response = res.json()
+            except Exception:
+                failed_response = {}
+            failed_response["_request_id"] = res.headers.get("request-id")
+            record_claude_usage(
+                f"{stage}:turn_{turn_index + 1}", model, failed_response,
+                attempt=turn_index + 1, success=False,
+            )
         res.raise_for_status()
         data    = res.json()
+        data["_request_id"] = (
+            res.headers.get("request-id")
+            or res.headers.get("anthropic-request-id")
+            or res.headers.get("x-request-id")
+        )
+        record_claude_usage(f"{stage}:turn_{turn_index + 1}", model, data)
         content = data.get("content", [])
         current_messages.append({"role": "assistant", "content": content})
 
@@ -484,8 +532,8 @@ def fetch_web_research(topic, pubmed_query):
             model=CLAUDE_RESEARCH_MODEL,
             timeout=WEB_RESEARCH_TIMEOUT,
             max_turns=WEB_RESEARCH_MAX_TOOL_TURNS,
+            stage="web_research",
         )
-        record_claude_usage("web_research", CLAUDE_RESEARCH_MODEL, data)
         errors = web_search_error_codes(data)
         if errors:
             print(f"⚠️  web_search 도구 오류 (계속 진행): {', '.join(errors)}")
@@ -533,8 +581,8 @@ def fetch_case_and_stat_research(topic, pubmed_query):
             model=CLAUDE_RESEARCH_MODEL,
             timeout=CASE_RESEARCH_TIMEOUT,
             max_turns=CASE_RESEARCH_MAX_TOOL_TURNS,
+            stage="case_research",
         )
-        record_claude_usage("case_research", CLAUDE_RESEARCH_MODEL, data)
         errors = web_search_error_codes(data)
         if errors:
             print(f"⚠️  case_research web_search 도구 오류 (계속 진행): {', '.join(errors)}")
@@ -911,6 +959,7 @@ JSON만 출력. 설명·주석·마크다운 없이.
     for model in strategy_model_candidates():
         payload["model"] = model
         try:
+            enforce_claude_budget()
             print(f"📋 Stage 1: 전략 수립 중 (model={model}, max_tokens={CLAUDE_STRATEGY_MAX_TOKENS})...")
             res = requests.post(
                 "https://api.anthropic.com/v1/messages",
@@ -919,6 +968,12 @@ JSON만 출력. 설명·주석·마크다운 없이.
                 timeout=30,
             )
             if res.status_code >= 400:
+                try:
+                    failed_response = res.json()
+                except Exception:
+                    failed_response = {}
+                failed_response["_request_id"] = res.headers.get("request-id")
+                record_claude_usage("strategy", model, failed_response, success=False)
                 last_err = RuntimeError(describe_http_error(res))
                 print(f"  ⚠️  실패, 다음 모델로 전환: {last_err}")
                 continue
@@ -970,6 +1025,40 @@ def stage2_research_context(strategy, abstracts="", web_research=""):
         parts.append("[최신 영문 연구]\n" + str(web_research).strip())
     return "\n\n".join(parts)
 
+
+def adaptive_research_policy(pubmed_status, strategy=None):
+    """Choose expensive research only after the final topic/format is known."""
+    strategy = strategy or {}
+    content_design = strategy.get("content_design") or {}
+    format_type = str(content_design.get("format_type") or strategy.get("format_type") or "")
+    pubmed_sufficient = bool(pubmed_status and pubmed_status.get("status") == "ok")
+    if RESEARCH_MODE != "adaptive":
+        return {"web": True, "case": True, "reason": "configured_full"}
+    run_web = (not pubmed_sufficient) or format_type == "연구발견형"
+    run_case = format_type == "사례추적형"
+    return {
+        "web": run_web,
+        "case": run_case,
+        "reason": "pubmed_sufficient" if pubmed_sufficient else "pubmed_insufficient",
+    }
+
+
+def narrative_template(strategy):
+    design = strategy.get("content_design") or {}
+    format_type = str(design.get("format_type") or "오해반전형")
+    emotion_curve = design.get("emotion_curve") or ["공감", "이해", "안심", "행동"]
+    templates = {
+        "오해반전형": "익숙한 오해를 먼저 짚고, 근거로 반전한 뒤, 안전한 실천으로 마무리하세요.",
+        "자가진단형": "일상 신호를 차례로 점검하되 진단처럼 단정하지 말고 상담 기준과 실천을 제시하세요.",
+        "사례추적형": "한 생활 장면을 따라 원인 후보를 풀고, 사례를 일반화하지 않은 채 실천으로 연결하세요.",
+        "비교형": "두 대상을 같은 기준으로 나란히 비교하고, 조건별 선택 기준을 분명히 답하세요.",
+        "연구발견형": "연구가 새롭게 보여준 점, 한계, 일상에서의 의미 순서로 설명하세요.",
+        "행동챌린지형": "오늘 할 한 가지 행동을 초반에 약속하고, 방법과 확인 기준을 짧게 제시하세요.",
+    }
+    return format_type, [str(item) for item in emotion_curve], templates.get(
+        format_type, templates["오해반전형"]
+    )
+
 # Stage 2 — 프롬프트 빌더
 # ─────────────────────────────────────────────
 
@@ -991,6 +1080,8 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", youtu
     topic          = strategy.get("topic", main_keyword)
     search_format  = strategy.get("search_title_format", "")
     thumbnail_text = strategy.get("thumbnail_text", [])
+    objective = strategy.get("objective") or {}
+    format_type, emotion_curve, narrative_instruction = narrative_template(strategy)
     if isinstance(thumbnail_text, list):
         thumbnail_hint = " / ".join(str(item) for item in thumbnail_text if item)
     else:
@@ -1077,11 +1168,23 @@ main_keyword       : {main_keyword}
 훅(Hook) 유형      : {hook_type}
 핵심 메시지        : {core_message} (이 메시지가 영상 전체의 따뜻한 결론이 되어야 합니다)
 
+[이번 영상의 목표]
+{objective.get('type', 'balanced')} (결정={objective.get('decision', '기존 제작')}, 확신도={objective.get('confidence', '-')})
+
+[콘텐츠 형식]
+{format_type}
+
+[감정 곡선]
+{' → '.join(emotion_curve)}
+
+[형식별 서사 지침]
+{narrative_instruction}
+
 [콘텐츠 계약]
 {contract_block}
 {comparison_instruction}{source_mix_instruction}===
 
-위 자료를 바탕으로 유튜브 쇼츠 대본을 작성해 주세요. 시청자의 마음이 '불안'에서 시작해 '이해'를 거쳐, 마지막엔 깊은 '안도감과 희망'으로 이어지도록 흐름을 설계해야 합니다.
+위 자료를 바탕으로 유튜브 쇼츠 대본을 작성해 주세요. 지정한 형식과 감정 곡선을 따르되, 50대 이상 시청자를 불필요하게 겁주지 말고 마지막에는 안전한 실천 또는 판단 기준을 남기세요.
 
 [반드시 포함할 전개 비트]
 {beats_block}
@@ -1145,7 +1248,7 @@ main_keyword       : {main_keyword}
 
 def call_claude(prompt):
     payload = {
-        "model": CLAUDE_MODEL,
+        "model": CLAUDE_SCRIPT_MODEL,
         "max_tokens": MAX_TOKENS,
         "messages": [{"role": "user", "content": prompt}],
     }
@@ -1428,6 +1531,12 @@ def write_outputs(result, strategy, trend_context=None):
         "evidence_limit":      result.get("evidence_limit", ""),
         "source_mix":          strategy.get("source_mix", {}),
     }
+    if strategy.get("objective"):
+        meta["objective"] = strategy["objective"]
+    if strategy.get("content_design"):
+        meta["content_design"] = strategy["content_design"]
+    if strategy.get("strategy_source"):
+        meta["strategy_source"] = strategy["strategy_source"]
     if trend_context:
         meta["trend_context"] = trend_context
     with open(os.path.join(WORK_DIR, "video_meta.json"), "w", encoding="utf-8") as f:
@@ -1461,6 +1570,7 @@ def main():
 
     # ── 주제 결정
     trend_context = None
+    pre_strategy = None
     if args.trend_choice:
         topic, trend_context = load_trend_choice(args.trend_choice)
     elif args.topic_json:
@@ -1507,25 +1617,28 @@ def main():
         write_pubmed_status(topic, [], "continued_without_results", str(exc))
 
     pubmed_query = topic
+    pubmed_status = None
     if os.path.exists(PUBMED_STATUS_PATH):
         try:
             with open(PUBMED_STATUS_PATH, "r", encoding="utf-8") as f:
-                pubmed_query = json.load(f).get("pubmed_query") or topic
+                pubmed_status = json.load(f)
+                pubmed_query = pubmed_status.get("pubmed_query") or topic
         except Exception:
             pass
 
     # ── 2. web_search 보강
+    research_policy = adaptive_research_policy(pubmed_status, pre_strategy)
     web_research = ""
-    if ENABLE_WEB_RESEARCH and not args.no_web_research:
+    if ENABLE_WEB_RESEARCH and not args.no_web_research and research_policy["web"]:
         web_research = fetch_web_research(topic, pubmed_query)
     else:
-        print("ℹ️  web_search 비활성화")
+        print(f"ℹ️  web_search 생략 (mode={RESEARCH_MODE}, reason={research_policy['reason']})")
 
     case_research = ""
-    if ENABLE_CASE_RESEARCH and not args.no_web_research:
+    if ENABLE_CASE_RESEARCH and not args.no_web_research and research_policy["case"]:
         case_research = fetch_case_and_stat_research(topic, pubmed_query)
     else:
-        print("ℹ️  case_research 비활성화")
+        print(f"ℹ️  case_research 생략 (mode={RESEARCH_MODE}, format 기반)")
 
     # ── Stage 1: 전략 수립 (Haiku)
     if args.skip_strategy and os.path.exists(STRATEGY_PATH):

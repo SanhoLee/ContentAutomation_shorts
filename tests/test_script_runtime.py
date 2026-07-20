@@ -16,8 +16,12 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
         "SPEECH_PACE", "ATEMPO", "CHARS_PER_SEC", "TARGET_DURATION_SEC",
         "CLAUDE_MODEL", "CLAUDE_SCRIPT_MODEL", "CLAUDE_QUERY_MODEL", "CLAUDE_RESEARCH_MODEL", "CLAUDE_STRATEGY_MODEL",
         "CLAUDE_STRATEGY_FALLBACK_MODELS", "CLAUDE_STRATEGY_MAX_TOKENS",
-        "ENABLE_CASE_RESEARCH", "CASE_RESEARCH_MAX_USES",
-        "YOUTUBE_FEEDBACK_STRICTNESS", "YOUTUBE_FEEDBACK_AUTO_SYNC",
+        "CLAUDE_PLANNER_MODEL", "CLAUDE_CRITIC_MODEL", "CLAUDE_AUDIT_MODEL",
+        "CLAUDE_PLANNER_MAX_TOKENS", "CLAUDE_CRITIC_MAX_TOKENS", "CLAUDE_AUDIT_MAX_TOKENS",
+        "CLAUDE_JOB_BUDGET_USD", "CLAUDE_DAILY_BUDGET_USD",
+        "CLAUDE_MAX_WEB_SEARCHES_PER_JOB", "CLAUDE_COST_MODE", "RESEARCH_MODE",
+        "ENABLE_CASE_RESEARCH", "CASE_RESEARCH_MAX_USES", "WEB_RESEARCH_MAX_USES",
+        "YOUTUBE_FEEDBACK_STRICTNESS", "YOUTUBE_FEEDBACK_AUTO_SYNC", "YOUTUBE_FEEDBACK_SYNC_TTL_HOURS",
     )
 
     def load_settings(self, **values):
@@ -72,7 +76,15 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
     def test_case_research_defaults_enabled(self):
         settings = self.load_settings()
         self.assertTrue(settings.enable_case_research)
-        self.assertEqual(settings.case_research_max_uses, 3)
+        self.assertEqual(settings.case_research_max_uses, 2)
+
+    def test_objective_planner_cost_and_sync_defaults(self):
+        settings = self.load_settings()
+        self.assertEqual(settings.claude_planner_model, "claude-haiku-4-5-20251001")
+        self.assertEqual(settings.claude_critic_max_tokens, 900)
+        self.assertEqual(settings.research_mode, "adaptive")
+        self.assertEqual(settings.youtube_feedback_sync_ttl_hours, 6)
+        self.assertEqual(settings.claude_job_budget_usd, 0.30)
 
     def test_case_research_can_be_disabled_via_env(self):
         settings = self.load_settings(ENABLE_CASE_RESEARCH="false")

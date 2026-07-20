@@ -93,6 +93,16 @@ class ScriptRuntimeSettings:
     claude_strategy_model: str
     claude_strategy_fallback_models: tuple[str, ...]
     claude_strategy_max_tokens: int
+    claude_planner_model: str
+    claude_critic_model: str
+    claude_audit_model: str
+    claude_planner_max_tokens: int
+    claude_critic_max_tokens: int
+    claude_audit_max_tokens: int
+    claude_job_budget_usd: float
+    claude_daily_budget_usd: float
+    claude_max_web_searches_per_job: int
+    claude_cost_mode: str
     max_tokens: int
     enable_web_research: bool
     web_research_timeout: int
@@ -104,9 +114,11 @@ class ScriptRuntimeSettings:
     case_research_max_uses: int
     case_research_max_tokens: int
     case_research_max_tool_turns: int
+    research_mode: str
     strategy_path: str
     youtube_feedback_strictness: str
     youtube_feedback_auto_sync: bool
+    youtube_feedback_sync_ttl_hours: int
     total_chars: int
     prompt_target_chars: int
     min_scenes_estimate: int
@@ -141,22 +153,34 @@ def load_runtime_settings():
         claude_strategy_model=os.environ.get("CLAUDE_STRATEGY_MODEL", "claude-haiku-4-5-20251001"),
         claude_strategy_fallback_models=env_csv("CLAUDE_STRATEGY_FALLBACK_MODELS", ("claude-sonnet-4-5-20250929",)),
         claude_strategy_max_tokens=env_int("CLAUDE_STRATEGY_MAX_TOKENS", 2000),
+        claude_planner_model=os.environ.get("CLAUDE_PLANNER_MODEL", "claude-haiku-4-5-20251001"),
+        claude_critic_model=os.environ.get("CLAUDE_CRITIC_MODEL", "claude-haiku-4-5-20251001"),
+        claude_audit_model=os.environ.get("CLAUDE_AUDIT_MODEL", "claude-haiku-4-5-20251001"),
+        claude_planner_max_tokens=env_int("CLAUDE_PLANNER_MAX_TOKENS", 1200),
+        claude_critic_max_tokens=env_int("CLAUDE_CRITIC_MAX_TOKENS", 900),
+        claude_audit_max_tokens=env_int("CLAUDE_AUDIT_MAX_TOKENS", 1600),
+        claude_job_budget_usd=env_float("CLAUDE_JOB_BUDGET_USD", 0.30),
+        claude_daily_budget_usd=env_float("CLAUDE_DAILY_BUDGET_USD", 1.00),
+        claude_max_web_searches_per_job=env_int("CLAUDE_MAX_WEB_SEARCHES_PER_JOB", 4),
+        claude_cost_mode=os.environ.get("CLAUDE_COST_MODE", "balanced"),
         max_tokens=env_int("MAX_TOKENS", 2600),
         enable_web_research=env_bool("ENABLE_WEB_RESEARCH", True),
         web_research_timeout=env_int("WEB_RESEARCH_TIMEOUT", 60),
-        web_research_max_uses=env_int("WEB_RESEARCH_MAX_USES", 3),
+        web_research_max_uses=env_int("WEB_RESEARCH_MAX_USES", 2),
         web_research_max_tokens=env_int("WEB_RESEARCH_MAX_TOKENS", 900),
         web_research_max_tool_turns=env_int("WEB_RESEARCH_MAX_TOOL_TURNS", 2),
         enable_case_research=env_bool("ENABLE_CASE_RESEARCH", True),
         case_research_timeout=env_int("CASE_RESEARCH_TIMEOUT", 60),
-        case_research_max_uses=env_int("CASE_RESEARCH_MAX_USES", 3),
+        case_research_max_uses=env_int("CASE_RESEARCH_MAX_USES", 2),
         case_research_max_tokens=env_int("CASE_RESEARCH_MAX_TOKENS", 900),
         case_research_max_tool_turns=env_int("CASE_RESEARCH_MAX_TOOL_TURNS", 2),
+        research_mode=os.environ.get("RESEARCH_MODE", "adaptive").strip().lower(),
         strategy_path=os.environ.get("STRATEGY_PATH", os.path.join(work_dir, "strategy.json")),
         youtube_feedback_strictness=youtube_feedback_strictness(
             os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS", "balanced")
         ),
         youtube_feedback_auto_sync=env_bool("YOUTUBE_FEEDBACK_AUTO_SYNC", True),
+        youtube_feedback_sync_ttl_hours=env_int("YOUTUBE_FEEDBACK_SYNC_TTL_HOURS", 6),
         total_chars=total_chars,
         prompt_target_chars=prompt_target_chars,
         min_scenes_estimate=min_scenes_estimate,

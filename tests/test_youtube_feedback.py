@@ -261,6 +261,52 @@ class YouTubeFeedbackTests(unittest.TestCase):
         self.assertEqual(guidance["strictness"], "balanced")
         conn.close()
 
+    def test_migration_is_idempotent_enables_wal_and_preserves_data(self):
+        conn = youtube_feedback.connect(self.db)
+        with conn:
+            youtube_feedback.store_videos(conn, [self.sample_video()])
+        conn.close()
+        conn = youtube_feedback.connect(self.db)
+        self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
+        self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0], 1)
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn("performance_snapshots", tables)
+        self.assertIn("planning_runs", tables)
+        self.assertIn("claude_usage", tables)
+        conn.close()
+
+    def test_snapshot_windows_and_video_linkage_remain_separate(self):
+        conn = youtube_feedback.connect(self.db)
+        with conn:
+            youtube_feedback.store_videos(conn, [self.sample_video()])
+            base = {
+                "video_id": "v1", "period_start": "2026-07-01",
+                "elapsed_days": 28, "views": 100, "engaged_views": 70,
+                "fetched_at": "2026-07-20T00:00:00+00:00",
+            }
+            youtube_feedback.store_performance_snapshot(conn, {
+                **base, "window_name": "D7", "period_end": "2026-07-07",
+            })
+            youtube_feedback.store_performance_snapshot(conn, {
+                **base, "window_name": "D28", "period_end": "2026-07-28", "views": 250,
+            })
+            youtube_feedback.register_video_job(
+                conn, job_id="job_1", topic="수면", plan_id=None, objective_id=None
+            )
+            youtube_feedback.link_uploaded_video(
+                conn, job_id="job_1", video_id="uploaded_1",
+                uploaded_at="2026-07-20T07:30:00+09:00", topic="수면",
+                plan={"objective": {"type": "retention"}, "content_design": {"format_type": "자가진단형"}},
+            )
+        rows = conn.execute(
+            "SELECT window_name, views FROM performance_snapshots WHERE video_id='v1' ORDER BY window_name"
+        ).fetchall()
+        self.assertEqual([(row["window_name"], row["views"]) for row in rows], [("D28", 250), ("D7", 100)])
+        linked = conn.execute("SELECT video_id FROM video_jobs WHERE job_id='job_1'").fetchone()
+        self.assertEqual(linked["video_id"], "uploaded_1")
+        conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

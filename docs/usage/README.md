@@ -1,5 +1,7 @@
 # Usage Guides
 
+목표 지표 기반 자동 기획은 [Objective-driven content planner](../design/objective-driven-content-planner.md)를 참고하세요.
+
 이 폴더는 ContentAutomation Shorts 파이프라인의 다양한 실행 방법과 유스케이스를 정리한 가이드 모음입니다.
 
 ## 가이드 목록

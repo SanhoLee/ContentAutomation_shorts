@@ -1266,6 +1266,64 @@ def run_script_generation(chat_id, job, args):
         raise
 
 
+def handle_run_goal(chat_id, job, text):
+    parts = text.split(maxsplit=2)
+    if len(parts) < 2:
+        send_message(chat_id, "목표를 입력하세요. 예: /run_goal subscriber_growth 수면")
+        return
+    objective = parts[1].strip()
+    seed = parts[2].strip() if len(parts) > 2 else ""
+    job_id = new_job_id("goal")
+    settings = _preserve_settings(job)
+    busy = job.get("busy")
+    job.clear()
+    job.update({
+        "job_id": job_id, "topic": seed, "objective": objective,
+        "approval_required": True, "stage": "running_goal_plan",
+    })
+    job.update(settings)
+    if busy:
+        job["busy"] = busy
+    plan_path = work_dir(job_id) / "topic_plan.json"
+    args = [
+        "python3", str(BASE_DIR / "src" / "0_topic_plan.py"), "plan",
+        "--objective", objective, "--job-id", job_id, "--output", str(plan_path),
+    ]
+    if seed:
+        args.extend(["--seed", seed])
+    send_message(chat_id, f"목표 기반 기획 시작: {objective}" + (f" / 씨드: {seed}" if seed else ""))
+    run_command(args, job_id, seed, extra_env=_build_extra_env(job))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    goal = plan.get("objective") or {}
+    job["topic"] = plan.get("topic") or seed
+    job["plan_id"] = goal.get("plan_id")
+    send_message(chat_id, "\n".join([
+        f"목표: {objective}",
+        f"상태: {goal.get('decision', 'manual_review')}",
+        f"선정 주제: {job['topic']}",
+        f"선정 이유: {goal.get('reason', '결정론 점수와 위험 검토 결과')}",
+        f"주의: 확신도 {goal.get('confidence', 0):.2f}; 성과를 보장하지 않습니다.",
+    ]))
+    send_file_or_path(chat_id, plan_path, "topic_plan.json")
+    if goal.get("decision") in ("manual_review", "rejected"):
+        job["stage"] = "await_goal_review"
+        send_message(chat_id, "데이터가 오래됐거나 모든 후보 점수가 낮아 자동 제작을 중단했습니다.")
+        return
+    run_script_generation(
+        chat_id, job,
+        [str(BASE_DIR / "sh" / "0_script.sh"), "--topic-json", str(plan_path)],
+    )
+
+
+def handle_goal_query(chat_id, job, command):
+    job_id = job.get("job_id") or "goal_status"
+    output = run_command(
+        ["python3", str(BASE_DIR / "src" / "0_topic_plan.py"), command], job_id,
+        job.get("topic"), extra_env=_build_extra_env(job),
+    )
+    send_message(chat_id, output[-MAX_TEXT_PREVIEW:] or "목표 기획 이력이 없습니다.")
+
+
 def handle_run_auto(chat_id, job, text):
     topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
     if not topic:
@@ -1778,6 +1836,9 @@ def command_specs():
         ("set", "카테고리별 설정 메뉴 열기"),
         ("set_all", "현재 전체 설정 한 번에 보기"),
         ("run_auto", "승인 없이 전체 파이프라인 실행"),
+        ("run_goal", "목표 기반 주제 기획 후 승인형 제작"),
+        ("goal_status", "최근 목표 기획 상태"),
+        ("goal_report", "목표 기획·가설 보고서"),
         ("trend", "트렌드 후보 조회"),
         ("pick", "트렌드 후보 선택"),
         ("approve", "현재 산출물 승인"),
@@ -1817,6 +1878,8 @@ def help_text():
         "/set font_size=62 web=off  <- 기존 빠른 입력도 지원",
         "/set reset  <- 저장한 override 전체 초기화",
         "/run_auto 오메가3가 정말 뇌에 좋을까?",
+        "/run_goal subscriber_growth 수면",
+        "/goal_status | /goal_report",
         "/status",
         "/cancel",
         "",
@@ -1835,7 +1898,10 @@ def handle_message(state, message):
 
     job = chat_state(state, chat_id)
     try:
-        if is_busy(job) and not text.startswith("/status"):
+        if is_busy(job) and not (
+            text.startswith("/status") or text.startswith("/goal_status")
+            or text.startswith("/goal_report")
+        ):
             send_message(chat_id, busy_message(job))
             return
         if apply_config_edit_message(chat_id, job, message):
@@ -1859,6 +1925,12 @@ def handle_message(state, message):
         elif text.startswith("/set"):
             handle_set(chat_id, job, text)
             save_state(state)
+        elif text == "/run_goal" or text.startswith("/run_goal "):
+            start_background_task(state, chat_id, job, "목표 기반 기획", lambda: handle_run_goal(chat_id, job, text))
+        elif text.startswith("/goal_status"):
+            handle_goal_query(chat_id, job, "status")
+        elif text.startswith("/goal_report"):
+            handle_goal_query(chat_id, job, "report")
         elif text.startswith("/run_auto "):
             start_background_task(state, chat_id, job, "자동 실행", lambda: handle_run_auto(chat_id, job, text))
         elif text.startswith("/run "):

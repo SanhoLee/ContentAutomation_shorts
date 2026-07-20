@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""YouTube \ucc44\ub110 \uc131\uacfc\ub97c \uc77d\uae30 \uc804\uc6a9\uc73c\ub85c \uc218\uc9d1\u00b7\ubd84\uc11d\ud558\ub294 \ub3c5\ub9bd\ud615 MVP.
+"""YouTube 채널 성과 저장소와 목표 기반 분석 기능.
 
-\uae30\uc874 \uc81c\uc791/\uc5c5\ub85c\ub4dc \ud30c\uc774\ud504\ub77c\uc778\uacfc DB\ub97c \uacf5\uc720\ud558\uc9c0 \uc54a\ub294\ub2e4.
+기존 read-only 피드백 DB를 제작 작업, 성과 스냅샷, 전략 가설과
+공유하도록 확장한다. 업로드 API 권한과 성과 수집 권한은 계속 분리한다.
 
 \uc0ac\uc6a9\ubc95:
   python dev/src/6_youtube_feedback.py sync
@@ -181,6 +182,157 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     video_count INTEGER DEFAULT 0,
     error_message TEXT
 );
+CREATE TABLE IF NOT EXISTS objectives (
+    objective_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    objective_type TEXT NOT NULL,
+    profile_version INTEGER NOT NULL DEFAULT 1,
+    target_value REAL,
+    target_unit TEXT,
+    improvement_target REAL,
+    horizon_days INTEGER NOT NULL DEFAULT 28,
+    priority INTEGER NOT NULL DEFAULT 1,
+    weights_json TEXT NOT NULL,
+    constraints_json TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS video_jobs (
+    job_id TEXT PRIMARY KEY,
+    video_id TEXT UNIQUE,
+    plan_id INTEGER,
+    objective_id INTEGER,
+    topic TEXT NOT NULL,
+    uploaded_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(video_id) REFERENCES videos(video_id),
+    FOREIGN KEY(objective_id) REFERENCES objectives(objective_id)
+);
+CREATE TABLE IF NOT EXISTS content_features (
+    video_id TEXT PRIMARY KEY,
+    job_id TEXT,
+    objective_type TEXT,
+    topic_family TEXT,
+    angle TEXT,
+    format_type TEXT,
+    hook_type TEXT,
+    emotion_curve_json TEXT,
+    cta_type TEXT,
+    main_keyword TEXT,
+    sub_keywords_json TEXT,
+    series_key TEXT,
+    exploration_mode TEXT,
+    plan_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(video_id) REFERENCES videos(video_id),
+    FOREIGN KEY(job_id) REFERENCES video_jobs(job_id)
+);
+CREATE TABLE IF NOT EXISTS performance_snapshots (
+    video_id TEXT NOT NULL,
+    window_name TEXT NOT NULL,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    elapsed_days INTEGER,
+    views INTEGER,
+    engaged_views INTEGER,
+    average_view_duration REAL,
+    average_view_percentage REAL,
+    likes INTEGER,
+    dislikes INTEGER,
+    comments INTEGER,
+    shares INTEGER,
+    subscribers_gained INTEGER,
+    subscribers_lost INTEGER,
+    shorts_feed_views INTEGER,
+    shorts_feed_engaged_views INTEGER,
+    search_views INTEGER,
+    browse_views INTEGER,
+    suggested_views INTEGER,
+    external_views INTEGER,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY(video_id, window_name),
+    FOREIGN KEY(video_id) REFERENCES videos(video_id)
+);
+CREATE TABLE IF NOT EXISTS planning_runs (
+    plan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT,
+    objective_id INTEGER NOT NULL,
+    seed_topic TEXT,
+    candidate_pool_json TEXT NOT NULL,
+    planner_output_json TEXT,
+    critic_output_json TEXT,
+    selected_candidate_json TEXT,
+    selection_mode TEXT NOT NULL,
+    base_score REAL,
+    adjusted_score REAL,
+    confidence REAL,
+    decision TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(objective_id) REFERENCES objectives(objective_id)
+);
+CREATE TABLE IF NOT EXISTS strategy_hypotheses (
+    hypothesis_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    objective_type TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL,
+    contradiction_refs_json TEXT NOT NULL,
+    confounders_json TEXT NOT NULL,
+    support_count INTEGER NOT NULL DEFAULT 0,
+    contradiction_count INTEGER NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    status TEXT NOT NULL DEFAULT 'testing',
+    ttl_videos INTEGER NOT NULL DEFAULT 10,
+    videos_since_validation INTEGER NOT NULL DEFAULT 0,
+    last_validated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS hypothesis_observations (
+    hypothesis_id INTEGER NOT NULL,
+    video_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(hypothesis_id, video_id),
+    FOREIGN KEY(hypothesis_id) REFERENCES strategy_hypotheses(hypothesis_id),
+    FOREIGN KEY(video_id) REFERENCES videos(video_id)
+);
+CREATE TABLE IF NOT EXISTS strategy_audits (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    objective_type TEXT NOT NULL,
+    audit_type TEXT NOT NULL,
+    video_count INTEGER NOT NULL,
+    model TEXT,
+    output_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trend_observations (
+    topic TEXT NOT NULL,
+    source TEXT NOT NULL,
+    observed_date TEXT NOT NULL,
+    PRIMARY KEY(topic, source, observed_date)
+);
+CREATE TABLE IF NOT EXISTS claude_usage (
+    usage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT,
+    plan_id INTEGER,
+    stage TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    model TEXT NOT NULL,
+    response_id TEXT,
+    request_id TEXT,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+    web_search_requests INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    success INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_window ON performance_snapshots(window_name, period_end);
+CREATE INDEX IF NOT EXISTS idx_planning_runs_job ON planning_runs(job_id);
+CREATE INDEX IF NOT EXISTS idx_usage_job ON claude_usage(job_id);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_objective ON strategy_hypotheses(objective_type, status);
 """
 
 ANALYTICS_COLUMN_MIGRATIONS = {
@@ -189,17 +341,31 @@ ANALYTICS_COLUMN_MIGRATIONS = {
     "shorts_feed_engaged_views": "INTEGER",
 }
 
+VIDEO_COLUMN_MIGRATIONS = {
+    "upload_jst_hour": "INTEGER",
+    "upload_jst_weekday": "INTEGER",
+    "upload_month": "INTEGER",
+    "hours_since_previous_upload": "REAL",
+}
+
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
     target = path or db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target)
+    conn = sqlite3.connect(target, timeout=5.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(analytics)")}
     for column, column_type in ANALYTICS_COLUMN_MIGRATIONS.items():
         if column not in existing_columns:
             conn.execute(f"ALTER TABLE analytics ADD COLUMN {column} {column_type}")
+    existing_video_columns = {row["name"] for row in conn.execute("PRAGMA table_info(videos)")}
+    for column, column_type in VIDEO_COLUMN_MIGRATIONS.items():
+        if column not in existing_video_columns:
+            conn.execute(f"ALTER TABLE videos ADD COLUMN {column} {column_type}")
     conn.commit()
     return conn
 
@@ -484,8 +650,9 @@ def fetch_shorts_feed_analytics(
 VIDEO_UPSERT = """
 INSERT INTO videos (
     video_id, title, description, published_at, duration_seconds,
-    view_count, like_count, comment_count, fetched_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    view_count, like_count, comment_count, fetched_at, upload_jst_hour,
+    upload_jst_weekday, upload_month, hours_since_previous_upload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(video_id) DO UPDATE SET
     title=excluded.title,
     description=excluded.description,
@@ -494,6 +661,10 @@ ON CONFLICT(video_id) DO UPDATE SET
     view_count=COALESCE(excluded.view_count, videos.view_count),
     like_count=COALESCE(excluded.like_count, videos.like_count),
     comment_count=COALESCE(excluded.comment_count, videos.comment_count),
+    upload_jst_hour=COALESCE(excluded.upload_jst_hour, videos.upload_jst_hour),
+    upload_jst_weekday=COALESCE(excluded.upload_jst_weekday, videos.upload_jst_weekday),
+    upload_month=COALESCE(excluded.upload_month, videos.upload_month),
+    hours_since_previous_upload=COALESCE(excluded.hours_since_previous_upload, videos.hours_since_previous_upload),
     fetched_at=excluded.fetched_at
 """
 
@@ -524,11 +695,42 @@ ON CONFLICT(video_id, period_start, period_end) DO UPDATE SET
 
 
 def store_videos(conn: sqlite3.Connection, videos: Sequence[dict[str, Any]]) -> None:
+    def parsed(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    dated = sorted(
+        ((parsed(video.get("published_at")), video.get("video_id")) for video in videos),
+        key=lambda item: item[0] or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    previous_hours: dict[str, float | None] = {}
+    previous: datetime | None = None
+    for published, video_id in dated:
+        if not video_id:
+            continue
+        previous_hours[str(video_id)] = (
+            (published - previous).total_seconds() / 3600.0
+            if published is not None and previous is not None else None
+        )
+        if published is not None:
+            previous = published
+
+    jst = timezone(timedelta(hours=9))
     for video in videos:
+        published = parsed(video.get("published_at"))
+        published_jst = published.astimezone(jst) if published else None
         conn.execute(VIDEO_UPSERT, (
             video["video_id"], video["title"], video.get("description"), video.get("published_at"),
             video.get("duration_seconds"), video.get("view_count"), video.get("like_count"),
             video.get("comment_count"), video["fetched_at"],
+            published_jst.hour if published_jst else None,
+            published_jst.weekday() if published_jst else None,
+            published_jst.month if published_jst else None,
+            previous_hours.get(str(video["video_id"])),
         ))
         conn.execute("DELETE FROM keywords WHERE video_id=?", (video["video_id"],))
         for source in ("title", "description"):
@@ -560,6 +762,231 @@ def store_analytics(
             nullable_number(source.get("shortsFeedViews")),
             nullable_number(source.get("shortsFeedEngagedViews")), fetched_at,
         ))
+
+
+SNAPSHOT_WINDOWS = ("D1_APPROX", "D7", "D28", "ROLLING_90D")
+SNAPSHOT_UPSERT = """
+INSERT INTO performance_snapshots (
+    video_id, window_name, period_start, period_end, elapsed_days, views,
+    engaged_views, average_view_duration, average_view_percentage, likes,
+    dislikes, comments, shares, subscribers_gained, subscribers_lost,
+    shorts_feed_views, shorts_feed_engaged_views, search_views, browse_views,
+    suggested_views, external_views, fetched_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(video_id, window_name) DO UPDATE SET
+    period_start=excluded.period_start,
+    period_end=excluded.period_end,
+    elapsed_days=excluded.elapsed_days,
+    views=excluded.views,
+    engaged_views=excluded.engaged_views,
+    average_view_duration=excluded.average_view_duration,
+    average_view_percentage=excluded.average_view_percentage,
+    likes=excluded.likes,
+    dislikes=excluded.dislikes,
+    comments=excluded.comments,
+    shares=excluded.shares,
+    subscribers_gained=excluded.subscribers_gained,
+    subscribers_lost=excluded.subscribers_lost,
+    shorts_feed_views=excluded.shorts_feed_views,
+    shorts_feed_engaged_views=excluded.shorts_feed_engaged_views,
+    search_views=excluded.search_views,
+    browse_views=excluded.browse_views,
+    suggested_views=excluded.suggested_views,
+    external_views=excluded.external_views,
+    fetched_at=excluded.fetched_at
+"""
+
+
+def duration_bucket(seconds: int | float | None) -> str:
+    value = float(seconds or 0)
+    if value <= 35:
+        return "0_35"
+    if value <= 50:
+        return "36_50"
+    if value <= 65:
+        return "51_65"
+    return "66_plus"
+
+
+def snapshot_period(
+    published_at: str,
+    window_name: str,
+    *,
+    as_of: date | None = None,
+) -> tuple[str, str, int] | None:
+    if window_name not in SNAPSHOT_WINDOWS:
+        raise ValueError(f"알 수 없는 snapshot window: {window_name}")
+    try:
+        published = datetime.fromisoformat(published_at.replace("Z", "+00:00")).date()
+    except (AttributeError, ValueError):
+        return None
+    available_end = as_of or (date.today() - timedelta(days=2))
+    elapsed = max(0, (available_end - published).days + 1)
+    if window_name == "D1_APPROX":
+        required_days = 2
+    elif window_name == "D7":
+        required_days = 7
+    elif window_name == "D28":
+        required_days = 28
+    else:
+        start = max(published, available_end - timedelta(days=89))
+        return start.isoformat(), available_end.isoformat(), elapsed
+    if elapsed < required_days:
+        return None
+    end = published + timedelta(days=required_days - 1)
+    return published.isoformat(), end.isoformat(), elapsed
+
+
+def store_performance_snapshot(conn: sqlite3.Connection, snapshot: dict[str, Any]) -> None:
+    window_name = str(snapshot.get("window_name") or "")
+    if window_name not in SNAPSHOT_WINDOWS:
+        raise ValueError(f"알 수 없는 snapshot window: {window_name}")
+    conn.execute(SNAPSHOT_UPSERT, (
+        snapshot["video_id"], window_name, snapshot["period_start"], snapshot["period_end"],
+        snapshot.get("elapsed_days"), nullable_number(snapshot.get("views")),
+        nullable_number(snapshot.get("engaged_views")),
+        nullable_number(snapshot.get("average_view_duration"), float),
+        nullable_number(snapshot.get("average_view_percentage"), float),
+        nullable_number(snapshot.get("likes")), nullable_number(snapshot.get("dislikes")),
+        nullable_number(snapshot.get("comments")), nullable_number(snapshot.get("shares")),
+        nullable_number(snapshot.get("subscribers_gained")),
+        nullable_number(snapshot.get("subscribers_lost")),
+        nullable_number(snapshot.get("shorts_feed_views")),
+        nullable_number(snapshot.get("shorts_feed_engaged_views")),
+        nullable_number(snapshot.get("search_views")), nullable_number(snapshot.get("browse_views")),
+        nullable_number(snapshot.get("suggested_views")), nullable_number(snapshot.get("external_views")),
+        snapshot.get("fetched_at") or iso_now(),
+    ))
+
+
+def store_performance_snapshots(
+    conn: sqlite3.Connection,
+    snapshots: Sequence[dict[str, Any]],
+) -> None:
+    for snapshot in snapshots:
+        store_performance_snapshot(conn, snapshot)
+
+
+def _snapshot_from_api_row(
+    video_id: str,
+    window_name: str,
+    period_start: str,
+    period_end: str,
+    elapsed_days: int,
+    source: dict[str, Any],
+    fetched_at: str,
+) -> dict[str, Any]:
+    return {
+        "video_id": video_id,
+        "window_name": window_name,
+        "period_start": period_start,
+        "period_end": period_end,
+        "elapsed_days": elapsed_days,
+        **{column: source.get(metric) for metric, column in METRIC_COLUMNS.items()},
+        "shorts_feed_views": source.get("shortsFeedViews"),
+        "shorts_feed_engaged_views": source.get("shortsFeedEngagedViews"),
+        "search_views": source.get("searchViews"),
+        "browse_views": source.get("browseViews"),
+        "suggested_views": source.get("suggestedViews"),
+        "external_views": source.get("externalViews"),
+        "fetched_at": fetched_at,
+    }
+
+
+def copy_rolling_snapshots(
+    conn: sqlite3.Connection,
+    rows: dict[str, dict[str, Any]],
+    period_start: str,
+    period_end: str,
+    fetched_at: str,
+) -> None:
+    for video_id, source in rows.items():
+        try:
+            elapsed = (date.fromisoformat(period_end) - date.fromisoformat(period_start)).days + 1
+        except ValueError:
+            elapsed = None
+        store_performance_snapshot(conn, _snapshot_from_api_row(
+            video_id, "ROLLING_90D", period_start, period_end, elapsed or 90, source, fetched_at
+        ))
+
+
+def _fetch_video_window_metrics(analytics, video_id: str, start: str, end: str) -> dict[str, Any]:
+    merged: dict[str, dict[str, Any]] = {}
+    parameters = {
+        "ids": "channel==MINE", "startDate": start, "endDate": end,
+        "metrics": ",".join(ANALYTICS_METRICS), "dimensions": "video",
+        "filters": f"video=={video_id}", "maxResults": 1,
+    }
+    try:
+        _merge_analytics_response(merged, analytics.reports().query(**parameters).execute())
+    except Exception as exc:
+        if _http_status(exc) != 400:
+            raise
+        for metric in ANALYTICS_METRICS:
+            one = dict(parameters)
+            one["metrics"] = metric
+            try:
+                _merge_analytics_response(merged, analytics.reports().query(**one).execute())
+            except Exception as metric_exc:
+                if _http_status(metric_exc) != 400:
+                    raise
+    source = merged.get(video_id, {})
+    try:
+        feed = fetch_shorts_feed_analytics(analytics, start, end, [video_id]).get(video_id, {})
+        source.update(feed)
+    except Exception:
+        pass
+    try:
+        traffic = analytics.reports().query(
+            ids="channel==MINE", startDate=start, endDate=end, metrics="views",
+            dimensions="insightTrafficSourceType", filters=f"video=={video_id}", maxResults=200,
+        ).execute()
+        headers = [item.get("name") for item in traffic.get("columnHeaders") or []]
+        keys = {
+            "YT_SEARCH": "searchViews", "SUBSCRIBER": "browseViews",
+            "RELATED_VIDEO": "suggestedViews", "EXT_URL": "externalViews",
+        }
+        for values in traffic.get("rows") or []:
+            row = dict(zip(headers, values))
+            destination = keys.get(str(row.get("insightTrafficSourceType")))
+            if destination:
+                source[destination] = int(source.get(destination) or 0) + int(row.get("views") or 0)
+    except Exception:
+        pass
+    return source
+
+
+def update_mature_snapshots(
+    conn: sqlite3.Connection,
+    analytics,
+    videos: Sequence[dict[str, Any]],
+    *,
+    as_of: date | None = None,
+    fetched_at: str | None = None,
+) -> int:
+    stored = 0
+    fetched_at = fetched_at or iso_now()
+    for video in videos:
+        for window_name in ("D1_APPROX", "D7", "D28"):
+            period = snapshot_period(video.get("published_at"), window_name, as_of=as_of)
+            if period is None:
+                continue
+            start, end, elapsed = period
+            try:
+                source = _fetch_video_window_metrics(analytics, video["video_id"], start, end)
+            except Exception as exc:
+                print(
+                    f"snapshot {window_name} 수집 실패({video['video_id']}, 계속): {type(exc).__name__}",
+                    file=sys.stderr,
+                )
+                continue
+            if not source:
+                continue
+            store_performance_snapshot(conn, _snapshot_from_api_row(
+                video["video_id"], window_name, start, end, elapsed, source, fetched_at
+            ))
+            stored += 1
+    return stored
 
 
 def _ratio(numerator: float | int | None, denominator: float | int | None) -> float | None:
@@ -624,6 +1051,368 @@ def percentile_rank(value: float, cohort: Sequence[float]) -> float:
     lower = sum(item < value for item in cohort)
     equal = sum(item == value for item in cohort)
     return (lower + 0.5 * equal) / len(cohort)
+
+
+def confidence_level(scored_count: int) -> str:
+    if scored_count < 8:
+        return "low"
+    if scored_count < 20:
+        return "medium"
+    return "high"
+
+
+def shrink_percentile(
+    percentile: float,
+    *,
+    cohort_size: int,
+    sample: float,
+    cohort_median_sample: float,
+) -> tuple[float, float]:
+    cohort_confidence = cohort_size / (cohort_size + 8.0)
+    sample_confidence = min(1.0, math.sqrt(max(0.0, sample) / max(1.0, cohort_median_sample)))
+    reliability = cohort_confidence * sample_confidence
+    adjusted = 0.5 + (float(percentile) - 0.5) * reliability
+    return adjusted, reliability
+
+
+def _snapshot_derived(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    views = row["views"]
+    feed_views = row["shorts_feed_views"]
+    feed_engaged = row["shorts_feed_engaged_views"]
+    engaged = row["engaged_views"]
+    initial = _ratio(feed_engaged, feed_views) if feed_views else _ratio(engaged, views)
+    gained = row["subscribers_gained"]
+    lost = row["subscribers_lost"]
+    net = None if gained is None and lost is None else (gained or 0) - (lost or 0)
+    average_percentage = nullable_number(row["average_view_percentage"], float)
+    return {
+        "views_percentile": nullable_number(views, float),
+        "initial_engagement": initial,
+        "average_view_percentage": average_percentage,
+        "subscriber_conversion": _ratio(gained, views),
+        "net_subscriber_conversion": _ratio(net, views),
+        "share_rate": _ratio(row["shares"], views),
+        "like_rate": _ratio(row["likes"], views),
+        "comment_rate": _ratio(row["comments"], views),
+        "replay_lift": max(float(average_percentage or 0.0) - 100.0, 0.0),
+        "shorts_feed_view_share": _ratio(feed_views, views),
+    }
+
+
+def snapshot_cohort(
+    conn: sqlite3.Connection,
+    video_id: str,
+    window_name: str = "D28",
+) -> list[sqlite3.Row]:
+    target = conn.execute(
+        """SELECT s.*, v.duration_seconds, f.topic_family
+           FROM performance_snapshots s
+           JOIN videos v ON v.video_id=s.video_id
+           LEFT JOIN content_features f ON f.video_id=s.video_id
+           WHERE s.video_id=? AND s.window_name=?
+             AND NOT EXISTS (
+               SELECT 1 FROM analytics a WHERE a.video_id=s.video_id
+                 AND a.creator_content_type IS NOT NULL AND a.creator_content_type!='SHORTS'
+             )""",
+        (video_id, window_name),
+    ).fetchone()
+    if target is None:
+        return []
+    bucket = duration_bucket(target["duration_seconds"])
+    all_rows = conn.execute(
+        """SELECT s.*, v.duration_seconds, f.topic_family
+           FROM performance_snapshots s
+           JOIN videos v ON v.video_id=s.video_id
+           LEFT JOIN content_features f ON f.video_id=s.video_id
+           WHERE s.window_name=?
+             AND NOT EXISTS (
+               SELECT 1 FROM analytics a WHERE a.video_id=s.video_id
+                 AND a.creator_content_type IS NOT NULL AND a.creator_content_type!='SHORTS'
+             )""",
+        (window_name,),
+    ).fetchall()
+    duration_rows = [row for row in all_rows if duration_bucket(row["duration_seconds"]) == bucket]
+    family = target["topic_family"]
+    family_rows = [row for row in duration_rows if family and row["topic_family"] == family]
+    if len(family_rows) >= 5:
+        return family_rows
+    return duration_rows or all_rows
+
+
+def normalized_snapshot_metrics(
+    conn: sqlite3.Connection,
+    video_id: str,
+    window_name: str = "D28",
+) -> dict[str, Any]:
+    cohort = snapshot_cohort(conn, video_id, window_name)
+    target = next((row for row in cohort if row["video_id"] == video_id), None)
+    if target is None:
+        return {"video_id": video_id, "window_name": window_name, "confidence": 0.0,
+                "confidence_level": "low", "metrics": {}}
+    derived_rows = [(row, _snapshot_derived(row)) for row in cohort]
+    samples = [max(float(row["views"] or 0), float(row["engaged_views"] or 0), 1.0) for row, _ in derived_rows]
+    median_sample = statistics.median(samples) if samples else 1.0
+    target_sample = max(float(target["views"] or 0), float(target["engaged_views"] or 0), 1.0)
+    output: dict[str, float] = {}
+    reliabilities = []
+    target_metrics = _snapshot_derived(target)
+    for metric, value in target_metrics.items():
+        values = [float(item[metric]) for _, item in derived_rows if item.get(metric) is not None]
+        if value is None or not values:
+            output[metric] = 0.5
+            continue
+        percentile = percentile_rank(float(value), values)
+        adjusted, reliability = shrink_percentile(
+            percentile, cohort_size=len(cohort), sample=target_sample,
+            cohort_median_sample=median_sample,
+        )
+        output[metric] = round(adjusted, 6)
+        reliabilities.append(reliability)
+    # These are derived aliases used by objective profiles.
+    output["duration_matched_retention"] = output.get("average_view_percentage", 0.5)
+    output["topic_family_conversion"] = output.get("net_subscriber_conversion", 0.5)
+    return {
+        "video_id": video_id,
+        "window_name": window_name,
+        "cohort_size": len(cohort),
+        "duration_bucket": duration_bucket(target["duration_seconds"]),
+        "confidence": round(min(reliabilities) if reliabilities else 0.0, 6),
+        "confidence_level": confidence_level(len(cohort)),
+        "metrics": output,
+    }
+
+
+def classify_exposure_quality(
+    conn: sqlite3.Connection,
+    video_id: str,
+    window_name: str = "D28",
+) -> dict[str, Any]:
+    normalized = normalized_snapshot_metrics(conn, video_id, window_name)
+    metrics = normalized["metrics"]
+    if not metrics or normalized.get("cohort_size", 0) < 3:
+        return {**normalized, "classification": "insufficient_data", "quality_score": None}
+    quality_names = (
+        "initial_engagement", "average_view_percentage", "share_rate",
+        "net_subscriber_conversion",
+    )
+    quality = statistics.mean(metrics.get(name, 0.5) for name in quality_names)
+    views = metrics.get("views_percentile", 0.5)
+    if views >= 0.70 and quality >= 0.70:
+        classification = "strategy_success"
+    elif views >= 0.70 and quality < 0.70:
+        classification = "exposure_luck"
+    elif views < 0.50 and quality >= 0.70:
+        classification = "hidden_success"
+    else:
+        classification = "weak_result"
+    return {**normalized, "classification": classification, "quality_score": round(quality, 6)}
+
+
+classify_video_outcome = classify_exposure_quality
+
+
+def register_video_job(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    topic: str,
+    plan_id: int | None = None,
+    objective_id: int | None = None,
+) -> None:
+    conn.execute(
+        """INSERT INTO video_jobs (job_id, plan_id, objective_id, topic, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(job_id) DO UPDATE SET
+             plan_id=COALESCE(excluded.plan_id, video_jobs.plan_id),
+             objective_id=COALESCE(excluded.objective_id, video_jobs.objective_id),
+             topic=excluded.topic""",
+        (job_id, plan_id, objective_id, topic, iso_now()),
+    )
+
+
+def link_uploaded_video(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    video_id: str,
+    uploaded_at: str,
+    topic: str = "",
+    plan: dict[str, Any] | None = None,
+) -> None:
+    plan = plan or {}
+    existing_job = conn.execute("SELECT * FROM video_jobs WHERE job_id=?", (job_id,)).fetchone()
+    resolved_topic = topic or (existing_job["topic"] if existing_job else "") or plan.get("topic") or "(미확인 주제)"
+    conn.execute(
+        """INSERT INTO videos (video_id, title, description, published_at, fetched_at)
+           VALUES (?, ?, '', ?, ?)
+           ON CONFLICT(video_id) DO UPDATE SET published_at=COALESCE(videos.published_at, excluded.published_at)""",
+        (video_id, resolved_topic, uploaded_at, iso_now()),
+    )
+    if existing_job is None:
+        register_video_job(
+            conn, job_id=job_id, topic=resolved_topic,
+            plan_id=((plan.get("objective") or {}).get("plan_id")),
+            objective_id=((plan.get("objective") or {}).get("objective_id")),
+        )
+    conn.execute(
+        "UPDATE video_jobs SET video_id=?, uploaded_at=?, topic=? WHERE job_id=?",
+        (video_id, uploaded_at, resolved_topic, job_id),
+    )
+    design = plan.get("content_design") or {}
+    objective = plan.get("objective") or {}
+    if design or objective:
+        conn.execute(
+            """INSERT INTO content_features (
+                video_id, job_id, objective_type, topic_family, angle, format_type,
+                hook_type, emotion_curve_json, cta_type, main_keyword,
+                sub_keywords_json, series_key, exploration_mode, plan_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                job_id=excluded.job_id, objective_type=excluded.objective_type,
+                topic_family=excluded.topic_family, angle=excluded.angle,
+                format_type=excluded.format_type, hook_type=excluded.hook_type,
+                emotion_curve_json=excluded.emotion_curve_json,
+                cta_type=excluded.cta_type, main_keyword=excluded.main_keyword,
+                sub_keywords_json=excluded.sub_keywords_json, series_key=excluded.series_key,
+                exploration_mode=excluded.exploration_mode, plan_json=excluded.plan_json""",
+            (
+                video_id, job_id, objective.get("type"), design.get("topic_family"),
+                design.get("angle"), design.get("format_type"), plan.get("hook_type"),
+                json.dumps(design.get("emotion_curve") or [], ensure_ascii=False),
+                design.get("cta_type"), plan.get("main_keyword"),
+                json.dumps(plan.get("sub_keywords") or [], ensure_ascii=False),
+                design.get("series_key"), objective.get("selection_mode"),
+                json.dumps(plan, ensure_ascii=False), iso_now(),
+            ),
+        )
+
+
+def hypothesis_confidence(support_count: int, contradiction_count: int) -> float:
+    total = max(0, int(support_count)) + max(0, int(contradiction_count))
+    raw = max(0, int(support_count)) / max(1, total)
+    sample_factor = total / (total + 6.0)
+    return 0.5 + (raw - 0.5) * sample_factor
+
+
+def advance_hypothesis_ttl(conn: sqlite3.Connection, objective_type: str | None = None) -> int:
+    where = " AND objective_type=?" if objective_type else ""
+    values = (objective_type,) if objective_type else ()
+    rows = conn.execute(
+        "SELECT hypothesis_id, ttl_videos, videos_since_validation FROM strategy_hypotheses "
+        "WHERE status IN ('testing', 'active', 'weakened')" + where,
+        values,
+    ).fetchall()
+    now = iso_now()
+    for row in rows:
+        since = int(row["videos_since_validation"] or 0) + 1
+        status = "expired" if since >= int(row["ttl_videos"] or 10) else None
+        conn.execute(
+            "UPDATE strategy_hypotheses SET videos_since_validation=?, status=COALESCE(?, status), updated_at=? WHERE hypothesis_id=?",
+            (since, status, now, row["hypothesis_id"]),
+        )
+    return len(rows)
+
+
+def refresh_hypothesis_evidence(conn: sqlite3.Connection) -> int:
+    """Attach newly matured D28 outcomes to matching objective hypotheses once."""
+    hypotheses = conn.execute(
+        "SELECT * FROM strategy_hypotheses WHERE status IN ('testing','active','weakened')"
+    ).fetchall()
+    changed = 0
+    for hypothesis in hypotheses:
+        videos = conn.execute("""
+            SELECT j.video_id
+            FROM video_jobs j
+            JOIN performance_snapshots s ON s.video_id=j.video_id AND s.window_name='D28'
+            LEFT JOIN hypothesis_observations o
+              ON o.hypothesis_id=? AND o.video_id=j.video_id
+            WHERE j.objective_id IN (
+                SELECT objective_id FROM objectives WHERE objective_type=?
+            ) AND o.video_id IS NULL
+        """, (hypothesis["hypothesis_id"], hypothesis["objective_type"])).fetchall()
+        evidence_refs = json.loads(hypothesis["evidence_refs_json"] or "[]")
+        contradiction_refs = json.loads(hypothesis["contradiction_refs_json"] or "[]")
+        support = int(hypothesis["support_count"] or 0)
+        contradiction = int(hypothesis["contradiction_count"] or 0)
+        for video in videos:
+            outcome = classify_exposure_quality(conn, video["video_id"], "D28")["classification"]
+            if outcome in {"strategy_success", "hidden_success"}:
+                support += 1
+                evidence_refs.append(f"video:{video['video_id']}")
+                observation = "support"
+            else:
+                contradiction += 1
+                contradiction_refs.append(f"video:{video['video_id']}")
+                observation = "contradiction"
+            conn.execute(
+                "INSERT OR IGNORE INTO hypothesis_observations (hypothesis_id, video_id, outcome, created_at) VALUES (?, ?, ?, ?)",
+                (hypothesis["hypothesis_id"], video["video_id"], observation, iso_now()),
+            )
+            changed += 1
+        if not videos:
+            continue
+        confidence = hypothesis_confidence(support, contradiction)
+        if confidence >= 0.60 and support >= 3:
+            status = "active"
+        elif confidence < 0.45 and contradiction >= 3:
+            status = "rejected"
+        elif contradiction > support:
+            status = "weakened"
+        else:
+            status = "testing"
+        conn.execute("""
+            UPDATE strategy_hypotheses
+            SET evidence_refs_json=?, contradiction_refs_json=?, support_count=?,
+                contradiction_count=?, confidence=?, status=?,
+                videos_since_validation=0, last_validated_at=?, updated_at=?
+            WHERE hypothesis_id=?
+        """, (
+            json.dumps(sorted(set(evidence_refs)), ensure_ascii=False),
+            json.dumps(sorted(set(contradiction_refs)), ensure_ascii=False),
+            support, contradiction, confidence, status, iso_now(), iso_now(),
+            hypothesis["hypothesis_id"],
+        ))
+    return changed
+
+
+def rebuild_objective_baselines(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Recompute dynamic cohort summaries and fill missing topic families."""
+    features = conn.execute("""
+        SELECT f.video_id, f.topic_family, v.title FROM content_features f
+        JOIN videos v ON v.video_id=f.video_id
+    """).fetchall()
+    family_updates = 0
+    for row in features:
+        if row["topic_family"]:
+            continue
+        words = sorted(normalize_keywords(row["title"] or ""))
+        family = words[0] if words else "기타"
+        conn.execute(
+            "UPDATE content_features SET topic_family=? WHERE video_id=?",
+            (family, row["video_id"]),
+        )
+        family_updates += 1
+    rows = conn.execute(
+        "SELECT * FROM performance_snapshots WHERE window_name='D28'"
+    ).fetchall()
+    metric_names = (
+        "views", "average_view_percentage", "shorts_feed_views",
+        "shorts_feed_engaged_views", "shares", "subscribers_gained",
+    )
+    medians = {}
+    for name in metric_names:
+        values = [float(row[name]) for row in rows if row[name] is not None]
+        medians[name] = statistics.median(values) if values else None
+    time_distribution = [dict(row) for row in conn.execute("""
+        SELECT upload_jst_hour, COUNT(*) AS video_count
+        FROM videos WHERE upload_jst_hour IS NOT NULL
+        GROUP BY upload_jst_hour ORDER BY upload_jst_hour
+    """)]
+    return {
+        "snapshot_window": "D28", "video_count": len(rows),
+        "cohort_medians": medians, "topic_family_updates": family_updates,
+        "upload_time_distribution": time_distribution,
+    }
 
 
 QUADRANT_STRATEGIES = {
@@ -823,7 +1612,14 @@ def cmd_sync(_args: argparse.Namespace) -> int:
         with conn:
             store_videos(conn, videos)
             store_analytics(conn, analytics_rows, start_date.isoformat(), end_date.isoformat(), fetched_at)
+            copy_rolling_snapshots(
+                conn, analytics_rows, start_date.isoformat(), end_date.isoformat(), fetched_at
+            )
+            snapshot_count = update_mature_snapshots(
+                conn, analytics, videos, as_of=end_date, fetched_at=fetched_at
+            )
             calculate_performance_scores(conn, start_date.isoformat(), end_date.isoformat())
+            hypothesis_updates = refresh_hypothesis_evidence(conn)
             conn.execute(
                 "UPDATE sync_runs SET finished_at=?, status='success', video_count=?, error_message=NULL WHERE run_id=?",
                 (iso_now(), len(videos), run_id),
@@ -832,6 +1628,8 @@ def cmd_sync(_args: argparse.Namespace) -> int:
         print(f"\ub3d9\uae30\ud654 \uc644\ub8cc: \uc601\uc0c1 {len(videos)}\uac1c, Analytics \uc601\uc0c1 {len(analytics_rows)}\uac1c")
         print(f"\uc9c0\uc6d0 Analytics \uc9c0\ud45c: {', '.join(supported_metrics)}")
         print(f"\uc1fc\uce20 \ud53c\ub4dc \uc720\uc785 \uc601\uc0c1: {len(shorts_feed_rows)}\uac1c")
+        print(f"성과 스냅샷 갱신: {snapshot_count}개 + ROLLING_90D")
+        print(f"전략 가설 근거 갱신: {hypothesis_updates}개")
         print(f"DB: {db_path()}")
         return 0
     except Exception as exc:
@@ -1306,6 +2104,38 @@ def _env_enabled(name: str, default: bool = True) -> bool:
     return value.strip().lower() not in {"0", "false", "off", "no", "n"}
 
 
+def successful_sync_age_hours(conn: sqlite3.Connection, now: datetime | None = None) -> float | None:
+    row = conn.execute(
+        "SELECT finished_at FROM sync_runs WHERE status='success' ORDER BY run_id DESC LIMIT 1"
+    ).fetchone()
+    if not row or not row["finished_at"]:
+        return None
+    try:
+        finished = datetime.fromisoformat(str(row["finished_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    current = now or datetime.now(timezone.utc)
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+    return max(0.0, (current - finished).total_seconds() / 3600.0)
+
+
+def feedback_cache_status(
+    conn: sqlite3.Connection,
+    *,
+    ttl_hours: int = 6,
+    stale_hours: int = 24 * 7,
+) -> str:
+    age = successful_sync_age_hours(conn)
+    if age is None:
+        return "missing"
+    if age <= ttl_hours:
+        return "fresh-cache"
+    if age > stale_hours:
+        return "stale-cache"
+    return "refresh-needed"
+
+
 def prepare_content_guidance(
     topic: str,
     strictness: str | None = None,
@@ -1316,16 +2146,43 @@ def prepare_content_guidance(
         auto_sync = _env_enabled("YOUTUBE_FEEDBACK_AUTO_SYNC", True)
     token = _env_path("YOUTUBE_FEEDBACK_TOKEN")
     sync_status = "skipped"
-    if auto_sync and token is not None and token.is_file():
-        sync_status = "success" if cmd_sync(argparse.Namespace()) == 0 else "stale-cache"
+    conn = connect()
+    try:
+        cache_status = feedback_cache_status(
+            conn, ttl_hours=int(os.environ.get("YOUTUBE_FEEDBACK_SYNC_TTL_HOURS", "6"))
+        )
+    finally:
+        conn.close()
+    if cache_status == "fresh-cache":
+        sync_status = cache_status
+    elif auto_sync and token is not None and token.is_file():
+        if cmd_sync(argparse.Namespace()) == 0:
+            sync_status = "success"
+        else:
+            retry_conn = connect()
+            try:
+                after_failure = feedback_cache_status(
+                    retry_conn,
+                    ttl_hours=int(os.environ.get("YOUTUBE_FEEDBACK_SYNC_TTL_HOURS", "6")),
+                )
+            finally:
+                retry_conn.close()
+            sync_status = (
+                "stale-cache" if after_failure in {"stale-cache", "missing"}
+                else "refresh-failed-cache"
+            )
 
     conn = connect()
     try:
         guidance = build_content_guidance(conn, topic, strictness)
         write_reports(conn, strictness)
+        final_cache_status = feedback_cache_status(
+            conn, ttl_hours=int(os.environ.get("YOUTUBE_FEEDBACK_SYNC_TTL_HOURS", "6"))
+        )
     finally:
         conn.close()
     guidance["sync_status"] = sync_status
+    guidance["cache_status"] = final_cache_status
     return guidance
 
 

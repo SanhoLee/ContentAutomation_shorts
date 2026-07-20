@@ -1300,19 +1300,30 @@ def handle_run_goal(chat_id, job, text):
     run_command(args, job_id, seed, extra_env=_build_extra_env(job))
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     goal = plan.get("objective") or {}
+    planning = plan.get("planning") or {}
     job["topic"] = plan.get("topic") or seed
     job["plan_id"] = goal.get("plan_id")
-    send_message(chat_id, "\n".join([
+    decision = goal.get("decision", "manual_review")
+    topic_label = "선정 주제" if decision not in ("manual_review", "rejected") else "최상위 검토 후보"
+    closest = str(goal.get("closest_existing_title") or "").strip()
+    details = [
         f"목표: {objective_label(objective)}",
-        f"상태: {goal.get('decision', 'manual_review')}",
-        f"선정 주제: {job['topic']}",
-        f"선정 이유: {goal.get('reason', '결정론 점수와 위험 검토 결과')}",
-        f"주의: 확신도 {goal.get('confidence', 0):.2f}; 성과를 보장하지 않습니다.",
-    ]))
+        f"상태: {decision}",
+        f"{topic_label}: {job['topic'] or '(없음)'}",
+        f"판정 이유: {goal.get('reason', '점수와 위험 검토 결과')}",
+        f"중복도: {float(goal.get('duplicate_similarity') or 0):.2f} / 차단 기준 {float(goal.get('duplicate_threshold') or planning.get('duplicate_threshold') or 0):.2f}",
+        f"제외된 중복 후보: {int(planning.get('duplicates_rejected') or 0)}개",
+        f"AI 단계: Planner {planning.get('planner_status', '-')} / Critic {planning.get('critic_status', '-')}",
+        f"Claude 비용: ${float(planning.get('claude_cost_usd') or 0):.6f}",
+        f"주의: 확신도 {float(goal.get('confidence') or 0):.2f}; 성과를 보장하지 않습니다.",
+    ]
+    if closest:
+        details.insert(5, f"가장 가까운 기존 제목: {closest}")
+    send_message(chat_id, "\n".join(details))
     send_file_or_path(chat_id, plan_path, "topic_plan.json")
-    if goal.get("decision") in ("manual_review", "rejected"):
+    if decision in ("manual_review", "rejected"):
         job["stage"] = "await_goal_review"
-        send_message(chat_id, "데이터가 오래됐거나 모든 후보 점수가 낮아 자동 제작을 중단했습니다.")
+        send_message(chat_id, f"자동 제작을 중단했습니다.\n{goal.get('reason', '수동 검토가 필요합니다.')}")
         return
     run_script_generation(
         chat_id, job,

@@ -120,6 +120,111 @@ class ObjectivePlannerTests(unittest.TestCase):
         self.assertTrue(all(not item["evidence_refs"] for item in trend_candidates))
         self.assertTrue(all(item["source_classification"] == "insufficient_data" for item in trend_candidates))
 
+    def test_duplicate_gate_blocks_prefixed_copy_and_pool_does_not_reuse_old_title(self):
+        old_title = "냉동 블루베리 안토시아닌, 신선한 것보다 좋다"
+        duplicate = objective_planner._topic_duplicate_info(
+            f"보조 식품: {old_title} - 놓치기 쉬운 신호",
+            [old_title],
+            0.25,
+        )
+        self.assertTrue(duplicate["blocked"])
+        self.assertGreaterEqual(duplicate["containment"], 0.8)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            with conn:
+                objective_planner.feedback.store_videos(conn, [{
+                    "video_id": "blueberry",
+                    "title": old_title,
+                    "published_at": "2026-06-01T00:00:00Z",
+                    "duration_seconds": 60,
+                    "fetched_at": "2026-07-01T00:00:00+00:00",
+                }])
+            candidates = objective_planner.build_candidate_pool(
+                conn, objective_type="reach", seed_topic="보조 식품",
+            )
+            conn.close()
+        self.assertTrue(candidates)
+        self.assertTrue(all(old_title not in item["topic"] for item in candidates))
+
+    def test_truncated_claude_json_is_rejected_before_validation(self):
+        with self.assertRaisesRegex(objective_planner.PlannerValidationError, "토큰 한도"):
+            objective_planner._extract_claude_json({
+                "stop_reason": "max_tokens",
+                "content": [{"type": "text", "text": '{"candidates": ['}],
+            })
+
+    def test_manual_planning_history_is_part_of_duplicate_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "feedback.db"
+            previous = objective_planner.plan_objective_topic(
+                "reach", seed_topic="마그네슘", job_id="previous_manual",
+                db_path=db_path, allow_ai=False,
+            )
+            conn = objective_planner.feedback.connect(db_path)
+            try:
+                self.assertIn(previous["topic"], objective_planner._existing_titles(conn))
+                duplicate = objective_planner._topic_duplicate_info(
+                    previous["topic"], objective_planner._existing_titles(conn), 0.25,
+                )
+            finally:
+                conn.close()
+        self.assertTrue(duplicate["blocked"])
+
+    def test_planner_failure_skips_critic_and_forces_manual_review(self):
+        calls = {"planner": 0, "critic": 0}
+        original_local_rows = objective_planner._local_candidate_rows
+
+        def ready_local_rows(*args, **kwargs):
+            rows = original_local_rows(*args, **kwargs)
+            rows[0]["judgment"]["adjusted_score"] = 60.0
+            return rows
+
+        def broken_planner(_prompt):
+            calls["planner"] += 1
+            raise objective_planner.PlannerValidationError("잘린 JSON")
+
+        def critic(_prompt):
+            calls["critic"] += 1
+            return {"reviews": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            objective_planner._local_candidate_rows = ready_local_rows
+            try:
+                plan = objective_planner.plan_objective_topic(
+                    "reach", seed_topic="수면", job_id="planner_failure",
+                    db_path=Path(tmp) / "feedback.db", planner_call=broken_planner,
+                    critic_call=critic,
+                )
+            finally:
+                objective_planner._local_candidate_rows = original_local_rows
+
+        self.assertEqual(calls, {"planner": 1, "critic": 0})
+        self.assertEqual(plan["objective"]["decision"], "manual_review")
+        self.assertEqual(plan["planning"]["planner_status"], "failed")
+        self.assertEqual(plan["planning"]["critic_status"], "skipped")
+
+    def test_low_local_preflight_spends_no_model_calls(self):
+        calls = {"planner": 0, "critic": 0}
+
+        def planner(_prompt):
+            calls["planner"] += 1
+            return {"candidates": []}
+
+        def critic(_prompt):
+            calls["critic"] += 1
+            return {"reviews": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = objective_planner.plan_objective_topic(
+                "reach", seed_topic="수면", job_id="local_preflight",
+                db_path=Path(tmp) / "feedback.db", planner_call=planner,
+                critic_call=critic,
+            )
+        self.assertEqual(calls, {"planner": 0, "critic": 0})
+        self.assertEqual(plan["planning"]["preflight_status"], "blocked")
+        self.assertEqual(plan["planning"]["claude_cost_usd"], 0.0)
+
     def test_deterministic_fallback_writes_compatible_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "topic_plan.json"

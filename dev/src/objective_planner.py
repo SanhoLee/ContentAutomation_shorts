@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from claude_cost import assert_budget, record_usage
+from claude_cost import assert_budget, record_usage, usage_total
 from content_objectives import (
     ObjectiveConfig,
     build_objective_config,
@@ -49,6 +49,34 @@ DEFAULT_TOPICS = (
     "걷기와 뇌 건강", "식후 졸림이 보내는 신호", "물을 마시는 시간",
     "근력과 낙상 예방", "약 복용 시간을 놓쳤을 때", "외로움과 기억력",
     "청력 저하와 인지 건강", "밤늦은 간식과 수면", "하루 한 가지 건강 챌린지",
+)
+TOPIC_ANGLE_TEMPLATES = {
+    "exploit": (
+        "효과보다 먼저 확인할 선택 기준",
+        "필요한 사람과 피해야 할 사람",
+        "광고 문구에서 걸러야 할 오해",
+        "생활에서 확인할 실제 변화",
+        "전문가에게 물어볼 핵심 질문",
+    ),
+    "adjacent": (
+        "음식과 제품 중 무엇을 먼저 선택할까",
+        "복용 시간보다 중요한 생활 조건",
+        "약과 함께할 때 놓치기 쉬운 점",
+        "가족과 함께 점검할 안전 기준",
+    ),
+    "wildcard": (
+        "일주일 동안 기록해 볼 한 가지",
+        "상식을 뒤집어 확인하는 작은 실험",
+    ),
+}
+TOPIC_FAMILY_RULES = (
+    ("보조식품", ("보조 식품", "보조식품", "영양제", "비타민", "미네랄")),
+    ("수면", ("수면", "잠", "불면", "새벽")),
+    ("기억력", ("기억력", "건망증", "치매", "인지")),
+    ("혈압", ("혈압", "심혈관")),
+    ("혈당", ("혈당", "당뇨", "식후")),
+    ("운동", ("걷기", "근력", "운동", "낙상")),
+    ("영양", ("음식", "식품", "식사", "간식", "음료")),
 )
 CANDIDATE_SOURCE_TARGETS = (
     ("performance_exploit",) * 5
@@ -145,20 +173,78 @@ def _preferred_snapshot_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def _existing_titles(conn: sqlite3.Connection) -> list[str]:
-    return [str(row["title"]) for row in conn.execute("SELECT title FROM videos")]
+    values = [str(row["title"]) for row in conn.execute("SELECT title FROM videos")]
+    values.extend(
+        str(row["topic"])
+        for row in conn.execute("SELECT topic FROM video_jobs WHERE topic!=''")
+    )
+    for row in conn.execute("""
+        SELECT selected_candidate_json FROM planning_runs
+        WHERE selected_candidate_json IS NOT NULL
+        ORDER BY plan_id DESC LIMIT 100
+    """):
+        try:
+            selected = json.loads(row["selected_candidate_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        for key in ("topic", "title"):
+            value = str(selected.get(key) or "").strip()
+            if value:
+                values.append(value)
+    return list(dict.fromkeys(values))
 
 
-def _candidate_topic(base: str, mode: str, seed: str | None, index: int) -> str:
+def _candidate_topic(base: str, mode: str, index: int) -> str:
     base = " ".join(str(base or "").split()).strip()
-    if seed and seed not in base:
-        base = f"{seed}: {base}"
-    suffixes = {
-        "exploit": ("놓치기 쉬운 신호", "실천 기준", "오해와 사실", "자가 점검", "작은 습관"),
-        "adjacent": ("함께 살펴볼 생활 습관", "의외의 연결", "비교해서 보는 기준"),
-        "wildcard": ("하루 한 가지 도전",),
+    angles = TOPIC_ANGLE_TEMPLATES[mode]
+    angle = angles[index % len(angles)]
+    return f"{base}: {angle}" if base else angle
+
+
+def _topic_family(topic: str, seed_topic: str | None = None) -> str:
+    text = " ".join((seed_topic or "", topic)).lower()
+    for family, keywords in TOPIC_FAMILY_RULES:
+        if any(keyword in text for keyword in keywords):
+            return family
+    words = sorted(_compact_words(seed_topic or topic))
+    return words[0] if words else "기타"
+
+
+def _topic_duplicate_info(topic: str, existing_titles: Sequence[str], threshold: float) -> dict[str, Any]:
+    topic_words = _compact_words(topic)
+    best = {"similarity": 0.0, "containment": 0.0, "title": "", "common_keywords": []}
+    normalized_topic = re.sub(r"\s+", "", topic).lower()
+    for title in existing_titles:
+        title_words = _compact_words(title)
+        common = topic_words & title_words
+        similarity = feedback.jaccard(topic_words, title_words)
+        containment = len(common) / min(len(topic_words), len(title_words)) if topic_words and title_words else 0.0
+        exact = normalized_topic == re.sub(r"\s+", "", title).lower()
+        rank = max(similarity, containment if len(common) >= 2 else 0.0, 1.0 if exact else 0.0)
+        current_rank = max(best["similarity"], best["containment"] if len(best["common_keywords"]) >= 2 else 0.0)
+        if rank > current_rank:
+            best = {
+                "similarity": similarity,
+                "containment": containment,
+                "title": title,
+                "common_keywords": sorted(common),
+                "exact": exact,
+            }
+    best.setdefault("exact", False)
+    best["blocked"] = bool(
+        best["exact"]
+        or best["similarity"] >= threshold
+        or (len(best["common_keywords"]) >= 2 and best["containment"] >= 0.80)
+    )
+    return best
+
+
+def _transfer_pattern_metrics(normalized: Mapping[str, Any], reliability: float = 0.35) -> dict[str, float]:
+    return {
+        name: 0.5 + (float(value) - 0.5) * reliability
+        for name, value in (normalized.get("metrics") or {}).items()
+        if value is not None
     }
-    suffix = suffixes[mode][index % len(suffixes[mode])]
-    return f"{base} - {suffix}" if base else suffix
 
 
 def build_candidate_pool(
@@ -168,11 +254,14 @@ def build_candidate_pool(
     seed_topic: str | None = None,
     trend_candidates: Sequence[Mapping[str, Any] | str] | None = None,
     candidate_count: int = 12,
+    rejected_duplicates: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build a 5/3/3/1 evidence, adjacent, trend, wildcard candidate pool."""
     objective_type = normalize_objective_type(objective_type)
     rows = _preferred_snapshot_rows(conn)
     existing_titles = _existing_titles(conn)
+    strictness = os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS", "balanced")
+    duplicate_threshold = float(feedback.adaptive_topic_thresholds(conn, strictness)["duplicate"])
     evidence: list[tuple[float, sqlite3.Row, dict[str, Any]]] = []
     for row in rows:
         normalized = feedback.normalized_snapshot_metrics(conn, row["video_id"], row["window_name"])
@@ -199,12 +288,10 @@ def build_candidate_pool(
                 "repeat_days": int(repeat_row["days"] or 0) if repeat_row else 0,
             })
 
-    source_bases = [str(item[1]["title"]) for item in evidence]
-    base_fallback = [seed_topic] if seed_topic else []
-    base_fallback += list(DEFAULT_TOPICS)
+    discovery_bases = [str(seed_topic).strip()] if str(seed_topic or "").strip() else list(DEFAULT_TOPICS)
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for index in range(max(candidate_count * 4, 24)):
+    for index in range(max(candidate_count * 8, 48)):
         if len(candidates) >= candidate_count:
             break
         slot = len(candidates)
@@ -220,38 +307,40 @@ def build_candidate_pool(
         evidence_item = evidence[index % len(evidence)] if evidence and not trend_slot else None
         if trend_slot:
             if trend_values:
-                trend = trend_values[(slot - 8) % len(trend_values)]
+                trend = trend_values[index % len(trend_values)]
                 topic = trend["topic"]
                 sources = trend["sources"]
                 repeat_days = int(trend.get("repeat_days") or 0)
             else:
-                pool = base_fallback or list(DEFAULT_TOPICS)
-                base = pool[index % len(pool)]
-                topic = _candidate_topic(base, "adjacent", seed_topic, index)
+                base = discovery_bases[index % len(discovery_bases)]
+                topic = _candidate_topic(f"{base} 관련 검색", "adjacent", index)
                 sources = ["trend_fallback"]
                 repeat_days = 0
         else:
-            pool = source_bases or base_fallback
-            base = pool[index % len(pool)] if pool else DEFAULT_TOPICS[index % len(DEFAULT_TOPICS)]
-            topic = _candidate_topic(base, mode, seed_topic, index)
-            sources = ["channel_performance"] if evidence_item else ["exploration"]
+            base = discovery_bases[index % len(discovery_bases)]
+            topic = _candidate_topic(base, mode, index)
+            sources = ["channel_pattern"] if evidence_item else ["exploration"]
             repeat_days = 0
         key = re.sub(r"\s+", "", topic).lower()
-        if not key or key in seen or any(topic.strip() == title.strip() for title in existing_titles):
+        if not key or key in seen:
+            continue
+        duplicate = _topic_duplicate_info(topic, existing_titles, duplicate_threshold)
+        if duplicate["blocked"]:
+            if rejected_duplicates is not None:
+                rejected_duplicates.append({"topic": topic, **duplicate})
             continue
         seen.add(key)
-        closest = max((_jaccard_topic(topic, title) for title in existing_titles), default=0.0)
+        closest = float(duplicate["similarity"])
         if evidence_item:
             _, source_row, normalized = evidence_item
-            metrics = dict(normalized.get("metrics") or {})
+            metrics = _transfer_pattern_metrics(normalized)
             evidence_refs = [
                 f"video:{source_row['video_id']}",
                 f"metric:{source_row['window_name']}:{source_row['video_id']}",
             ]
-            confidence = float(normalized.get("confidence") or 0.0)
+            confidence = float(normalized.get("confidence") or 0.0) * 0.70
             classification = normalized.get("classification")
-            family = source_row["topic_family"] or next(iter(_compact_words(topic)), "기타")
-            confounders = []
+            confounders = ["pattern_transfer_only"]
             if classification == "exposure_luck":
                 confounders.append("shorts_feed_exposure")
             if normalized.get("confidence_level") == "low":
@@ -260,8 +349,8 @@ def build_candidate_pool(
                 confounders.append("upload_time_observed_not_causal")
         else:
             metrics, evidence_refs, confidence, classification = {}, [], 0.0, "insufficient_data"
-            family = next(iter(_compact_words(topic)), "기타")
             confounders = ["small_sample"]
+        family = _topic_family(topic, seed_topic)
         source_count = max(1, len(set(sources)))
         metrics.update({
             "trend_signal": min(1.0, 0.30 + 0.18 * source_count + 0.04 * min(repeat_days, 5)) if trend_slot else 0.5,
@@ -279,6 +368,9 @@ def build_candidate_pool(
             "normalized_metrics": metrics,
             "confidence": confidence,
             "duplicate_similarity": closest,
+            "duplicate_containment": duplicate["containment"],
+            "duplicate_threshold": duplicate_threshold,
+            "closest_existing_title": duplicate["title"],
             "confounders": confounders,
         })
     return candidates
@@ -411,32 +503,76 @@ def _planner_prompt(
     candidates: Sequence[Mapping[str, Any]],
     hypotheses: Sequence[Mapping[str, Any]],
 ) -> str:
+    compact_candidates = [{
+        "candidate_id": item["candidate_id"],
+        "topic": item["topic"],
+        "topic_family": item.get("topic_family"),
+        "exploration_mode": item.get("exploration_mode"),
+        "candidate_source": item.get("candidate_source"),
+        "evidence_refs": item.get("evidence_refs") or [],
+        "confidence": item.get("confidence", 0),
+        "duplicate_similarity": item.get("duplicate_similarity", 0),
+        "normalized_metrics": item.get("normalized_metrics") or {},
+    } for item in candidates]
+    compact_hypotheses = [{
+        "statement": item.get("statement"),
+        "confidence": item.get("confidence"),
+        "status": item.get("status"),
+    } for item in hypotheses[:5]]
     return f"""목표 기반 YouTube Shorts 후보를 정성적으로 설계하세요.
 목표: {config.objective_type} ({objective_label(config.objective_type)})
-목표 가중치(코드 계산용이며 재계산 금지): {_json(config.weights)}
-후보 데이터: {_json(candidates)}
-활성 전략 가설: {_json(hypotheses)}
+후보 데이터: {_json(compact_candidates)}
+활성 전략 가설: {_json(compact_hypotheses)}
 
 규칙:
 - 숫자 점수, 검색량, 성과 수치, 인과관계를 새로 만들지 마세요.
 - candidate_id와 evidence_refs는 입력에 있는 값만 사용하세요.
-- 같은 제목을 복사하지 말고 각도와 형식을 구체화하세요.
+- 입력 주제의 핵심 대상을 바꾸지 말고 기존 제목을 복사하지 마세요.
 - 정성 enum은 low/medium/high만 사용하세요.
 - candidates 배열을 가진 JSON 객체만 출력하세요.
 각 후보 필드: candidate_id, topic, topic_family, angle, format_type, hook_type,
-emotion_curve, series_key, series_potential, channel_fit, family_relevance,
-actionability, narrative_fit, topic_trust, evidence_refs, risk_flags."""
+series_potential, channel_fit, family_relevance, actionability, narrative_fit,
+topic_trust, evidence_refs, risk_flags."""
 
 
 def _critic_prompt(candidates: Sequence[Mapping[str, Any]]) -> str:
+    compact_candidates = [{
+        "candidate_id": item.get("candidate_id"),
+        "topic": item.get("topic"),
+        "angle": item.get("angle"),
+        "format_type": item.get("format_type"),
+        "hook_type": item.get("hook_type"),
+        "evidence_refs": item.get("evidence_refs") or [],
+        "confidence": item.get("confidence", 0),
+        "duplicate_similarity": item.get("duplicate_similarity", 0),
+        "confounders": item.get("confounders") or [],
+    } for item in candidates]
     return f"""아래 상위 Shorts 후보가 틀릴 수 있는 이유를 찾으세요. 후보를 지지하지 마세요.
 조회수 우연, Shorts Feed 노출 편향, 업로드 시간, 영상 길이, 계절성, 작은 표본,
 주제 중복, 제목-내용 불일치, 채널 과적합을 검토하세요.
-후보: {_json(candidates)}
+후보: {_json(compact_candidates)}
 숫자 점수를 만들지 말고 reviews 배열을 가진 JSON만 출력하세요.
 각 review 필드: candidate_id, contradicting_refs, confounders, duplicate_risk,
 overfit_risk, evidence_risk, recommended_action, reason.
 위험 enum은 low/medium/high, recommended_action은 selected/limited_test/rejected 중 하나입니다."""
+
+
+def _extract_claude_json(data: Mapping[str, Any]) -> dict[str, Any]:
+    if str(data.get("stop_reason") or "") == "max_tokens":
+        raise PlannerValidationError("Claude 응답이 토큰 한도에서 잘려 JSON이 완성되지 않았습니다.")
+    text = "".join(
+        block.get("text", "")
+        for block in data.get("content", [])
+        if block.get("type") == "text"
+    )
+    text = re.sub(r"^```(?:json)?", "", text.strip()).rstrip("`").strip()
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise PlannerValidationError(f"Claude JSON 파싱 실패: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise PlannerValidationError("Claude 응답 최상위 값은 JSON object여야 합니다.")
+    return parsed
 
 
 def call_claude_json(
@@ -488,12 +624,19 @@ def call_claude_json(
     response.raise_for_status()
     data = response.json()
     data["_request_id"] = response.headers.get("request-id")
+    try:
+        parsed = _extract_claude_json(data)
+    except Exception:
+        record_usage(
+            stage, model, data, jsonl_path=usage_path, job_id=job_id,
+            plan_id=plan_id, success=False,
+        )
+        raise
     record_usage(
-        stage, model, data, jsonl_path=usage_path, job_id=job_id, plan_id=plan_id
+        stage, model, data, jsonl_path=usage_path, job_id=job_id,
+        plan_id=plan_id, success=True,
     )
-    text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
-    text = re.sub(r"^```(?:json)?", "", text.strip()).rstrip("`").strip()
-    return json.loads(text)
+    return parsed
 
 
 def _qualitative_score(planner: Mapping[str, Any]) -> float:
@@ -617,6 +760,31 @@ def _default_planner_item(candidate: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _optimistic_critic(candidate_id: str) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate_id,
+        "duplicate_risk": "low", "overfit_risk": "low", "evidence_risk": "low",
+        "recommended_action": "limited_test", "reason": "로컬 사전 평가",
+    }
+
+
+def _local_candidate_rows(
+    candidates: Sequence[dict[str, Any]],
+    objective_type: str,
+    job_id: str,
+) -> list[dict[str, Any]]:
+    rows = []
+    for candidate in candidates:
+        planner = _default_planner_item(candidate)
+        score = score_candidate(candidate, planner, objective_type)
+        judgment = judge_candidate(
+            candidate, score, _optimistic_critic(str(candidate["candidate_id"])),
+            desired_exploration=exploration_target(job_id),
+        )
+        rows.append({"candidate": candidate, "planner": planner, "score": score, "judgment": judgment})
+    return sorted(rows, key=lambda item: item["judgment"]["adjusted_score"], reverse=True)
+
+
 def _topic_plan(selected: Mapping[str, Any], plan_id: int, objective_id: int) -> dict[str, Any]:
     candidate = selected["candidate"]
     planner = selected["planner"]
@@ -642,8 +810,15 @@ def _topic_plan(selected: Mapping[str, Any], plan_id: int, objective_id: int) ->
             "plan_id": plan_id, "selection_mode": candidate.get("exploration_mode"),
             "confidence": judgment["confidence"], "decision": judgment["decision"],
             "base_score": judgment["base_score"], "adjusted_score": judgment["adjusted_score"],
+            "duplicate_similarity": candidate.get("duplicate_similarity", 0),
+            "duplicate_threshold": candidate.get("duplicate_threshold"),
+            "closest_existing_title": candidate.get("closest_existing_title") or "",
             "evidence_refs": list(planner.get("evidence_refs") or candidate.get("evidence_refs") or []),
-            "reason": str((selected.get("critic") or {}).get("reason") or "결정론 점수와 위험 보정 결과"),
+            "reason": str(
+                selected.get("decision_reason")
+                or (selected.get("critic") or {}).get("reason")
+                or "결정론 점수와 위험 보정 결과"
+            ),
         },
         "content_design": {
             "topic_family": planner.get("topic_family") or candidate.get("topic_family"),
@@ -654,6 +829,7 @@ def _topic_plan(selected: Mapping[str, Any], plan_id: int, objective_id: int) ->
             "cta_type": "series_next",
         },
         "strategy_source": selected.get("strategy_source", "objective_planner"),
+        "planning": dict(selected.get("planning") or {}),
     }
 
 
@@ -674,6 +850,7 @@ def plan_objective_topic(
     job_id = job_id or os.environ.get("JOB_ID") or f"auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     conn = feedback.connect(Path(db_path) if db_path else None)
     try:
+        database_file = Path(conn.execute("PRAGMA database_list").fetchone()[2])
         objective_id = _latest_objective(conn, config)
         observed_date = datetime.now(timezone.utc).date().isoformat()
         for trend in trend_candidates or ():
@@ -689,12 +866,28 @@ def plan_objective_topic(
                         (topic, source, observed_date),
                     )
         conn.commit()
+        rejected_duplicates: list[dict[str, Any]] = []
         candidates = build_candidate_pool(
             conn, objective_type=config.objective_type, seed_topic=seed_topic,
-            trend_candidates=trend_candidates,
+            trend_candidates=trend_candidates, rejected_duplicates=rejected_duplicates,
         )
-        if not candidates:
-            raise RuntimeError("기획 후보를 만들지 못했습니다.")
+        duplicate_threshold = float(feedback.adaptive_topic_thresholds(
+            conn, os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS", "balanced")
+        )["duplicate"])
+        no_unique_candidates = not candidates
+        if no_unique_candidates:
+            candidates = [{
+                "candidate_id": "cand_00",
+                "topic": str(seed_topic or "새 주제 후보 없음"),
+                "topic_family": _topic_family(str(seed_topic or ""), seed_topic),
+                "exploration_mode": "manual", "candidate_source": "none",
+                "sources": [], "evidence_refs": [], "source_classification": "insufficient_data",
+                "normalized_metrics": {"trend_signal": 0.0, "novelty": 0.0},
+                "confidence": 0.0, "duplicate_similarity": 1.0,
+                "duplicate_containment": 1.0, "duplicate_threshold": duplicate_threshold,
+                "closest_existing_title": (rejected_duplicates[0].get("title") if rejected_duplicates else ""),
+                "confounders": ["no_unique_candidate"],
+            }]
         cursor = conn.execute(
             """INSERT INTO planning_runs (
                 job_id, objective_id, seed_topic, candidate_pool_json,
@@ -704,37 +897,11 @@ def plan_objective_topic(
         )
         plan_id = int(cursor.lastrowid)
         conn.commit()
+
         hypotheses = [dict(row) for row in conn.execute(
             "SELECT * FROM strategy_hypotheses WHERE objective_type=? AND status IN ('testing','active','weakened')",
             (config.objective_type,),
         )]
-        refs = valid_evidence_refs(candidates)
-        video_ids = [row["video_id"] for row in conn.execute("SELECT video_id FROM videos")]
-        titles = _existing_titles(conn)
-        planner_prompt = _planner_prompt(config, candidates, hypotheses)
-        planner_error = None
-        try:
-            if planner_call:
-                raw_planner = planner_call(planner_prompt)
-            elif allow_ai:
-                raw_planner = call_claude_json(
-                    planner_prompt, model=settings.claude_planner_model,
-                    max_tokens=settings.claude_planner_max_tokens,
-                    stage="candidate_planner", job_id=job_id, plan_id=plan_id,
-                )
-            else:
-                raise RuntimeError("AI disabled")
-            planner_output = validate_planner_output(
-                raw_planner, candidates, valid_refs=refs,
-                existing_video_ids=video_ids, existing_titles=titles,
-            )
-            strategy_source = "objective_planner"
-        except Exception as exc:
-            planner_error = str(exc)
-            planner_output = {"candidates": [_default_planner_item(item) for item in candidates]}
-            strategy_source = "deterministic_fallback"
-
-        planner_map = {item["candidate_id"]: item for item in planner_output["candidates"]}
         recent_combinations = {
             (str(row["format_type"] or ""), str(row["hook_type"] or ""))
             for row in conn.execute("""
@@ -743,6 +910,65 @@ def plan_objective_topic(
                 ORDER BY v.published_at DESC LIMIT 5
             """)
         }
+        for candidate in candidates:
+            default_item = _default_planner_item(candidate)
+            candidate["format_hook_repeat"] = (
+                str(default_item.get("format_type") or ""),
+                str(default_item.get("hook_type") or ""),
+            ) in recent_combinations
+        local_rows = _local_candidate_rows(candidates, config.objective_type, job_id)
+        preflight_best = float(local_rows[0]["judgment"]["adjusted_score"])
+        preflight_passed = not no_unique_candidates and preflight_best >= 50.0
+
+        # The model only receives the six strongest local candidates. With optimistic
+        # local risks, anything below 50 cannot reach the 55-point runnable threshold.
+        planner_candidates = [item["candidate"] for item in local_rows[:6]]
+        planner_refs = valid_evidence_refs(planner_candidates)
+        video_ids = [row["video_id"] for row in conn.execute("SELECT video_id FROM videos")]
+        titles = _existing_titles(conn)
+        planner_error = None
+        if not allow_ai and planner_call is None:
+            planner_status = "disabled"
+            planner_output = {"candidates": [_default_planner_item(item) for item in candidates]}
+            strategy_source = "deterministic_fallback"
+        elif not preflight_passed:
+            planner_status = "skipped"
+            planner_output = {"candidates": [_default_planner_item(item) for item in candidates]}
+            strategy_source = "local_preflight"
+        else:
+            try:
+                planner_prompt = _planner_prompt(config, planner_candidates, hypotheses)
+                if planner_call:
+                    raw_planner = planner_call(planner_prompt)
+                else:
+                    raw_planner = call_claude_json(
+                        planner_prompt, model=settings.claude_planner_model,
+                        max_tokens=settings.claude_planner_max_tokens,
+                        stage="candidate_planner", job_id=job_id, plan_id=plan_id,
+                    )
+                planner_output = validate_planner_output(
+                    raw_planner, planner_candidates, valid_refs=planner_refs,
+                    existing_video_ids=video_ids, existing_titles=titles,
+                )
+                seed_words = _compact_words(seed_topic or "")
+                for item in planner_output["candidates"]:
+                    duplicate = _topic_duplicate_info(item["topic"], titles, duplicate_threshold)
+                    if duplicate["blocked"]:
+                        rejected_duplicates.append({"topic": item["topic"], "stage": "planner", **duplicate})
+                        raise PlannerValidationError(
+                            f"Planner 후보가 기존 제목과 중복됩니다: {duplicate['similarity']:.2f}"
+                        )
+                    if seed_words and len(seed_words & _compact_words(item["topic"])) < min(2, len(seed_words)):
+                        raise PlannerValidationError("Planner가 사용자가 지정한 씨드 범위를 벗어났습니다.")
+                planner_status = "success"
+                strategy_source = "objective_planner"
+            except Exception as exc:
+                planner_error = str(exc)
+                planner_status = "failed"
+                planner_output = {"candidates": [_default_planner_item(item) for item in candidates]}
+                strategy_source = "deterministic_fallback"
+
+        planner_map = {item["candidate_id"]: item for item in planner_output["candidates"]}
         initial = []
         for candidate in candidates:
             planner_item = planner_map.get(candidate["candidate_id"], _default_planner_item(candidate))
@@ -755,27 +981,31 @@ def plan_objective_topic(
         initial.sort(key=lambda item: item["score"]["base_score"], reverse=True)
         top_three = initial[:3]
         critic_error = None
-        try:
-            critic_prompt = _critic_prompt([
-                {**item["candidate"], **item["planner"], **item["score"]} for item in top_three
-            ])
-            if critic_call:
-                raw_critic = critic_call(critic_prompt)
-            elif allow_ai:
-                raw_critic = call_claude_json(
-                    critic_prompt, model=settings.claude_critic_model,
-                    max_tokens=settings.claude_critic_max_tokens,
-                    stage="candidate_critic", job_id=job_id, plan_id=plan_id,
-                )
-            else:
-                raise RuntimeError("AI disabled")
-            critic_output = validate_critic_output(
-                raw_critic, [item["candidate"]["candidate_id"] for item in top_three],
-                valid_refs=refs,
-            )
-        except Exception as exc:
-            critic_error = str(exc)
+        if planner_status != "success":
+            critic_status = "skipped"
             critic_output = {"reviews": []}
+        else:
+            try:
+                critic_prompt = _critic_prompt([
+                    {**item["candidate"], **item["planner"], **item["score"]} for item in top_three
+                ])
+                if critic_call:
+                    raw_critic = critic_call(critic_prompt)
+                else:
+                    raw_critic = call_claude_json(
+                        critic_prompt, model=settings.claude_critic_model,
+                        max_tokens=settings.claude_critic_max_tokens,
+                        stage="candidate_critic", job_id=job_id, plan_id=plan_id,
+                    )
+                critic_output = validate_critic_output(
+                    raw_critic, [item["candidate"]["candidate_id"] for item in top_three],
+                    valid_refs=valid_evidence_refs([item["candidate"] for item in top_three]),
+                )
+                critic_status = "success"
+            except Exception as exc:
+                critic_error = str(exc)
+                critic_status = "failed"
+                critic_output = {"reviews": []}
         critic_map = {item["candidate_id"]: item for item in critic_output["reviews"]}
 
         stale_strategy = bool(conn.execute(
@@ -791,8 +1021,6 @@ def plan_objective_topic(
                 item["candidate"], item["score"], critic,
                 desired_exploration=desired_mode, stale_strategy=stale_strategy,
             )
-            if strategy_source == "deterministic_fallback" and judgment["decision"] == "selected":
-                judgment["decision"] = "limited_test"
             judged.append({
                 **item, "critic": critic, "judgment": judgment,
                 "objective_type": config.objective_type, "strategy_source": strategy_source,
@@ -800,8 +1028,34 @@ def plan_objective_topic(
         judged.sort(key=lambda item: item["judgment"]["adjusted_score"], reverse=True)
         eligible = [item for item in judged if item["judgment"]["decision"] != "rejected"]
         selected = eligible[0] if eligible else judged[0]
-        final_decision = selected["judgment"]["decision"] if eligible else "manual_review"
+        pipeline_ready = planner_status == "success" and critic_status == "success"
+        final_decision = selected["judgment"]["decision"] if eligible and pipeline_ready else "manual_review"
         selected["judgment"]["decision"] = final_decision
+
+        if no_unique_candidates:
+            decision_reason = "기존 영상과의 중복 기준을 통과한 새 후보가 없습니다. Claude는 호출하지 않았습니다."
+        elif not allow_ai and planner_call is None:
+            decision_reason = "AI 비활성화 실행이므로 자동 제작하지 않고 후보만 저장했습니다."
+        elif not preflight_passed:
+            decision_reason = "로컬 사전 평가에서 실행 가능 점수에 도달할 후보가 없어 Claude는 호출하지 않았습니다."
+        elif planner_status == "failed":
+            decision_reason = f"Planner 응답 검증 실패로 Critic을 호출하지 않았습니다: {planner_error}"
+        elif critic_status == "failed":
+            decision_reason = f"Critic 응답 검증 실패로 자동 제작을 중단했습니다: {critic_error}"
+        else:
+            decision_reason = str((selected.get("critic") or {}).get("reason") or "점수와 위험 검토 결과")
+        selected["decision_reason"] = decision_reason
+        selected["planning"] = {
+            "preflight_status": "passed" if preflight_passed else "blocked",
+            "preflight_best_score": round(preflight_best, 4),
+            "planner_status": planner_status,
+            "critic_status": critic_status,
+            "candidate_count": len(candidates) if not no_unique_candidates else 0,
+            "planner_candidate_count": len(planner_candidates) if preflight_passed else 0,
+            "duplicates_rejected": len(rejected_duplicates),
+            "duplicate_threshold": duplicate_threshold,
+            "claude_cost_usd": round(usage_total(db_path=database_file, job_id=job_id), 8),
+        }
 
         conn.execute(
             """UPDATE planning_runs SET
@@ -818,32 +1072,33 @@ def plan_objective_topic(
             ),
         )
         plan = _topic_plan(selected, plan_id, objective_id)
-        statement = (
-            f"{plan['content_design'].get('topic_family') or '건강'} 주제의 "
-            f"{plan['content_design'].get('format_type') or '설명'} 형식은 "
-            f"{objective_label(config.objective_type)} 목표에 유리할 수 있다"
-        )
-        hypothesis = conn.execute(
-            "SELECT hypothesis_id FROM strategy_hypotheses WHERE objective_type=? AND statement=? AND status!='expired'",
-            (config.objective_type, statement),
-        ).fetchone()
-        if hypothesis is None:
-            now = utc_now()
-            conn.execute("""
-                INSERT INTO strategy_hypotheses (
-                    objective_type, statement, evidence_refs_json,
-                    contradiction_refs_json, confounders_json, confidence,
-                    status, ttl_videos, videos_since_validation, created_at, updated_at
-                ) VALUES (?, ?, ?, '[]', ?, 0.5, 'testing', 10, 0, ?, ?)
-            """, (
-                config.objective_type, statement,
-                _json(plan["objective"].get("evidence_refs") or []),
-                _json(["small_sample"] if plan["objective"]["confidence"] < 0.6 else []),
-                now, now,
-            ))
-        feedback.register_video_job(
-            conn, job_id=job_id, topic=plan["topic"], plan_id=plan_id, objective_id=objective_id
-        )
+        if final_decision in {"selected", "limited_test"}:
+            statement = (
+                f"{plan['content_design'].get('topic_family') or '건강'} 주제의 "
+                f"{plan['content_design'].get('format_type') or '설명'} 형식은 "
+                f"{objective_label(config.objective_type)} 목표에 유리할 수 있다"
+            )
+            hypothesis = conn.execute(
+                "SELECT hypothesis_id FROM strategy_hypotheses WHERE objective_type=? AND statement=? AND status!='expired'",
+                (config.objective_type, statement),
+            ).fetchone()
+            if hypothesis is None:
+                now = utc_now()
+                conn.execute("""
+                    INSERT INTO strategy_hypotheses (
+                        objective_type, statement, evidence_refs_json,
+                        contradiction_refs_json, confounders_json, confidence,
+                        status, ttl_videos, videos_since_validation, created_at, updated_at
+                    ) VALUES (?, ?, ?, '[]', ?, 0.5, 'testing', 10, 0, ?, ?)
+                """, (
+                    config.objective_type, statement,
+                    _json(plan["objective"].get("evidence_refs") or []),
+                    _json(["small_sample"] if plan["objective"]["confidence"] < 0.6 else []),
+                    now, now,
+                ))
+            feedback.register_video_job(
+                conn, job_id=job_id, topic=plan["topic"], plan_id=plan_id, objective_id=objective_id
+            )
         conn.commit()
     finally:
         conn.close()

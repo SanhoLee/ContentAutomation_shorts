@@ -12,7 +12,7 @@ from typing import Any, Sequence
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from content_objectives import objective_label
+from content_objectives import normalize_objective_type, objective_label
 from objective_planner import (
     feedback, goal_report, goal_status, plan_objective_topic, run_due_strategy_review,
 )
@@ -92,24 +92,43 @@ def maybe_sync(no_sync: bool) -> str:
 
 def cmd_plan(args: argparse.Namespace) -> int:
     sync_status = maybe_sync(args.no_sync)
+    if sync_status in {"stale-cache", "missing"} and not args.allow_stale:
+        objective_type = normalize_objective_type(args.objective)
+        reason = "정상 YouTube 동기화 데이터가 7일 이내가 아니어서 Claude 호출 전에 중단했습니다."
+        plan = {
+            "topic": args.seed or "",
+            "main_keyword": args.seed or "",
+            "title": args.seed or "",
+            "objective": {
+                "type": objective_type, "objective_id": None, "plan_id": None,
+                "selection_mode": "manual", "confidence": 0.0,
+                "decision": "manual_review", "base_score": 0.0, "adjusted_score": 0.0,
+                "evidence_refs": [], "reason": reason, "sync_status": sync_status,
+            },
+            "content_design": {},
+            "strategy_source": "sync_preflight",
+            "planning": {
+                "preflight_status": "blocked_stale_data",
+                "planner_status": "skipped", "critic_status": "skipped",
+                "candidate_count": 0, "duplicates_rejected": 0,
+                "claude_cost_usd": 0.0,
+            },
+        }
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"목표: {objective_label(objective_type)}")
+        print("상태: manual_review")
+        print(f"주의: {reason}")
+        print(f"topic_plan.json: {target}")
+        return 2 if args.require_runnable else 0
+
     trends = [] if args.no_trends else collect_trend_signals(args.seed)
     plan = plan_objective_topic(
         args.objective, seed_topic=args.seed, job_id=args.job_id,
         output_path=args.output, trend_candidates=trends, allow_ai=not args.no_ai,
     )
     plan["objective"]["sync_status"] = sync_status
-    if sync_status in {"stale-cache", "missing"} and not args.allow_stale:
-        plan["objective"]["decision"] = "manual_review"
-        plan["objective"]["reason"] = "정상 YouTube 동기화 데이터가 7일 이내가 아니어서 수동 검토가 필요합니다."
-        conn = feedback.connect()
-        try:
-            conn.execute(
-                "UPDATE planning_runs SET decision='manual_review' WHERE plan_id=?",
-                (plan["objective"]["plan_id"],),
-            )
-            conn.commit()
-        finally:
-            conn.close()
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

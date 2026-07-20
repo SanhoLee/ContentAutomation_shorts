@@ -161,13 +161,13 @@ side_margin_pct: 4
 
 ```yaml
 # frame_bottom_styles.yaml
-height_pct: 23.0
+height_pct: 27.0
 background: black
 channel: "브레인피프티"
 font: Noto Sans CJK KR
 font_style: Bold
 color: white
-size: 56
+size: 60
 top_margin_px: 20
 ```
 

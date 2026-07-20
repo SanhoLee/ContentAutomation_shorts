@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from content_objectives import normalize_objective_type, objective_label
 from script_runtime import speech_pace_profile
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -1271,7 +1272,11 @@ def handle_run_goal(chat_id, job, text):
     if len(parts) < 2:
         send_message(chat_id, "목표를 입력하세요. 예: /run_goal subscriber_growth 수면")
         return
-    objective = parts[1].strip()
+    try:
+        objective = normalize_objective_type(parts[1])
+    except ValueError as exc:
+        send_message(chat_id, f"목표 입력 오류: {exc}")
+        return
     seed = parts[2].strip() if len(parts) > 2 else ""
     job_id = new_job_id("goal")
     settings = _preserve_settings(job)
@@ -1291,14 +1296,14 @@ def handle_run_goal(chat_id, job, text):
     ]
     if seed:
         args.extend(["--seed", seed])
-    send_message(chat_id, f"목표 기반 기획 시작: {objective}" + (f" / 씨드: {seed}" if seed else ""))
+    send_message(chat_id, f"목표 기반 기획 시작: {objective_label(objective)}" + (f" / 씨드: {seed}" if seed else ""))
     run_command(args, job_id, seed, extra_env=_build_extra_env(job))
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     goal = plan.get("objective") or {}
     job["topic"] = plan.get("topic") or seed
     job["plan_id"] = goal.get("plan_id")
     send_message(chat_id, "\n".join([
-        f"목표: {objective}",
+        f"목표: {objective_label(objective)}",
         f"상태: {goal.get('decision', 'manual_review')}",
         f"선정 주제: {job['topic']}",
         f"선정 이유: {goal.get('reason', '결정론 점수와 위험 검토 결과')}",

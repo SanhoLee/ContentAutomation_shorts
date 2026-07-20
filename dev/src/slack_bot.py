@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from content_objectives import normalize_objective_type, objective_label
 from script_runtime import speech_pace_profile
 
 # Slack Socket Mode transport configuration.
@@ -245,27 +246,16 @@ START_MODES = {
     "trend": {"label": "트렌드 후보에서 시작", "command": "/trend"},
 }
 
+GOAL_OBJECTIVE_DESCRIPTIONS = {
+    "subscriber_growth": "조회수 대비 순 구독 전환을 우선합니다.",
+    "reach": "도달, 초반 몰입, 새로움을 우선합니다.",
+    "retention": "시청 유지와 반복 시청 가능성을 우선합니다.",
+    "share_growth": "공유할 이유와 실천 가능성을 우선합니다.",
+    "balanced": "채널의 여러 성과 지표를 균형 있게 봅니다.",
+}
 GOAL_OBJECTIVES = {
-    "subscriber_growth": {
-        "label": "구독자 증가",
-        "description": "조회수 대비 순 구독 전환을 우선합니다.",
-    },
-    "reach": {
-        "label": "조회수·도달",
-        "description": "도달, 초반 몰입, 새로움을 우선합니다.",
-    },
-    "retention": {
-        "label": "평균 시청률",
-        "description": "시청 유지와 반복 시청 가능성을 우선합니다.",
-    },
-    "share_growth": {
-        "label": "공유율 강화",
-        "description": "공유할 이유와 실천 가능성을 우선합니다.",
-    },
-    "balanced": {
-        "label": "균형 성장",
-        "description": "채널의 여러 성과 지표를 균형 있게 봅니다.",
-    },
+    key: {"label": objective_label(key), "description": description}
+    for key, description in GOAL_OBJECTIVE_DESCRIPTIONS.items()
 }
 
 
@@ -397,15 +387,14 @@ def confirm_start_flow(state, chat_id, job, mode):
 
 
 def goal_objective_rows():
-    return [
-        [button("구독자 증가", "goal:objective:subscriber_growth"), button("조회수·도달", "goal:objective:reach")],
-        [button("평균 시청률", "goal:objective:retention"), button("공유율 강화", "goal:objective:share_growth")],
-        [button("균형 성장", "goal:objective:balanced")],
-        [button("← 홈으로", "goal:cancel")],
+    choices = [
+        button(details["label"], f"goal:objective:{objective}")
+        for objective, details in GOAL_OBJECTIVES.items()
     ]
+    return [choices[:2], choices[2:4], choices[4:], [button("← 홈으로", "goal:cancel")]]
 
 
-def send_goal_objective_menu(chat_id, job, notice=None):
+def send_goal_objective_menu(chat_id, notice=None):
     text = "*목표 기반 자동 기획 · 1/3 목표 선택*\n달성하고 싶은 핵심 성과를 선택하세요. 아직 실행되지 않습니다."
     if notice:
         text = notice + "\n\n" + text
@@ -415,14 +404,14 @@ def send_goal_objective_menu(chat_id, job, notice=None):
 def begin_goal_flow(chat_id, job):
     job.pop("start_draft", None)
     job["goal_draft"] = {}
-    send_goal_objective_menu(chat_id, job)
+    send_goal_objective_menu(chat_id)
 
 
 def send_goal_seed_menu(chat_id, job):
     draft = job.get("goal_draft") or {}
     objective = GOAL_OBJECTIVES.get(draft.get("objective"))
     if not objective:
-        send_goal_objective_menu(chat_id, job, "목표를 다시 선택하세요.")
+        send_goal_objective_menu(chat_id, "목표를 다시 선택하세요.")
         return
     send_action_message(
         chat_id,
@@ -449,7 +438,7 @@ def prompt_goal_seed(chat_id, job):
     draft = job.get("goal_draft") or {}
     objective = GOAL_OBJECTIVES.get(draft.get("objective"))
     if not objective:
-        send_goal_objective_menu(chat_id, job, "목표를 다시 선택하세요.")
+        send_goal_objective_menu(chat_id, "목표를 다시 선택하세요.")
         return
     draft.pop("seed", None)
     draft["awaiting_seed"] = True
@@ -466,7 +455,7 @@ def send_goal_confirmation(chat_id, job):
     draft = job.get("goal_draft") or {}
     objective = GOAL_OBJECTIVES.get(draft.get("objective"))
     if not objective or "seed" not in draft:
-        send_goal_objective_menu(chat_id, job, "목표 기획 정보가 완전하지 않습니다. 다시 선택하세요.")
+        send_goal_objective_menu(chat_id, "목표 기획 정보가 완전하지 않습니다. 다시 선택하세요.")
         return
     seed = str(draft.get("seed") or "").strip()
     send_action_message(
@@ -488,7 +477,7 @@ def send_goal_confirmation(chat_id, job):
 def select_goal_seed_mode(chat_id, job, mode):
     draft = job.get("goal_draft") or {}
     if draft.get("objective") not in GOAL_OBJECTIVES:
-        send_goal_objective_menu(chat_id, job, "목표를 먼저 선택하세요.")
+        send_goal_objective_menu(chat_id, "목표를 먼저 선택하세요.")
         return
     if mode == "input":
         prompt_goal_seed(chat_id, job)
@@ -520,7 +509,7 @@ def confirm_goal_flow(state, chat_id, job):
     draft = job.get("goal_draft") or {}
     objective = draft.get("objective")
     if objective not in GOAL_OBJECTIVES or "seed" not in draft:
-        send_goal_objective_menu(chat_id, job, "목표 기획 정보가 완전하지 않습니다. 다시 선택하세요.")
+        send_goal_objective_menu(chat_id, "목표 기획 정보가 완전하지 않습니다. 다시 선택하세요.")
         return
     seed = str(draft.get("seed") or "").strip()
     job.pop("goal_draft", None)
@@ -1767,7 +1756,11 @@ def handle_run_goal(chat_id, job, text):
     if len(parts) < 2:
         send_message(chat_id, "목표를 입력하세요. 예: /run_goal subscriber_growth 수면")
         return
-    objective = parts[1].strip()
+    try:
+        objective = normalize_objective_type(parts[1])
+    except ValueError as exc:
+        send_message(chat_id, f"목표 입력 오류: {exc}")
+        return
     seed = parts[2].strip() if len(parts) > 2 else ""
     job_id = new_job_id("goal")
     settings = _preserve_settings(job)
@@ -1787,14 +1780,14 @@ def handle_run_goal(chat_id, job, text):
     ]
     if seed:
         args.extend(["--seed", seed])
-    send_message(chat_id, f"목표 기반 기획 시작: {objective}" + (f" / 씨드: {seed}" if seed else ""))
+    send_message(chat_id, f"목표 기반 기획 시작: {objective_label(objective)}" + (f" / 씨드: {seed}" if seed else ""))
     run_command(args, job_id, seed, extra_env=_build_extra_env(job))
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     goal = plan.get("objective") or {}
     job["topic"] = plan.get("topic") or seed
     job["plan_id"] = goal.get("plan_id")
     send_message(chat_id, "\n".join([
-        f"목표: {objective}",
+        f"목표: {objective_label(objective)}",
         f"상태: {goal.get('decision', 'manual_review')}",
         f"선정 주제: {job['topic']}",
         f"선정 이유: {goal.get('reason', '결정론 점수와 위험 검토 결과')}",
@@ -2110,7 +2103,7 @@ def handle_callback(state, callback):
             select_goal_seed_mode(chat_id, job, data.split(":", 2)[2])
         elif data == "goal:back:objectives":
             job["goal_draft"] = {}
-            send_goal_objective_menu(chat_id, job)
+            send_goal_objective_menu(chat_id)
         elif data == "goal:back:seed":
             draft = job.get("goal_draft") or {}
             draft.pop("awaiting_seed", None)

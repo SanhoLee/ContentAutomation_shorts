@@ -57,6 +57,21 @@ class TelegramScriptSettingsTests(unittest.TestCase):
         self.assertEqual(env["YOUTUBE_FEEDBACK_STRICTNESS"], "strict")
         self.assertEqual(env["YOUTUBE_FEEDBACK_AUTO_SYNC"], "false")
 
+    def test_invalid_goal_does_not_replace_existing_job(self):
+        job = {"job_id": "existing", "stage": "await_script_approval", "topic": "기존 주제"}
+        messages = []
+        old_send_message = telegram_bot.send_message
+        old_run_command = telegram_bot.run_command
+        try:
+            telegram_bot.send_message = lambda chat_id, text: messages.append(text)
+            telegram_bot.run_command = lambda *args, **kwargs: self.fail("invalid goal must not run")
+            telegram_bot.handle_run_goal(1, job, "/run_goal invalid_goal 수면")
+        finally:
+            telegram_bot.send_message = old_send_message
+            telegram_bot.run_command = old_run_command
+        self.assertEqual(job, {"job_id": "existing", "stage": "await_script_approval", "topic": "기존 주제"})
+        self.assertIn("목표 입력 오류", messages[-1])
+
     def test_set_without_values_opens_category_menu(self):
         actions = self.capture_actions()
 

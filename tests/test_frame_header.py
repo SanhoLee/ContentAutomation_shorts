@@ -152,15 +152,15 @@ class FrameBottomStyleTests(unittest.TestCase):
     def test_dev_bottom_uses_simple_keys_and_bold_style(self):
         presets = dev_frame_style.load_presets(REPO_ROOT / "dev" / "frame_bottom_styles.yaml")
         resolved = dev_frame_style.resolve_bottom(dev_frame_style.resolve(presets, "default"))
-        self.assertEqual(resolved["height_px"], 442)
+        self.assertEqual(resolved["height_px"], 518)
         self.assertEqual(resolved["background"], "black")
         self.assertEqual(resolved["channel"], "브레인피프티")
         self.assertEqual(resolved["font"], "Noto Sans CJK KR")
         self.assertEqual(resolved["font_style"], "Bold")
         self.assertEqual(resolved["color"], "white")
-        self.assertEqual(resolved["size"], 56)
+        self.assertEqual(resolved["size"], 60)
         self.assertEqual(resolved["top_margin_px"], 20)
-        self.assertEqual(resolved["channel_y"], 1498)
+        self.assertEqual(resolved["channel_y"], 1422)
 
     def test_minimal_bottom_hides_the_channel(self):
         presets = dev_frame_style.load_presets(REPO_ROOT / "dev" / "frame_bottom_styles.yaml")

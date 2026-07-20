@@ -228,6 +228,21 @@ class SlackBotTests(unittest.TestCase):
         self.assertIn("start_goal", callbacks)
         self.assertEqual(slack_bot.action_request_label("start_goal"), "목표 기반 자동 기획 열기")
 
+    def test_invalid_goal_does_not_replace_existing_slack_job(self):
+        job = {"job_id": "existing", "stage": "await_script_approval", "topic": "기존 주제"}
+        messages = []
+        old_send_message = slack_bot.send_message
+        old_run_command = slack_bot.run_command
+        try:
+            slack_bot.send_message = lambda channel_id, text: messages.append(text)
+            slack_bot.run_command = lambda *args, **kwargs: self.fail("invalid goal must not run")
+            slack_bot.handle_run_goal("C1", job, "/run_goal invalid_goal 수면")
+        finally:
+            slack_bot.send_message = old_send_message
+            slack_bot.run_command = old_run_command
+        self.assertEqual(job, {"job_id": "existing", "stage": "await_script_approval", "topic": "기존 주제"})
+        self.assertIn("목표 입력 오류", messages[-1])
+
     def test_run_slash_commands_also_require_confirmation(self):
         commands = {
             "/run 주제 A": "review",

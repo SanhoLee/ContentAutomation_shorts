@@ -50,6 +50,18 @@ DEFAULT_TOPICS = (
     "근력과 낙상 예방", "약 복용 시간을 놓쳤을 때", "외로움과 기억력",
     "청력 저하와 인지 건강", "밤늦은 간식과 수면", "하루 한 가지 건강 챌린지",
 )
+CANDIDATE_SOURCE_TARGETS = (
+    ("performance_exploit",) * 5
+    + ("adjacent",) * 3
+    + ("trend",) * 3
+    + ("wildcard",)
+)
+SOURCE_EXPLORATION_MODE = {
+    "performance_exploit": "exploit",
+    "adjacent": "adjacent",
+    "trend": "adjacent",
+    "wildcard": "wildcard",
+}
 
 
 class PlannerValidationError(ValueError):
@@ -149,10 +161,6 @@ def _candidate_topic(base: str, mode: str, seed: str | None, index: int) -> str:
     return f"{base} - {suffix}" if base else suffix
 
 
-def _mode_targets() -> list[str]:
-    return ["exploit"] * 5 + ["adjacent"] * 3 + ["adjacent"] * 3 + ["wildcard"]
-
-
 def build_candidate_pool(
     conn: sqlite3.Connection,
     *,
@@ -196,14 +204,20 @@ def build_candidate_pool(
     base_fallback += list(DEFAULT_TOPICS)
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
-    modes = _mode_targets()
     for index in range(max(candidate_count * 4, 24)):
         if len(candidates) >= candidate_count:
             break
         slot = len(candidates)
-        mode = modes[slot] if slot < len(modes) else "wildcard"
-        trend_slot = 8 <= slot <= 10
-        evidence_item = evidence[index % len(evidence)] if evidence else None
+        candidate_source = (
+            CANDIDATE_SOURCE_TARGETS[slot]
+            if slot < len(CANDIDATE_SOURCE_TARGETS)
+            else "wildcard"
+        )
+        mode = SOURCE_EXPLORATION_MODE[candidate_source]
+        trend_slot = candidate_source == "trend"
+        # Trend candidates are independent observations. Attaching a random
+        # channel video here would falsely present unrelated metrics as proof.
+        evidence_item = evidence[index % len(evidence)] if evidence and not trend_slot else None
         if trend_slot:
             if trend_values:
                 trend = trend_values[(slot - 8) % len(trend_values)]
@@ -216,7 +230,6 @@ def build_candidate_pool(
                 topic = _candidate_topic(base, "adjacent", seed_topic, index)
                 sources = ["trend_fallback"]
                 repeat_days = 0
-            mode = "adjacent"
         else:
             pool = source_bases or base_fallback
             base = pool[index % len(pool)] if pool else DEFAULT_TOPICS[index % len(DEFAULT_TOPICS)]
@@ -259,10 +272,7 @@ def build_candidate_pool(
             "topic": topic,
             "topic_family": family,
             "exploration_mode": mode,
-            "candidate_source": (
-                "performance_exploit" if slot < 5 else "adjacent" if slot < 8
-                else "trend" if slot < 11 else "wildcard"
-            ),
+            "candidate_source": candidate_source,
             "sources": sources,
             "evidence_refs": evidence_refs,
             "source_classification": classification,
@@ -274,12 +284,13 @@ def build_candidate_pool(
     return candidates
 
 
-def valid_evidence_refs(conn: sqlite3.Connection, candidates: Sequence[Mapping[str, Any]]) -> set[str]:
-    refs = {str(ref) for candidate in candidates for ref in candidate.get("evidence_refs", [])}
-    for row in conn.execute("SELECT video_id, window_name FROM performance_snapshots"):
-        refs.add(f"video:{row['video_id']}")
-        refs.add(f"metric:{row['window_name']}:{row['video_id']}")
-    return refs
+def valid_evidence_refs(candidates: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Return only evidence references that were actually shown to the model."""
+    return {
+        str(ref)
+        for candidate in candidates
+        for ref in candidate.get("evidence_refs", [])
+    }
 
 
 def _unsupported_numeric_claim(candidate: Mapping[str, Any]) -> bool:
@@ -299,8 +310,8 @@ def validate_planner_output(
     if not isinstance(output, Mapping) or not isinstance(output.get("candidates"), list):
         raise PlannerValidationError("Planner JSON schema가 올바르지 않습니다.")
     candidate_map = {str(item["candidate_id"]): item for item in input_candidates}
-    allowed_refs = set(valid_refs or ())
-    allowed_videos = set(existing_video_ids or ())
+    allowed_refs = None if valid_refs is None else set(valid_refs)
+    allowed_videos = None if existing_video_ids is None else set(existing_video_ids)
     titles = {str(title).strip().lower() for title in (existing_titles or ())}
     sanitized = []
     seen = set()
@@ -320,9 +331,13 @@ def validate_planner_output(
             raise PlannerValidationError("기존 영상 제목을 그대로 복사한 후보입니다.")
         refs = [str(ref) for ref in raw.get("evidence_refs") or []]
         for ref in refs:
-            if allowed_refs and ref not in allowed_refs:
+            if allowed_refs is not None and ref not in allowed_refs:
                 raise PlannerValidationError(f"입력 데이터에 없는 evidence_ref입니다: {ref}")
-            if ref.startswith("video:") and allowed_videos and ref.split(":", 1)[1] not in allowed_videos:
+            if (
+                ref.startswith("video:")
+                and allowed_videos is not None
+                and ref.split(":", 1)[1] not in allowed_videos
+            ):
                 raise PlannerValidationError(f"DB에 없는 video_id입니다: {ref}")
         for field in ENUM_FIELDS:
             if field in raw and str(raw[field]) not in ENUM_SCORE:
@@ -357,17 +372,23 @@ def validate_critic_output(
     if not isinstance(output, Mapping) or not isinstance(output.get("reviews"), list):
         raise PlannerValidationError("Critic JSON schema가 올바르지 않습니다.")
     allowed_ids = set(candidate_ids)
-    allowed_refs = set(valid_refs or ())
+    allowed_refs = None if valid_refs is None else set(valid_refs)
     reviews = []
+    seen = set()
     for raw in output["reviews"]:
+        if not isinstance(raw, Mapping):
+            raise PlannerValidationError("Critic review는 JSON object여야 합니다.")
         candidate_id = str(raw.get("candidate_id") or "")
         if candidate_id not in allowed_ids:
             raise PlannerValidationError(f"Critic이 알 수 없는 후보를 참조했습니다: {candidate_id}")
+        if candidate_id in seen:
+            raise PlannerValidationError(f"Critic이 후보를 중복 검토했습니다: {candidate_id}")
+        seen.add(candidate_id)
         for field in CRITIC_ENUM_FIELDS:
             if str(raw.get(field) or "medium") not in ENUM_SCORE:
                 raise PlannerValidationError(f"허용되지 않은 Critic enum입니다: {field}")
         refs = [str(ref) for ref in raw.get("contradicting_refs") or []]
-        if allowed_refs and any(ref not in allowed_refs for ref in refs):
+        if allowed_refs is not None and any(ref not in allowed_refs for ref in refs):
             raise PlannerValidationError("Critic이 입력에 없는 반증 근거를 참조했습니다.")
         action = str(raw.get("recommended_action") or "limited_test")
         if action not in DECISIONS:
@@ -556,8 +577,10 @@ def judge_candidate(
     adjusted += exploration_bonus
     if adjusted >= 70.0 and confidence >= 0.6 and critic.get("recommended_action") != "rejected":
         decision = "selected"
-    elif adjusted >= 55.0 or confidence < 0.6:
+    elif adjusted >= 55.0:
         decision = "limited_test"
+    elif confidence < 0.6:
+        decision = "manual_review"
     else:
         decision = "rejected"
     return {
@@ -685,7 +708,7 @@ def plan_objective_topic(
             "SELECT * FROM strategy_hypotheses WHERE objective_type=? AND status IN ('testing','active','weakened')",
             (config.objective_type,),
         )]
-        refs = valid_evidence_refs(conn, candidates)
+        refs = valid_evidence_refs(candidates)
         video_ids = [row["video_id"] for row in conn.execute("SELECT video_id FROM videos")]
         titles = _existing_titles(conn)
         planner_prompt = _planner_prompt(config, candidates, hypotheses)
@@ -768,8 +791,8 @@ def plan_objective_topic(
                 item["candidate"], item["score"], critic,
                 desired_exploration=desired_mode, stale_strategy=stale_strategy,
             )
-            if strategy_source == "deterministic_fallback":
-                judgment["decision"] = "limited_test" if judgment["decision"] != "rejected" else "rejected"
+            if strategy_source == "deterministic_fallback" and judgment["decision"] == "selected":
+                judgment["decision"] = "limited_test"
             judged.append({
                 **item, "critic": critic, "judgment": judgment,
                 "objective_type": config.objective_type, "strategy_source": strategy_source,

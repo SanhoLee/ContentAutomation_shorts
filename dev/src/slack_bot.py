@@ -42,6 +42,15 @@ class WorkflowCancelled(RuntimeError):
     pass
 
 
+class ClaudeBudgetExceeded(RuntimeError):
+    def __init__(self, message, *, args_list, job_id, topic, extra_env=None):
+        super().__init__(message)
+        self.args_list = list(args_list)
+        self.job_id = job_id
+        self.topic = topic
+        self.extra_env = dict(extra_env or {})
+
+
 def _require_tokens():
     missing = [name for name, value in (("SLACK_BOT_TOKEN", BOT_TOKEN), ("SLACK_APP_TOKEN", APP_TOKEN)) if not value]
     if missing:
@@ -167,6 +176,7 @@ def log_event(level, event, **fields):
 def action_request_label(data):
     exact = {
         "show_home": "콘텐츠 홈 열기",
+        "show_home_top": "최상위 메뉴 표시",
         "start_cancel": "시작 취소 후 홈으로 이동",
         "start_reenter_topic": "제작 주제 다시 입력",
         "start_goal": "목표 기반 자동 기획 열기",
@@ -181,6 +191,7 @@ def action_request_label(data):
         "cfg:reset": "설정 초기화 확인",
         "cfg:reset_confirm": "설정 초기화 실행",
         "proceed_no_pubmed": "근거 부족 상태로 계속 진행",
+        "claude_budget:override": "Claude 예산 무시하고 계속 진행",
         "retry_topic": "새 주제로 다시 시도",
     }
     if data in exact:
@@ -233,11 +244,35 @@ def action_request_label(data):
 def _send_recovery_error(chat_id, data, exc, label=None):
     label = label or action_request_label(data)
     text = f"요청 처리 실패: {label}\n오류: {exc}\n\n아래 버튼으로 안전하게 돌아가 다시 선택할 수 있습니다."
-    rows = [[button("⌂ 홈", "show_home"), button("제작 설정", "open_settings"), button("현재 작업", "show_status")]]
+    rows = [[button("메뉴 표시", "show_home_top"), button("제작 설정", "open_settings"), button("현재 작업", "show_status")]]
     try:
         send_action_message(chat_id, text, rows)
     except Exception:
         send_message(chat_id, text)
+
+
+def _is_claude_budget_error(text):
+    return "Claude 일일 예산을 초과" in str(text) or "Claude 작업 예산을 초과" in str(text)
+
+
+def _send_budget_override_prompt(chat_id, job, exc, label):
+    job["pending_budget_command"] = {
+        "args": getattr(exc, "args_list", []),
+        "job_id": getattr(exc, "job_id", job.get("job_id")),
+        "topic": getattr(exc, "topic", job.get("topic")),
+        "extra_env": getattr(exc, "extra_env", {}),
+    }
+    text = (
+        f"요청 처리 중 Claude 예산 한도에 걸렸습니다: {label}\n\n"
+        "이 비용은 로컬 추정치 기준이며, 실제 Anthropic 대시보드 과금과 다를 수 있습니다.\n"
+        "원하면 이번 명령만 예산 체크를 무시하고 계속 진행할 수 있습니다."
+    )
+    send_action_message(
+        chat_id,
+        workflow_status_text(job, text),
+        [[button("예산 무시하고 계속", "claude_budget:override"), button("제작 설정", "open_settings")],
+         [button("현재 작업", "show_status"), button("메뉴 표시", "show_home_top")]],
+    )
 
 
 START_MODES = {
@@ -263,7 +298,7 @@ def home_button_rows():
     return [
         [button("단계별 검수 제작", "start_content:review"), button("자동 제작", "start_content:auto")],
         [button("목표 기반 자동 기획", "start_goal"), button("트렌드에서 시작", "start_content:trend")],
-        [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("⌂ 홈 새로고침", "show_home")],
+        [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("메뉴 표시", "show_home_top")],
     ]
 
 
@@ -305,6 +340,11 @@ def send_home_screen(chat_id, notice=None, top_level=False):
         text=text[:MAX_BLOCK_TEXT],
         blocks=_blocks(text, rows),
     )
+
+
+def send_top_level_home(chat_id, notice=None):
+    chat_state(_STATE, chat_id).pop("slack_thread_ts", None)
+    return send_home_screen(chat_id, notice or "최상위 메뉴를 다시 표시했습니다.", top_level=True)
 
 
 def publish_home(user_id, client=None):
@@ -579,7 +619,7 @@ def approval_buttons(stage):
     rows.append([
         button("🚀 여기서부터 끝까지", f"auto_finish:{stage}"),
         button("↻ 상태", "show_status"),
-        button("⌂ 홈", "show_home"),
+        button("메뉴 표시", "show_home_top"),
         button("전체 취소", "cancel_all"),
     ])
     return rows
@@ -699,6 +739,12 @@ def start_background_task(state, chat_id, job, label, target):
             current = chat_state(state, chat_id)
             _mark_workflow_cancelled(current)
             send_message(chat_id, workflow_status_text(current, "작업을 중단했습니다. 이미 생성된 산출물은 보존됩니다."))
+        except ClaudeBudgetExceeded as exc:
+            outcome = "budget_wait"
+            current = chat_state(state, chat_id)
+            current["last_error"] = str(exc)
+            _send_budget_override_prompt(chat_id, current, exc, label)
+            log_event("WARNING", "slack_task_budget_wait", channel=chat_id, job_id=job.get("job_id"), task=label, error=exc)
         except Exception as exc:
             outcome = "failed"
             chat_state(state, chat_id)["last_error"] = str(exc)
@@ -855,7 +901,10 @@ def run_command(args, job_id, topic=None, extra_env=None):
         elif "api.anthropic.com" in tail:
             hint = "\n\n진단: Claude API 호출 단계에서 실패했습니다. 로그 파일의 HTTP 상태와 메시지를 확인하세요."
         log_event("ERROR", "slack_command_failed", job_id=job_id, command=command_name, return_code=process.returncode, log=log_dir / log_name)
-        raise RuntimeError(f"명령 실패: {' '.join(shlex.quote(a) for a in args)}\n로그: {log_dir / log_name}{hint}\n\n{tail}")
+        message = f"명령 실패: {' '.join(shlex.quote(a) for a in args)}\n로그: {log_dir / log_name}{hint}\n\n{tail}"
+        if _is_claude_budget_error(message):
+            raise ClaudeBudgetExceeded(message, args_list=args, job_id=job_id, topic=topic, extra_env=extra_env)
+        raise RuntimeError(message)
     log_event("INFO", "slack_command_finished", job_id=job_id, command=command_name, return_code=process.returncode, log=log_dir / log_name)
     return stdout
 
@@ -954,7 +1003,7 @@ def send_render_ready(chat_id, job):
             [button("← 이전 단계", "back:await_render_config:await_broll_approval"),
              button("현재 설정으로 렌더 ▶", "approve:await_render_config")],
             [button("🚀 여기서부터 끝까지", "auto_finish:await_render_config"),
-             button("↻ 상태", "show_status"), button("⌂ 홈", "show_home"), button("전체 취소", "cancel_all")],
+             button("↻ 상태", "show_status"), button("메뉴 표시", "show_home_top"), button("전체 취소", "cancel_all")],
         ],
     )
 
@@ -1367,6 +1416,8 @@ def _build_extra_env(job):
         env["CLAUDE_STRATEGY_MODEL"] = str(job["claude_strategy_model"])
     if "claude_query_model" in job:
         env["CLAUDE_QUERY_MODEL"] = str(job["claude_query_model"])
+    if job.get("claude_budget_override"):
+        env["CLAUDE_BUDGET_OVERRIDE"] = "true"
     return env
 
 
@@ -1945,6 +1996,25 @@ def handle_proceed(chat_id, job):
     send_message(chat_id, "PubMed 근거 부족을 감수하고 일반 설명 중심으로 스크립트 생성을 진행합니다.")
     run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), "--allow-no-pubmed", *pending])
 
+
+def handle_claude_budget_override(chat_id, job):
+    pending = job.get("pending_budget_command") or {}
+    args = pending.get("args") or []
+    if not args:
+        send_message(chat_id, "예산 초과 후 이어갈 명령이 없습니다.")
+        return
+    job.pop("pending_budget_command", None)
+    extra_env = dict(pending.get("extra_env") or {})
+    extra_env["CLAUDE_BUDGET_OVERRIDE"] = "true"
+    job_id = pending.get("job_id") or job.get("job_id")
+    topic = pending.get("topic") or job.get("topic")
+    send_message(chat_id, "이번 명령은 Claude 예산 체크를 무시하고 계속 진행합니다.")
+    run_command(args, job_id, topic, extra_env=extra_env)
+    if Path(args[0]).name == "0_script.sh":
+        job["stage"] = "await_script_approval"
+        send_script(chat_id, job_id)
+
+
 def handle_pick(chat_id, job, text):
     if job.get("stage") != "await_trend_choice":
         send_message(chat_id, "선택할 트렌드 후보가 없습니다. 먼저 /trend 키워드를 실행하세요.")
@@ -2010,7 +2080,7 @@ def send_title_edit_menu(chat_id, job):
              button("본문 수정", "edit_body:await_script_approval")],
             [button("다음 단계 ▶", "approve:await_script_approval")],
             [button("🚀 여기서부터 끝까지", "auto_finish:await_script_approval"),
-             button("↻ 상태", "show_status"), button("⌂ 홈", "show_home"), button("전체 취소", "cancel_all")],
+             button("↻ 상태", "show_status"), button("메뉴 표시", "show_home_top"), button("전체 취소", "cancel_all")],
         ],
     )
 
@@ -2102,7 +2172,7 @@ def handle_callback(state, callback):
     if not chat_id:
         return
     job = chat_state(state, chat_id)
-    if is_busy(job) and data not in ("cancel_all", "cancel_confirm", "show_status", "show_home"):
+    if is_busy(job) and data not in ("cancel_all", "cancel_confirm", "show_status", "show_home", "show_home_top", "claude_budget:override"):
         send_message(chat_id, busy_message(job))
         return True
     try:
@@ -2110,6 +2180,8 @@ def handle_callback(state, callback):
             job.pop("start_draft", None)
             job.pop("goal_draft", None)
             send_home_screen(chat_id, "홈으로 돌아왔습니다." if data in ("start_cancel", "goal:cancel") else None)
+        elif data == "show_home_top":
+            send_top_level_home(chat_id)
         elif data == "start_goal":
             begin_goal_flow(chat_id, job)
         elif data.startswith("goal:objective:"):
@@ -2254,6 +2326,8 @@ def handle_callback(state, callback):
             start_background_task(state, chat_id, job, "끝까지 자동 처리", lambda: run_remaining_to_upload(chat_id, job))
         elif data == "proceed_no_pubmed":
             start_background_task(state, chat_id, job, "근거 부족 상태로 계속", lambda: handle_proceed(chat_id, job))
+        elif data == "claude_budget:override":
+            start_background_task(state, chat_id, job, "Claude 예산 무시 후 계속", lambda: handle_claude_budget_override(chat_id, job))
         elif data == "retry_topic":
             job["retry_topic_input"] = True
             send_message(chat_id, "새 주제를 다음 메시지로 보내주세요. 받는 즉시 스크립트를 다시 생성합니다.")
@@ -2398,11 +2472,11 @@ def handle_status(chat_id, job):
         send_render_ready(chat_id, job)
         return
     if is_busy(job):
-        rows = [[button("↻ 새로고침", "show_status"), button("전체 취소", "cancel_all")]]
+        rows = [[button("↻ 새로고침", "show_status"), button("메뉴 표시", "show_home_top"), button("전체 취소", "cancel_all")]]
     elif stage in WORKFLOW_STAGES:
         rows = approval_buttons(stage)
     elif stage == "await_pubmed_retry":
-        rows = [[button("근거 부족 감수하고 계속", "proceed_no_pubmed"), button("주제 바꿔 재시도", "retry_topic")], [button("전체 취소", "cancel_all")]]
+        rows = [[button("근거 부족 감수하고 계속", "proceed_no_pubmed"), button("주제 바꿔 재시도", "retry_topic")], [button("메뉴 표시", "show_home_top"), button("전체 취소", "cancel_all")]]
     else:
         rows = []
     text = workflow_status_text(job, "현재 산출물은 유지됩니다. 이전 단계로 돌아가 수정하거나, 다음 단계 또는 끝까지 자동 처리를 선택하세요.")

@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 
 MODEL_PRICES = {
@@ -167,11 +168,41 @@ def record_usage(
     return entry
 
 
+TRUE_VALUES = {"1", "true", "on", "yes", "y"}
+DEFAULT_BUDGET_TIMEZONE = "Asia/Tokyo"
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    return value.strip().lower() in TRUE_VALUES
+
+
+def _budget_timezone() -> ZoneInfo:
+    name = os.environ.get("CLAUDE_BUDGET_TIMEZONE", DEFAULT_BUDGET_TIMEZONE)
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo(DEFAULT_BUDGET_TIMEZONE)
+
+
+def _created_day(created_at: str, tz: ZoneInfo) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(created_at))
+    except ValueError:
+        return str(created_at)[:10]
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(tz).date().isoformat()
+
+
 def usage_total(
     *,
     db_path: str | Path | None = None,
     job_id: str | None = None,
     day: str | None = None,
+    timezone_name: str | None = None,
 ) -> float:
     target = Path(db_path) if db_path else _default_db_path()
     if not target.exists():
@@ -184,15 +215,22 @@ def usage_total(
         if job_id is not None:
             clauses.append("job_id=?")
             values.append(job_id)
-        if day is not None:
+        if day is not None and timezone_name is None:
             clauses.append("substr(created_at, 1, 10)=?")
             values.append(day)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        row = conn.execute(
-            "SELECT COALESCE(SUM(estimated_cost_usd), 0) FROM claude_usage" + where,
+        if day is None or timezone_name is None:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(estimated_cost_usd), 0) FROM claude_usage" + where,
+                values,
+            ).fetchone()
+            return float(row[0] or 0.0)
+        tz = ZoneInfo(timezone_name)
+        rows = conn.execute(
+            "SELECT estimated_cost_usd, created_at FROM claude_usage" + where,
             values,
-        ).fetchone()
-        return float(row[0] or 0.0)
+        ).fetchall()
+        return float(sum(float(cost or 0.0) for cost, created_at in rows if _created_day(created_at, tz) == day))
     finally:
         conn.close()
 
@@ -224,11 +262,14 @@ def assert_budget(
     daily_budget_usd: float = 1.00,
     anticipated_cost_usd: float = 0.0,
 ) -> None:
+    if _env_bool("CLAUDE_BUDGET_OVERRIDE"):
+        return
     active_job = job_id or os.environ.get("JOB_ID")
     if active_job and usage_total(db_path=db_path, job_id=active_job) + anticipated_cost_usd > job_budget_usd:
         raise RuntimeError("Claude 작업 예산을 초과할 수 있어 자동 실행을 중단합니다.")
-    today = datetime.now(timezone.utc).date().isoformat()
-    if usage_total(db_path=db_path, day=today) + anticipated_cost_usd > daily_budget_usd:
+    budget_tz = _budget_timezone()
+    today = datetime.now(timezone.utc).astimezone(budget_tz).date().isoformat()
+    if usage_total(db_path=db_path, day=today, timezone_name=budget_tz.key) + anticipated_cost_usd > daily_budget_usd:
         raise RuntimeError("Claude 일일 예산을 초과할 수 있어 자동 실행을 중단합니다.")
 
 

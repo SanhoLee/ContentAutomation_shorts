@@ -92,6 +92,40 @@ SOURCE_EXPLORATION_MODE = {
 }
 
 
+def _channel_evidence_profile(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute("""
+        SELECT COUNT(DISTINCT s.video_id) AS count
+        FROM performance_snapshots s
+        WHERE EXISTS (
+            SELECT 1 FROM videos v WHERE v.video_id=s.video_id
+        )
+          AND NOT EXISTS (
+            SELECT 1 FROM analytics a WHERE a.video_id=s.video_id
+              AND a.creator_content_type IS NOT NULL AND a.creator_content_type!='SHORTS'
+          )
+    """).fetchone()
+    count = int((row or {})["count"] or 0) if row else 0
+    reliability = float(feedback.cohort_reliability(count))
+    if count < feedback.MATURITY_LEARNING_VIDEOS:
+        stage = "early"
+        targets = (("performance_exploit",) * 2 + ("adjacent",) * 4 + ("trend",) * 4 + ("wildcard",) * 2)
+    elif count < feedback.MATURITY_GROWING_VIDEOS:
+        stage = "learning"
+        targets = (("performance_exploit",) * 3 + ("adjacent",) * 4 + ("trend",) * 3 + ("wildcard",) * 2)
+    elif count < feedback.MATURITY_STABLE_VIDEOS:
+        stage = "growing"
+        targets = (("performance_exploit",) * 4 + ("adjacent",) * 3 + ("trend",) * 3 + ("wildcard",) * 2)
+    else:
+        stage = "stable"
+        targets = CANDIDATE_SOURCE_TARGETS
+    return {
+        "sample_count": count,
+        "reliability": reliability,
+        "stage": stage,
+        "source_targets": targets,
+    }
+
+
 class PlannerValidationError(ValueError):
     pass
 
@@ -260,6 +294,8 @@ def build_candidate_pool(
     objective_type = normalize_objective_type(objective_type)
     rows = _preferred_snapshot_rows(conn)
     existing_titles = _existing_titles(conn)
+    evidence_profile = _channel_evidence_profile(conn)
+    source_targets = tuple(evidence_profile["source_targets"])
     strictness = os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS", "balanced")
     duplicate_threshold = float(feedback.adaptive_topic_thresholds(conn, strictness)["duplicate"])
     evidence: list[tuple[float, sqlite3.Row, dict[str, Any]]] = []
@@ -296,8 +332,8 @@ def build_candidate_pool(
             break
         slot = len(candidates)
         candidate_source = (
-            CANDIDATE_SOURCE_TARGETS[slot]
-            if slot < len(CANDIDATE_SOURCE_TARGETS)
+            source_targets[slot]
+            if slot < len(source_targets)
             else "wildcard"
         )
         mode = SOURCE_EXPLORATION_MODE[candidate_source]
@@ -367,6 +403,9 @@ def build_candidate_pool(
             "source_classification": classification,
             "normalized_metrics": metrics,
             "confidence": confidence,
+            "channel_sample_count": evidence_profile["sample_count"],
+            "channel_reliability": round(float(evidence_profile["reliability"]), 6),
+            "channel_maturity": evidence_profile["stage"],
             "duplicate_similarity": closest,
             "duplicate_containment": duplicate["containment"],
             "duplicate_threshold": duplicate_threshold,
@@ -648,6 +687,18 @@ def statistics_mean(values: Sequence[float], default: float = 0.5) -> float:
     return sum(values) / len(values) if values else default
 
 
+def _score_blend_weights(channel_reliability: float) -> dict[str, float]:
+    reliability = max(0.0, min(1.0, float(channel_reliability)))
+    metric = 0.35 + 0.35 * reliability
+    trend_novelty = 0.25 - 0.15 * reliability
+    qualitative = 1.0 - metric - trend_novelty
+    return {
+        "metric": metric,
+        "qualitative": qualitative,
+        "trend_novelty": trend_novelty,
+    }
+
+
 def score_candidate(
     candidate: Mapping[str, Any],
     planner: Mapping[str, Any] | None,
@@ -670,13 +721,19 @@ def score_candidate(
     trend_novelty = statistics_mean([
         float(metrics.get("trend_signal", 0.5)), float(metrics.get("novelty", 0.5))
     ])
+    blend = _score_blend_weights(float(candidate.get("channel_reliability") or 0.0))
     base_score = 100.0 * (
-        metric_score * 0.70 + qualitative_score * 0.20 + trend_novelty * 0.10
+        metric_score * blend["metric"]
+        + qualitative_score * blend["qualitative"]
+        + trend_novelty * blend["trend_novelty"]
     )
     return {
         "metric_score": round(metric_score, 6),
         "qualitative_score": round(qualitative_score, 6),
         "trend_novelty_score": round(trend_novelty, 6),
+        "metric_weight": round(blend["metric"], 6),
+        "qualitative_weight": round(blend["qualitative"], 6),
+        "trend_novelty_weight": round(blend["trend_novelty"], 6),
         "base_score": round(base_score, 4),
     }
 

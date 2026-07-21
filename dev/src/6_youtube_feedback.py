@@ -56,6 +56,10 @@ PERFORMANCE_WEIGHTS = {
     "comment_rate": 0.05,
 }
 ANALYSIS_PERIOD_DAYS = 90
+MATURITY_LEARNING_VIDEOS = 30
+MATURITY_GROWING_VIDEOS = 75
+MATURITY_STABLE_VIDEOS = 150
+EMPIRICAL_PRIOR_STRENGTH = 50.0
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = SCRIPT_DIR.parent / "data"
 
@@ -1054,11 +1058,17 @@ def percentile_rank(value: float, cohort: Sequence[float]) -> float:
 
 
 def confidence_level(scored_count: int) -> str:
-    if scored_count < 8:
+    if scored_count < MATURITY_LEARNING_VIDEOS:
         return "low"
-    if scored_count < 20:
+    if scored_count < MATURITY_GROWING_VIDEOS:
         return "medium"
+    if scored_count < MATURITY_STABLE_VIDEOS:
+        return "growing"
     return "high"
+
+
+def cohort_reliability(scored_count: int, prior_strength: float = EMPIRICAL_PRIOR_STRENGTH) -> float:
+    return max(0.0, min(1.0, float(scored_count) / (float(scored_count) + prior_strength)))
 
 
 def shrink_percentile(
@@ -1068,7 +1078,7 @@ def shrink_percentile(
     sample: float,
     cohort_median_sample: float,
 ) -> tuple[float, float]:
-    cohort_confidence = cohort_size / (cohort_size + 8.0)
+    cohort_confidence = cohort_reliability(cohort_size)
     sample_confidence = min(1.0, math.sqrt(max(0.0, sample) / max(1.0, cohort_median_sample)))
     reliability = cohort_confidence * sample_confidence
     adjusted = 0.5 + (float(percentile) - 0.5) * reliability
@@ -1464,7 +1474,7 @@ def adaptive_strategy_thresholds(
         if not values:
             return prior, 0.0
         empirical = float(quantile(values, target_quantile) or prior)
-        empirical_weight = len(values) / (len(values) + 8.0)
+        empirical_weight = cohort_reliability(len(values))
         return prior * (1.0 - empirical_weight) + empirical * empirical_weight, empirical_weight
 
     retention, retention_weight = blended(retention_values, 85.0)
@@ -1668,9 +1678,11 @@ def _row_sample(row: sqlite3.Row | dict[str, Any]) -> int:
 
 
 def _cohort_confidence(scored_count: int) -> str:
-    if scored_count < 5:
+    if scored_count < MATURITY_LEARNING_VIDEOS:
         return "초기"
-    if scored_count < 15:
+    if scored_count < MATURITY_GROWING_VIDEOS:
+        return "학습 중"
+    if scored_count < MATURITY_STABLE_VIDEOS:
         return "성장 중"
     return "안정화"
 
@@ -1697,6 +1709,7 @@ def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") ->
         reverse=True,
     )
     samples = [_row_sample(row) for row in scored]
+    sample_reliability = cohort_reliability(len(scored))
     relative_sample_floor = quantile(samples, 0.25) or 0.0
     top_count = min(10, max(1, math.ceil(len(scored) * profile["top_fraction"]))) if scored else 0
     strategy_thresholds = adaptive_strategy_thresholds(scored, strictness)
@@ -1754,8 +1767,8 @@ def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") ->
     channel_center = statistics.median(
         float(row["performance_score"]) for row in scored
     ) if scored else 0.5
-    prior_strength = float(profile["keyword_prior_strength"])
-    keyword_min_count = max(1, math.ceil(len(scored) * float(profile["keyword_min_fraction"])))
+    prior_strength = float(profile["keyword_prior_strength"]) + (1.0 - sample_reliability) * 6.0
+    keyword_min_count = max(2 if 0 < len(scored) < MATURITY_GROWING_VIDEOS else 1, math.ceil(len(scored) * float(profile["keyword_min_fraction"])))
     keyword_rows = []
     for row in raw_keyword_rows:
         count = int(row["video_count"])
@@ -1785,6 +1798,7 @@ def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") ->
         "video_count": len(rows),
         "scored_video_count": len(scored),
         "cohort_confidence": _cohort_confidence(len(scored)),
+        "cohort_reliability": round(sample_reliability, 4),
         "strictness": strictness,
         "strictness_label": profile["label"],
         "relative_sample_floor": round(relative_sample_floor, 2),
@@ -1933,7 +1947,7 @@ def adaptive_topic_thresholds(
         for right in word_sets[index + 1:]
         if (similarity := jaccard(left, right)) > 0
     ]
-    empirical_weight = len(word_sets) / (len(word_sets) + 12.0)
+    empirical_weight = cohort_reliability(len(word_sets))
 
     def blended(name: str) -> float:
         empirical = quantile(positive_similarities, float(profile[f"{name}_quantile"]))
@@ -2009,7 +2023,7 @@ def build_content_guidance(
         "[YouTube 채널 실데이터 인사이트]",
         f"- 판단 강도: {report['strictness_label']} ({strictness})",
         f"- 비교 표본: 성과 영상 {report['scored_video_count']}개 / 전체 영상 {report['video_count']}개; "
-        f"신뢰 단계={report['cohort_confidence']}",
+        f"신뢰 단계={report['cohort_confidence']}, 반영도={report['cohort_reliability']:.0%}",
         f"- 새 주제 중복 판단: {verdict}; 최고 유사도={max_similarity:.1%}; "
         f"채널 적응 기준 검토={thresholds['review']:.1%}, 중복={thresholds['duplicate']:.1%}",
         f"- 쇼츠 전략 기준: 평균 시청 지속률 {strategy_thresholds['retention_percentage']:.1f}% / "
@@ -2081,6 +2095,7 @@ def build_content_guidance(
             "video_count": report["video_count"],
             "scored_video_count": report["scored_video_count"],
             "confidence": report["cohort_confidence"],
+            "reliability": report["cohort_reliability"],
             "score_distribution": report["score_distribution"],
         },
         "topic_assessment": {

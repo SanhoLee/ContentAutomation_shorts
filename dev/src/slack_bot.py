@@ -37,6 +37,47 @@ CANCELLED_JOB_IDS = set()
 _STATE = {"chats": {}}
 MAX_BLOCK_TEXT = 3000
 
+# ── Claude 모델 alias: /set 명령에서 짧은 이름으로 모델 지정 가능하게 함.
+#    테이블에 없는 값은 alias가 아닌 것으로 간주하고 입력값을 모델 ID로 그대로 사용한다.
+#    telegram_bot.py와 동일한 테이블을 유지해야 함 (두 봇의 /set model 동작 일치).
+MODEL_ALIASES = {
+    # Haiku 계열 (경량/저비용)
+    "haiku": "claude-haiku-4-5-20251001",
+    "haiku4.5": "claude-haiku-4-5-20251001",
+    "haiku-4-5": "claude-haiku-4-5-20251001",
+
+    # Sonnet 계열 (기본 스크립트 작업용)
+    "sonnet": "claude-sonnet-4-6",
+    "sonnet4.6": "claude-sonnet-4-6",
+    "sonnet-4-6": "claude-sonnet-4-6",
+    "sonnet5": "claude-sonnet-5",
+    "sonnet-5": "claude-sonnet-5",
+    "sonnet4.5": "claude-sonnet-4-5-20250929",
+    "sonnet-4-5": "claude-sonnet-4-5-20250929",
+
+    # Opus 계열 (상위 모델, 필요 시 최고품질 실험용)
+    "opus": "claude-opus-4-8",
+    "opus4.8": "claude-opus-4-8",
+    "opus-4-8": "claude-opus-4-8",
+    "opus4.7": "claude-opus-4-7",
+    "opus-4-7": "claude-opus-4-7",
+    "opus4.6": "claude-opus-4-6",
+    "opus-4-6": "claude-opus-4-6",
+    "opus4.5": "claude-opus-4-5-20251101",
+    "opus-4-5": "claude-opus-4-5-20251101",
+
+    # Fable 계열 (최신 최고성능 라인업 실험용)
+    "fable": "claude-fable-5",
+    "fable5": "claude-fable-5",
+    "fable-5": "claude-fable-5",
+}
+
+
+def resolve_model_alias(value):
+    """alias면 정식 모델 ID로 치환하고, alias가 아니면 입력값을 그대로 모델 ID로 사용한다."""
+    raw = str(value).strip()
+    return MODEL_ALIASES.get(raw.lower(), raw)
+
 
 class WorkflowCancelled(RuntimeError):
     pass
@@ -2550,14 +2591,20 @@ def handle_message(state, message):
 
     job = chat_state(state, chat_id)
     try:
+        # Plain-text capture states (awaiting_seed, start_draft, retry_topic_input)
+        # must be checked before the busy gate. These states mean the bot is
+        # actively waiting for the user's next message as input -- not a new
+        # command competing with a running job -- so a stale "busy" status from
+        # a prior background task must not swallow the expected reply and
+        # bounce the user to busy_message() instead.
+        if (job.get("goal_draft") or {}).get("awaiting_seed") and text and not text.startswith("/"):
+            capture_goal_seed(chat_id, job, text)
+            return
         if is_busy(job) and not (
             text.startswith("/app_status") or text.startswith("/cancel")
             or text.startswith("/goal_status") or text.startswith("/goal_report")
         ):
             send_message(chat_id, busy_message(job))
-            return
-        if (job.get("goal_draft") or {}).get("awaiting_seed") and text and not text.startswith("/"):
-            capture_goal_seed(chat_id, job, text)
             return
         if job.get("start_draft") and text and not text.startswith("/"):
             capture_start_topic(chat_id, job, text)

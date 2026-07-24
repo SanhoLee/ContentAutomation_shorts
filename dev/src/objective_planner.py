@@ -90,6 +90,14 @@ SOURCE_EXPLORATION_MODE = {
     "trend": "adjacent",
     "wildcard": "wildcard",
 }
+# Preflight gate score needed before Claude planner is invoked.
+# Auto-discovered candidates (no seed) rely on channel evidence, so a higher
+# bar is appropriate. A user-supplied seed is an explicit intent signal —
+# the LLM should get a chance to interpret it even when local deterministic
+# scoring (zero confidence, no evidence_refs) can't score it highly on its
+# own. Critic review still runs afterward, so this does not skip validation.
+PREFLIGHT_THRESHOLD_AUTO = 50.0
+PREFLIGHT_THRESHOLD_MANUAL_SEED = 20.0
 
 
 def _channel_evidence_profile(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -244,7 +252,23 @@ def _topic_family(topic: str, seed_topic: str | None = None) -> str:
     return words[0] if words else "기타"
 
 
-def _topic_duplicate_info(topic: str, existing_titles: Sequence[str], threshold: float) -> dict[str, Any]:
+# Default containment cutoff: if 2+ words overlap and cover 80%+ of the
+# shorter side, treat as a near-duplicate even when Jaccard similarity is
+# below threshold. Multi-word manual seeds ("복용 시간 생활 조건" style
+# sentences) share more words with existing titles by construction, so this
+# cutoff is raised for manual-seed candidates to avoid false-positive blocks
+# on topics that are merely related, not duplicate.
+CONTAINMENT_CUTOFF_DEFAULT = 0.80
+CONTAINMENT_CUTOFF_MANUAL_SEED = 0.90
+
+
+def _topic_duplicate_info(
+    topic: str,
+    existing_titles: Sequence[str],
+    threshold: float,
+    *,
+    containment_cutoff: float = CONTAINMENT_CUTOFF_DEFAULT,
+) -> dict[str, Any]:
     topic_words = _compact_words(topic)
     best = {"similarity": 0.0, "containment": 0.0, "title": "", "common_keywords": []}
     normalized_topic = re.sub(r"\s+", "", topic).lower()
@@ -268,7 +292,7 @@ def _topic_duplicate_info(topic: str, existing_titles: Sequence[str], threshold:
     best["blocked"] = bool(
         best["exact"]
         or best["similarity"] >= threshold
-        or (len(best["common_keywords"]) >= 2 and best["containment"] >= 0.80)
+        or (len(best["common_keywords"]) >= 2 and best["containment"] >= containment_cutoff)
     )
     return best
 
@@ -292,6 +316,10 @@ def build_candidate_pool(
 ) -> list[dict[str, Any]]:
     """Build a 5/3/3/1 evidence, adjacent, trend, wildcard candidate pool."""
     objective_type = normalize_objective_type(objective_type)
+    manual_seed = bool(str(seed_topic or "").strip())
+    containment_cutoff = (
+        CONTAINMENT_CUTOFF_MANUAL_SEED if manual_seed else CONTAINMENT_CUTOFF_DEFAULT
+    )
     rows = _preferred_snapshot_rows(conn)
     existing_titles = _existing_titles(conn)
     evidence_profile = _channel_evidence_profile(conn)
@@ -360,7 +388,9 @@ def build_candidate_pool(
         key = re.sub(r"\s+", "", topic).lower()
         if not key or key in seen:
             continue
-        duplicate = _topic_duplicate_info(topic, existing_titles, duplicate_threshold)
+        duplicate = _topic_duplicate_info(
+            topic, existing_titles, duplicate_threshold, containment_cutoff=containment_cutoff
+        )
         if duplicate["blocked"]:
             if rejected_duplicates is not None:
                 rejected_duplicates.append({"topic": topic, **duplicate})
@@ -975,10 +1005,16 @@ def plan_objective_topic(
             ) in recent_combinations
         local_rows = _local_candidate_rows(candidates, config.objective_type, job_id)
         preflight_best = float(local_rows[0]["judgment"]["adjusted_score"])
-        preflight_passed = not no_unique_candidates and preflight_best >= 50.0
+        manual_seed = bool(str(seed_topic or "").strip())
+        preflight_threshold = (
+            PREFLIGHT_THRESHOLD_MANUAL_SEED if manual_seed else PREFLIGHT_THRESHOLD_AUTO
+        )
+        preflight_passed = not no_unique_candidates and preflight_best >= preflight_threshold
 
         # The model only receives the six strongest local candidates. With optimistic
-        # local risks, anything below 50 cannot reach the 55-point runnable threshold.
+        # local risks, anything below the threshold cannot reach the 55-point runnable
+        # threshold for auto-discovery. A manual seed uses a lower gate (see constants
+        # above) because the seed itself is the intent signal, not the local score.
         planner_candidates = [item["candidate"] for item in local_rows[:6]]
         planner_refs = valid_evidence_refs(planner_candidates)
         video_ids = [row["video_id"] for row in conn.execute("SELECT video_id FROM videos")]
@@ -1008,8 +1044,16 @@ def plan_objective_topic(
                     existing_video_ids=video_ids, existing_titles=titles,
                 )
                 seed_words = _compact_words(seed_topic or "")
+                planner_containment_cutoff = (
+                    CONTAINMENT_CUTOFF_MANUAL_SEED
+                    if str(seed_topic or "").strip()
+                    else CONTAINMENT_CUTOFF_DEFAULT
+                )
                 for item in planner_output["candidates"]:
-                    duplicate = _topic_duplicate_info(item["topic"], titles, duplicate_threshold)
+                    duplicate = _topic_duplicate_info(
+                        item["topic"], titles, duplicate_threshold,
+                        containment_cutoff=planner_containment_cutoff,
+                    )
                     if duplicate["blocked"]:
                         rejected_duplicates.append({"topic": item["topic"], "stage": "planner", **duplicate})
                         raise PlannerValidationError(
@@ -1094,7 +1138,11 @@ def plan_objective_topic(
         elif not allow_ai and planner_call is None:
             decision_reason = "AI 비활성화 실행이므로 자동 제작하지 않고 후보만 저장했습니다."
         elif not preflight_passed:
-            decision_reason = "로컬 사전 평가에서 실행 가능 점수에 도달할 후보가 없어 Claude는 호출하지 않았습니다."
+            decision_reason = (
+                f"로컬 사전 평가에서 실행 가능 점수({preflight_threshold:.0f}점 기준, "
+                f"{'씨드 완화' if manual_seed else '자동 탐색'} 모드)에 도달할 후보가 없어 "
+                "Claude는 호출하지 않았습니다."
+            )
         elif planner_status == "failed":
             decision_reason = f"Planner 응답 검증 실패로 Critic을 호출하지 않았습니다: {planner_error}"
         elif critic_status == "failed":
@@ -1105,6 +1153,8 @@ def plan_objective_topic(
         selected["planning"] = {
             "preflight_status": "passed" if preflight_passed else "blocked",
             "preflight_best_score": round(preflight_best, 4),
+            "preflight_threshold": preflight_threshold,
+            "preflight_mode": "manual_seed" if manual_seed else "auto",
             "planner_status": planner_status,
             "critic_status": critic_status,
             "candidate_count": len(candidates) if not no_unique_candidates else 0,

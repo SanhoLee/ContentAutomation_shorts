@@ -475,6 +475,7 @@ def validate_planner_output(
     allowed_videos = None if existing_video_ids is None else set(existing_video_ids)
     titles = {str(title).strip().lower() for title in (existing_titles or ())}
     sanitized = []
+    skipped = []
     seen = set()
     for raw in output["candidates"]:
         if not isinstance(raw, Mapping):
@@ -500,9 +501,33 @@ def validate_planner_output(
                 and ref.split(":", 1)[1] not in allowed_videos
             ):
                 raise PlannerValidationError(f"DB에 없는 video_id입니다: {ref}")
-        for field in ENUM_FIELDS:
-            if field in raw and str(raw[field]) not in ENUM_SCORE:
-                raise PlannerValidationError(f"허용되지 않은 enum입니다: {field}={raw[field]}")
+        # Enum/format/hook 값 오류는 데이터 무결성(환각·근거조작) 문제가 아니라
+        # 단순 포맷 실수이므로, 해당 후보만 skip하고 전체 응답은 계속 처리한다.
+        # candidate_id·evidence_ref·topic 복제 등 신뢰성 관련 위반은 위에서 여전히
+        # 즉시 전체 실패로 처리된다.
+        enum_violation = next(
+            (
+                f"허용되지 않은 enum입니다: {field}={raw[field]}"
+                for field in ENUM_FIELDS
+                if field in raw and str(raw[field]) not in ENUM_SCORE
+            ),
+            None,
+        )
+        if enum_violation:
+            skipped.append({"candidate_id": candidate_id, "reason": enum_violation})
+            continue
+        if raw.get("format_type") and str(raw["format_type"]) not in FORMAT_TYPES:
+            skipped.append({
+                "candidate_id": candidate_id,
+                "reason": f"허용되지 않은 format_type입니다: {raw['format_type']}",
+            })
+            continue
+        if raw.get("hook_type") and str(raw["hook_type"]) not in HOOK_TYPES:
+            skipped.append({
+                "candidate_id": candidate_id,
+                "reason": f"허용되지 않은 hook_type입니다: {raw['hook_type']}",
+            })
+            continue
         risk_flags = [str(item) for item in raw.get("risk_flags") or []]
         if _unsupported_numeric_claim(raw) and "unsupported_claim" not in risk_flags:
             risk_flags.append("unsupported_claim")
@@ -516,12 +541,13 @@ def validate_planner_output(
         }
         item = {key: raw[key] for key in allowed if key in raw}
         item.update({"candidate_id": candidate_id, "topic": topic, "risk_flags": risk_flags})
-        if item.get("format_type") and item["format_type"] not in FORMAT_TYPES:
-            raise PlannerValidationError(f"허용되지 않은 format_type입니다: {item['format_type']}")
         sanitized.append(item)
     if not sanitized:
+        if skipped:
+            reasons = "; ".join(f"{s['candidate_id']}: {s['reason']}" for s in skipped)
+            raise PlannerValidationError(f"모든 후보가 format/hook 오류로 제외되었습니다: {reasons}")
         raise PlannerValidationError("Planner가 유효 후보를 반환하지 않았습니다.")
-    return {"candidates": sanitized}
+    return {"candidates": sanitized, "skipped_candidates": skipped}
 
 
 def validate_critic_output(
@@ -598,6 +624,10 @@ def _planner_prompt(
 - candidate_id와 evidence_refs는 입력에 있는 값만 사용하세요.
 - 입력 주제의 핵심 대상을 바꾸지 말고 기존 제목을 복사하지 마세요.
 - 정성 enum은 low/medium/high만 사용하세요.
+- format_type은 반드시 다음 중 하나여야 합니다 (다른 값 절대 사용 금지):
+  {list(FORMAT_TYPES)}
+- hook_type은 반드시 다음 중 하나여야 합니다 (다른 값 절대 사용 금지):
+  {list(HOOK_TYPES)}
 - candidates 배열을 가진 JSON 객체만 출력하세요.
 각 후보 필드: candidate_id, topic, topic_family, angle, format_type, hook_type,
 series_potential, channel_fit, family_relevance, actionability, narrative_fit,
@@ -1159,6 +1189,7 @@ def plan_objective_topic(
             "critic_status": critic_status,
             "candidate_count": len(candidates) if not no_unique_candidates else 0,
             "planner_candidate_count": len(planner_candidates) if preflight_passed else 0,
+            "format_hook_skipped": len(planner_output.get("skipped_candidates") or []),
             "duplicates_rejected": len(rejected_duplicates),
             "duplicate_threshold": duplicate_threshold,
             "claude_cost_usd": round(usage_total(db_path=database_file, job_id=job_id), 8),

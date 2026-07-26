@@ -57,3 +57,7 @@ tree.txt
 design_doc
 volume_result.json
 check_volume_v2.py
+
+.claude
+.agents
+skills-lock.json

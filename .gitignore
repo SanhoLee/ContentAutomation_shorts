@@ -25,6 +25,9 @@ data/backups/
 /dev/data/youtube_feedback.db-*
 /dev/data/youtube_report.md
 /dev/data/youtube_strategy.json
+# Per-environment runtime state written by research_signals.record_category_usage
+# on every planning run that reaches a runnable decision.
+research_category_usage.json
 client_secret*.json
 youtube_feedback_token*.json
 *.mp4

@@ -363,5 +363,59 @@ class ScriptQualityTests(unittest.TestCase):
                 script0.WORK_DIR = old_work_dir
 
 
+class GoalPlanHandoffTests(unittest.TestCase):
+    """topic_plan.json carries planning decisions; Stage 1 writes the copy."""
+
+    def plan(self):
+        return {
+            "topic": "혼자 밥 먹는 날이 늘면 뇌도 조용해집니다",
+            "objective": {"type": "subscriber_growth", "plan_id": 11, "decision": "limited_test"},
+            "content_design": {
+                "topic_family": "사회적고립", "angle": "일상 신호를 점검하는 관점",
+                "format_type": "자가진단형", "hook_type": "공감형",
+                "emotion_curve": ["공감", "이해", "안심", "행동"], "series_key": "사회적고립",
+                "cta_type": "series_next",
+            },
+            "planning": {"seed_interpreter_status": "success"},
+            "strategy_source": "objective_planner",
+        }
+
+    def test_merge_keeps_planning_decisions_and_stage1_copy(self):
+        stage1 = {
+            "topic": "혼자 밥 먹는 날이 늘면 뇌도 조용해집니다",
+            "main_keyword": "혼밥 뇌건강", "title": "혼자 먹는 밥이 뇌를 조용하게 합니다",
+            "hook_type": "두려움형", "strategy_source": "claude",
+            "frame_header": {"title": "혹시 지금도", "subtitle": "혼자 드시는 날이 늘었나요"},
+        }
+        merged = script0.merge_planning_contract(stage1, self.plan())
+        # Stage 1 owns the wording.
+        self.assertEqual(merged["main_keyword"], "혼밥 뇌건강")
+        # strategy_source must stay "claude" so Stage 2 uses the evidence_brief digest.
+        self.assertEqual(merged["strategy_source"], "claude")
+        self.assertEqual(merged["planning_source"], "objective_planner")
+        # Planning-stage decisions survive, including the deliberate hook choice.
+        self.assertEqual(merged["content_design"]["format_type"], "자가진단형")
+        self.assertEqual(merged["objective"]["plan_id"], 11)
+        self.assertEqual(merged["planning"]["seed_interpreter_status"], "success")
+        self.assertEqual(merged["hook_type"], "공감형")
+
+    def test_design_constraints_reach_the_stage1_prompt(self):
+        hint = script0.design_constraint_hint(self.plan()["content_design"])
+        for expected in ("자가진단형", "공감형", "사회적고립", "공감 → 이해 → 안심 → 행동"):
+            self.assertIn(expected, hint)
+        self.assertEqual(script0.design_constraint_hint(None), "")
+
+    def test_frame_header_clip_never_ends_mid_word(self):
+        # A runaway response degrades to a shorter complete phrase, not a fragment.
+        subtitle = "말할 상대가 줄어들면 기억이 먼저 흐려지기 시작합니다 그리고 더 길어집니다"
+        clipped = script0.clip_at_word_boundary(subtitle, 40)
+        self.assertLessEqual(len(clipped), 40)
+        self.assertTrue(subtitle.startswith(clipped))
+        # The cut landed on a word boundary: what remains starts with a space.
+        self.assertTrue(subtitle[len(clipped):].startswith(" "))
+        # A phrase inside the cap is untouched.
+        self.assertEqual(script0.clip_at_word_boundary("혼자 드시는 날이 늘었나요", 40), "혼자 드시는 날이 늘었나요")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -96,9 +96,11 @@ class ScriptRuntimeSettings:
     claude_planner_model: str
     claude_critic_model: str
     claude_audit_model: str
+    claude_interpreter_model: str
     claude_planner_max_tokens: int
     claude_critic_max_tokens: int
     claude_audit_max_tokens: int
+    claude_interpreter_max_tokens: int
     claude_job_budget_usd: float
     claude_daily_budget_usd: float
     claude_max_web_searches_per_job: int
@@ -156,9 +158,11 @@ def load_runtime_settings():
         claude_planner_model=os.environ.get("CLAUDE_PLANNER_MODEL", "claude-haiku-4-5-20251001"),
         claude_critic_model=os.environ.get("CLAUDE_CRITIC_MODEL", "claude-haiku-4-5-20251001"),
         claude_audit_model=os.environ.get("CLAUDE_AUDIT_MODEL", "claude-haiku-4-5-20251001"),
+        claude_interpreter_model=os.environ.get("CLAUDE_INTERPRETER_MODEL", "claude-haiku-4-5-20251001"),
         claude_planner_max_tokens=env_int("CLAUDE_PLANNER_MAX_TOKENS", 1200),
         claude_critic_max_tokens=env_int("CLAUDE_CRITIC_MAX_TOKENS", 900),
         claude_audit_max_tokens=env_int("CLAUDE_AUDIT_MAX_TOKENS", 1600),
+        claude_interpreter_max_tokens=env_int("CLAUDE_INTERPRETER_MAX_TOKENS", 900),
         claude_job_budget_usd=env_float("CLAUDE_JOB_BUDGET_USD", 0.30),
         claude_daily_budget_usd=env_float("CLAUDE_DAILY_BUDGET_USD", 1.00),
         claude_max_web_searches_per_job=env_int("CLAUDE_MAX_WEB_SEARCHES_PER_JOB", 4),

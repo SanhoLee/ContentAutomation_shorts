@@ -9,6 +9,7 @@
 → 6시간 TTL 기준 YouTube read-only 동기화
 → D1_APPROX / D7 / D28 / ROLLING_90D 스냅샷
 → 길이·기간·topic family cohort 정규화
+→ Haiku Seed Interpreter (계열·주제 표현·근거 관련성 판단)
 → exploit 5 + adjacent 3 + trend 3 + wildcard 1 후보
 → Haiku Planner
 → Python 목표별 점수
@@ -20,7 +21,51 @@
 → upload_result.json 및 DB video_id 연결
 ```
 
-Planner와 Critic은 정성적 제안과 반증만 담당한다. 분위수, 신뢰도, 비용, 페널티, 최종 선택은 Python이 계산한다. AI가 입력에 없는 후보·영상·근거를 참조하거나 허용 enum 외 값을 반환하면 결과를 거부하고 deterministic fallback을 사용한다.
+Seed Interpreter, Planner, Critic은 정성적 판단·제안·반증만 담당한다. 분위수, 신뢰도, 비용, 페널티, 최종 선택은 Python이 계산한다. AI가 입력에 없는 후보·영상·근거를 참조하거나 허용 enum 외 값을 반환하면 결과를 거부하고 deterministic fallback을 사용한다.
+
+## Seed Interpreter
+
+후보 문자열이 만들어지기 전에 한 번 실행하는 방향 설정 단계다. 임의의 씨드가 들어와도 채널 데이터와 연결되도록, 세 가지만 판단한다.
+
+- `resolved_family`: 씨드를 다룰 주제 계열. 기존 계열이나 `research_categories.json` 카테고리에 맞으면 재사용하고, 없으면 24자 이내 새 계열명을 제안한다. `family_source`는 `existing` / `research_category` / `new`.
+- `topics`: mode별 주제(exploit 4 / adjacent 3 / wildcard 2 권장). 각 항목은 조각이 아니라 그대로 영상 제목이 되는 완결된 문장이다. 후보 풀 크기는 mode별 서로 다른 주제 개수로 제한되므로 개수가 곧 탐색 폭이 된다.
+- `evidence_relevance`: 채널 상위 영상 각각이 이 씨드와 내용상 관련(`topical`)인지, 형식·훅 패턴 참고용(`pattern_only`)인지 표시.
+
+입력은 Python이 결정론적으로 준비한다. 성과는 이미 계산된 분류 라벨(`strategy_success` / `exposure_luck` / `hidden_success` / `weak_result` / `insufficient_data`)로만 전달하고 원시 수치는 넘기지 않는다. 채널 영상은 제목과 함께 전달하므로 모델이 무관한 근거를 식별할 수 있다.
+
+이 단계가 없으면 `TOPIC_FAMILY_RULES` 문자열 부분일치와 `TOPIC_ANGLE_TEMPLATES` 고정 문구만으로 후보가 만들어진다. 키워드에 없는 씨드는 씨드 단어 자체가 계열이 되고, 보조식품 도메인 문구가 모든 주제에 붙는다. 호출 실패·예산 초과·검증 실패는 모두 이 기계적 경로로 fallback하며 파이프라인을 중단하지 않는다.
+
+주제 개별 문제(길이 범위 이탈, 근거 없는 수치, 기존 제목 복사)는 해당 주제만 `skipped_topics`로 제외하고 나머지를 사용한다. `resolved_family` 누락, 허용 외 `family_source`, 입력에 없는 `ref`, 허용 외 `relevance`는 전체 응답을 거부한다.
+
+## 제목 표현
+
+`"<씨드>: <각도>"` 형태는 조각 템플릿(`TOPIC_ANGLE_TEMPLATES`)을 문자열로 이어 붙이던 흔적이며, 사전에서 용어를 설명하는 말투로 읽힌다. Interpreter가 완결된 제목을 직접 만들므로 이 접두사 규칙은 deterministic fallback 경로에만 남는다. Interpreter가 주제를 제공한 mode 외에, 비어 있는 mode에 접두사 템플릿을 섞어 넣지 않는다. 표현 방식이 섞이면 접두사 스타일이 다시 살아나기 때문이다.
+
+씨드 단어가 제목에 그대로 나올 필요는 없다. 따라서 Planner 출력에 대한 씨드 단어 포함 검사는 없다. 대신 Planner는 `topic`을 바꿀 수 없다. 확정된 후보 주제를 그대로 유지하므로 씨드 범위를 벗어나는 것이 구조적으로 불가능하고, 중복 검사를 우회한 재작성도 생기지 않는다. Planner가 정하는 것은 형식·훅·정성 평가다.
+
+말투 기준은 두 가지다. 둘 다 이미 수집하는 데이터이며 새 수집 경로를 만들지 않는다.
+
+- 채널 자신의 기존 제목(`videos.title`): 이 채널이 실제로 쓰는 어투.
+- Google/YouTube 자동완성 표현(`trend_observations.topic`): 이용자가 직접 입력한 말. `0_topic_plan.py:collect_trend_signals`가 이미 씨드마다 수집해 저장하고 있었지만 Interpreter에는 전달되지 않았다.
+
+자동완성 표현은 제목에 그대로 옮기지 않는다. 단어 선택과 궁금해하는 지점만 참고하며, `"<씨드> 뜻"` / `"<씨드> 유의어"`처럼 용어 해설을 찾는 검색어는 제목 근거로 쓰지 않도록 프롬프트에서 제외한다.
+
+**댓글 본문은 동기화하지 않는다.** 따라서 별도 커뮤니티 말뭉치도 두지 않으며, 위 두 소스가 유일한 어투 근거다.
+
+## 기획과 카피의 분리
+
+`topic_plan.json`은 기획 계약만 담는다. `topic`, `objective`, `content_design`, `planning`뿐이고 카피 필드(`main_keyword`, `title`, `thumbnail_text`, `frame_header`, `core_message`, ...)는 담지 않는다.
+
+예전에는 이 단계가 카피 필드를 자체적으로 만들어 넣었는데, `0_script.py`는 `--topic-json`에 `main_keyword`가 있으면 Stage 1을 건너뛴다(`0_script.py`의 Stage 1 분기). 그래서 자리를 채우려고 만든 값이 그대로 렌더까지 갔다. 주제 문장 전체가 검색 키워드(`main_keyword`)로 들어가고, 상단 헤더는 9자/18자 슬라이스로 단어 중간에서 끊겼다.
+
+이제 카피는 Stage 1(`plan_strategy`)이 만든다. Stage 1은 이 일을 위해 만들어진 단계이고 PubMed·web research 문맥까지 갖고 있으며, `evidence_brief`를 생성해 Stage 2가 원문 대신 요약 근거를 쓰게 한다(`stage2_research_context`는 `strategy_source == "claude"`일 때만 이 경로를 쓴다).
+
+기획 단계의 결정은 두 방향으로 보존한다.
+
+- `content_design`(형식·훅·감정 곡선·계열·각도)을 `design_constraint_hint`로 Stage 1 프롬프트에 제약으로 넣어, Stage 1이 형식을 다시 정하지 않고 카피만 쓰게 한다.
+- Stage 1 실행 후 `merge_planning_contract`로 `content_design` / `objective` / `planning`과 기획이 고른 `hook_type`을 복원한다. `strategy_source`는 Stage 1의 `claude`를 유지하고, 기획 출처는 `planning_source`에 따로 기록한다.
+
+`4_upload.py`는 실제 렌더·업로드된 카피(`video_meta.json`)와 기획 출처(`topic_plan.json`)를 병합해 DB에 남긴다. 이전에는 `topic_plan.json`을 통째로 우선해 자리 채우기용 `main_keyword`가 `content_features`에 저장됐다.
 
 ## CLI
 
@@ -137,10 +182,14 @@ adjusted = 0.5 + (percentile - 0.5) * reliability
 
 ```python
 base_score = metric_score * 0.70 + qualitative_score * 0.20 + trend_novelty * 0.10
-adjusted_score = base_score - duplicate - critic_risk - low_confidence - stale_strategy + exploration_bonus
+adjusted_score = base_score - duplicate - critic_risk - stale_strategy + exploration_bonus
 ```
 
-정성 평가 영향은 20퍼센트로 제한한다. 페널티 상한은 중복 15점, Critic 위험 10점, 낮은 확신도 15점, 만료 전략 5점이다. 탐색 보너스는 adjacent 최대 3점, wildcard 최대 5점이다. 장기 70:20:10 탐색 목표는 `job_id` 해시로 재현한다.
+정성 평가 영향은 20퍼센트로 제한한다. 페널티 상한은 중복 15점, Critic 위험 10점, 만료 전략 5점이다. 탐색 보너스는 adjacent 최대 3점, wildcard 최대 5점이다. 장기 70:20:10 탐색 목표는 `job_id` 해시로 재현한다.
+
+표본 불확실성은 `adjusted_score`에서 따로 빼지 않는다. 이미 두 곳에서 반영되기 때문이다. `shrink_percentile`이 모든 지표를 같은 cohort 신뢰도만큼 중앙값 0.5로 당기고, `_score_blend_weights`가 신뢰도가 낮을 때 metric 가중치 자체를 낮춘다. 여기서 낮은 확신도를 세 번째로 차감하면 채널이 어릴 때 실행 가능 점수에 구조적으로 도달할 수 없다. 확신도는 아래 결정 단계에서 가장 강한 판정을 제한하는 용도로만 쓴다.
+
+`confidence`는 cohort 신뢰도를 그대로 보고한다. 예전에는 후보 생성 시 0.70을 한 번 더 곱해 필드 이름과 값의 의미가 어긋났다.
 
 ## 연구·모델·비용
 
@@ -150,9 +199,11 @@ adjusted_score = base_score - duplicate - critic_risk - low_confidence - stale_s
 CLAUDE_PLANNER_MODEL=claude-haiku-4-5-20251001
 CLAUDE_CRITIC_MODEL=claude-haiku-4-5-20251001
 CLAUDE_AUDIT_MODEL=claude-haiku-4-5-20251001
+CLAUDE_INTERPRETER_MODEL=claude-haiku-4-5-20251001
 CLAUDE_PLANNER_MAX_TOKENS=1200
 CLAUDE_CRITIC_MAX_TOKENS=900
 CLAUDE_AUDIT_MAX_TOKENS=1600
+CLAUDE_INTERPRETER_MAX_TOKENS=900
 CLAUDE_JOB_BUDGET_USD=0.30
 CLAUDE_DAILY_BUDGET_USD=1.00
 CLAUDE_MAX_WEB_SEARCHES_PER_JOB=4

@@ -819,7 +819,7 @@ def local_strategy_fallback(topic, trend_context=None, reason=None):
         "core_message": "부담을 줄이는 작은 습관부터 시작하세요",
         "thumbnail_text": [keyword[:14]],
         "frame_header": {
-            "title": keyword[:7],
+            "title": clip_at_word_boundary(keyword, 10),
             "subtitle": "핵심만 쉽게 알려드립니다",
         },
         "cta_next": "다음 건강 습관",
@@ -844,6 +844,61 @@ def local_strategy_fallback(topic, trend_context=None, reason=None):
     return strategy
 
 
+def design_constraint_hint(content_design):
+    """Carry goal-planner design decisions into Stage 1 as constraints.
+
+    The objective planner picks format/hook/emotion curve to serve a metric goal.
+    Stage 1 now writes the copy, so it has to respect those choices rather than
+    re-deciding them.
+    """
+    design = content_design or {}
+    if not isinstance(design, dict):
+        return ""
+    fields = (
+        ("format_type", "콘텐츠 형식"),
+        ("hook_type", "훅 유형"),
+        ("topic_family", "주제 계열"),
+        ("angle", "접근 각도"),
+        ("series_key", "시리즈 키"),
+    )
+    lines = [
+        f"- {label}: {design[key]}"
+        for key, label in fields
+        if str(design.get(key) or "").strip()
+    ]
+    curve = design.get("emotion_curve")
+    if isinstance(curve, list) and curve:
+        lines.append(f"- 감정 곡선: {' → '.join(str(item) for item in curve)}")
+    if not lines:
+        return ""
+    return (
+        "\n\n[확정된 콘텐츠 설계 — 목표 기반 기획 단계에서 결정됨]\n"
+        + "\n".join(lines)
+        + "\nhook_type과 형식은 위 설계를 따르고, 카피(제목·키워드·훅 문구)만 새로 작성하세요."
+    )
+
+
+def merge_planning_contract(strategy, pre_strategy):
+    """Keep planning-stage decisions after Stage 1 rewrites the copy.
+
+    Stage 1 owns the wording and sets `strategy_source="claude"`, which is what
+    enables the cheaper `evidence_brief` digest in Stage 2. The goal planner's
+    design, objective and audit fields have to survive that overwrite.
+    """
+    merged = dict(strategy)
+    for key in ("content_design", "objective", "planning"):
+        value = pre_strategy.get(key)
+        if value:
+            merged[key] = value
+    planning_source = pre_strategy.get("strategy_source")
+    if planning_source:
+        merged["planning_source"] = planning_source
+    design = pre_strategy.get("content_design") or {}
+    if isinstance(design, dict) and str(design.get("hook_type") or "").strip():
+        merged["hook_type"] = design["hook_type"]
+    return merged
+
+
 def plan_strategy(
     topic,
     abstracts="",
@@ -851,6 +906,7 @@ def plan_strategy(
     case_research="",
     trend_context=None,
     youtube_guidance="",
+    content_design=None,
 ):
     """
     Haiku로 빠르게 콘텐츠 전략(검색 키워드·제목·훅 유형·핵심 메시지)을 결정한다.
@@ -869,8 +925,9 @@ def plan_strategy(
         research_context = (research_context + "\n\n[case_and_stat_research]\n" + case_research).strip()
     research_hint = f"\n\n[근거 자료 요약]\n{research_context}" if research_context else ""
     channel_hint = f"\n\n{youtube_guidance}" if youtube_guidance else ""
+    design_hint = design_constraint_hint(content_design)
 
-    prompt = f"""주제: {topic}{trend_hint}{research_hint}{channel_hint}
+    prompt = f"""주제: {topic}{trend_hint}{research_hint}{channel_hint}{design_hint}
 
 이 주제로 50대 이상을 위한 YouTube Shorts 콘텐츠 전략을 수립하세요.
 
@@ -891,9 +948,11 @@ search_title_format: 제목 성격 (질문형/비교형/체크리스트형/생�
 core_message : 시청자가 이 영상에서 가져갈 딱 한 문장 (30자 이내)
 thumbnail_text: 썸네일용 짧은 문구 후보 1~2개 (배열, 각 8~14자, 약간 자극적이되 사실 기반)
 frame_header : 상단 프레임용 2줄 훅 후보. 대본 맥락을 압축한 추상적이지만 이해 가능한 문구
-               - title 3~7자 권장·최대 9자, subtitle 7~14자 권장·최대 18자
-               - title은 subtitle보다 반드시 짧게 잡아 위는 짧고 아래는 긴 삼각형 구도로 만들 것
-               - subtitle은 반드시 의미가 끊기지 않는 완결된 구문으로 작성하고, 작성 후 공백 포함 글자 수를 직접 세어 18자 상한을 넘지 않게 조정할 것
+               - title 4~10자 권장, subtitle 10~22자 권장
+               - 두 줄 모두 의미가 끊기지 않는 완결된 구문으로 작성할 것. 글자 수를 맞추려고 문장을
+                 중간에서 끊거나 조사를 잘라내지 말 것. 렌더러가 길이에 맞춰 글자 크기를 자동으로
+                 줄이므로, 짧게 만드는 것보다 문맥이 완결되는 것이 훨씬 중요하다.
+               - title은 subtitle보다 짧게 잡아 위는 짧고 아래는 긴 삼각형 구도로 만들 것
                - 사용자가 입력한 주제어를 그대로 복사하지 말 것
                - 호기심·반전·해결 약속이 느껴지게 작성
 cta_next     : 다음 영상 예고 주제 (파생 주제, 20자 이내)
@@ -1229,9 +1288,12 @@ main_keyword       : {main_keyword}
 5. visual_query: 50대 이상 시청자가 보았을 때 마음이 편안해지는 따뜻한 일상 장면을 영어 키워드 2~4개로 묘사하세요. (차가운 병원, MRI, 주사기 등 공포감을 주는 이미지 절대 금지)
    - 예: "senior peaceful sleep morning light", "elderly couple walking park sunrise"
 6. frame_header: 상단에 들어갈 2줄 훅. 영상 전체 훅 강도와 통일감을 갖도록 강하게 쓰세요.
-   - title(대제목): 공백 포함 9자 이내. 무난한 명사형 나열 대신 임팩트 있는 단정형·경고형·지목형 어구를 우선하세요.
+   - title(대제목): 공백 포함 4~10자 권장. 무난한 명사형 나열 대신 임팩트 있는 단정형·경고형·지목형 어구를 우선하세요.
      예: "이거 하셨다면", "몰랐다면 위험", "매일 이러셨죠" (단, 근거 없는 질병 확정 표현은 금지)
-   - subtitle(소제목): 공백 포함 18자 이내이며, 반드시 의미가 끊기지 않는 완결된 구문으로 작성하세요. 궁금증이나 경각심을 증폭시켜 다음 내용을 보고 싶게 만드는 문장으로 마무리하세요. 작성 후 스스로 글자 수를 세어 상한을 넘지 않도록 조정하세요.
+   - subtitle(소제목): 공백 포함 10~22자 권장. 궁금증이나 경각심을 증폭시켜 다음 내용을 보고 싶게 만드는 문장으로 마무리하세요.
+   - 두 줄 모두 의미가 끊기지 않는 완결된 구문이어야 합니다. 글자 수를 맞추려고 문장을 중간에서
+     끊거나 조사를 잘라내지 마세요. 렌더러가 길이에 맞춰 글자 크기를 자동으로 줄이고 필요하면
+     줄바꿈하므로, 짧게 만드는 것보다 문맥이 완결되는 것이 훨씬 중요합니다.
    - 사용자가 준 단어를 그대로 복사하지 말고, 이 영상 고유의 훅으로 재창작하세요.
 
 반드시 아래 JSON 객체 포맷으로만 출력하세요. 마크다운이나 추가 설명은 절대 넣지 마세요.
@@ -1364,6 +1426,15 @@ def ensure_scene_count(scenes, min_count):
 
     return scenes
 
+def clip_at_word_boundary(text, limit):
+    """Trim to a word boundary. On-screen copy must never end mid-word."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(value) <= limit:
+        return value
+    head, _, _ = value[:limit].rstrip().rpartition(" ")
+    return (head or value[:limit]).rstrip(" ,·:-")
+
+
 def normalize_frame_header(result, strategy, thumbnail_items):
     raw = result.get("frame_header") or strategy.get("frame_header") or {}
     if not isinstance(raw, dict):
@@ -1377,11 +1448,12 @@ def normalize_frame_header(result, strategy, thumbnail_items):
     if not subtitle:
         subtitle = "오늘의 뇌건강"
 
-    # Tight 9/18-character slicing used to cut otherwise meaningful phrases in
-    # the middle. These generous caps only contain abnormal model output; normal
-    # overflow is preserved for word wrapping in frame_style.py.
-    title = title[:20]
-    subtitle = subtitle[:40]
+    # These caps only contain abnormal model output; normal overflow is preserved
+    # for auto-shrink and word wrapping in frame_style.py. Clipping happens at a
+    # word boundary so a runaway response degrades to a shorter complete phrase
+    # instead of a fragment cut mid-word.
+    title = clip_at_word_boundary(title, 20)
+    subtitle = clip_at_word_boundary(subtitle, 40)
     return {"title": title, "subtitle": subtitle}
 
 def trim_scenes(scenes):
@@ -1673,7 +1745,10 @@ def main():
             case_research=case_research,
             trend_context=trend_context,
             youtube_guidance=youtube_prompt_text,
+            content_design=(pre_strategy or {}).get("content_design"),
         )
+        if pre_strategy:
+            strategy = merge_planning_contract(strategy, pre_strategy)
 
     strategy = normalize_strategy_contract(strategy, topic)
 

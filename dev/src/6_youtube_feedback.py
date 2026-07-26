@@ -352,6 +352,10 @@ VIDEO_COLUMN_MIGRATIONS = {
     "hours_since_previous_upload": "REAL",
 }
 
+PLANNING_RUN_COLUMN_MIGRATIONS = {
+    "seed_interpretation_json": "TEXT",
+}
+
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
     target = path or db_path()
@@ -370,6 +374,10 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     for column, column_type in VIDEO_COLUMN_MIGRATIONS.items():
         if column not in existing_video_columns:
             conn.execute(f"ALTER TABLE videos ADD COLUMN {column} {column_type}")
+    existing_plan_columns = {row["name"] for row in conn.execute("PRAGMA table_info(planning_runs)")}
+    for column, column_type in PLANNING_RUN_COLUMN_MIGRATIONS.items():
+        if column not in existing_plan_columns:
+            conn.execute(f"ALTER TABLE planning_runs ADD COLUMN {column} {column_type}")
     conn.commit()
     return conn
 

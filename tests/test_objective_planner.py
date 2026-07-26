@@ -252,6 +252,204 @@ class ObjectivePlannerTests(unittest.TestCase):
         self.assertEqual(plan["planning"]["preflight_status"], "blocked")
         self.assertEqual(plan["planning"]["claude_cost_usd"], 0.0)
 
+    def test_interpretation_replaces_keyword_family_and_template_topics(self):
+        # "고독감" matches no TOPIC_FAMILY_RULES keyword, so the mechanical path
+        # falls back to the seed word as its own family and bolts on
+        # supplement-domain angle templates. The interpreter must override both.
+        interpretation = {
+            "resolved_family": "사회적고립",
+            "family_source": "existing",
+            "topics": {
+                "exploit": ["혼자 있는 시간이 길어질 때 뇌에 생기는 변화"],
+                "adjacent": ["가족과 통화 한 번이 만드는 차이"],
+            },
+            "evidence_relevance": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            candidates = objective_planner.build_candidate_pool(
+                conn, objective_type="reach", seed_topic="고독감",
+                interpretation=interpretation,
+            )
+            conn.close()
+        self.assertTrue(candidates)
+        self.assertEqual({item["topic_family"] for item in candidates}, {"사회적고립"})
+        self.assertFalse(
+            any("복용 시간보다 중요한 생활 조건" in item["topic"] for item in candidates)
+        )
+        # Interpreted topics are finished titles used verbatim. The seed word must
+        # not be prepended as a "고독감: ..." dictionary-entry prefix.
+        self.assertIn("혼자 있는 시간이 길어질 때 뇌에 생기는 변화", {item["topic"] for item in candidates})
+        self.assertFalse(any(item["topic"].startswith("고독감") for item in candidates))
+
+    def test_template_fallback_still_prefixes_the_seed(self):
+        # Only the fragment templates need the "<seed>: <fragment>" shape; this is
+        # the no-interpretation path, so the prefix behaviour must survive there.
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            candidates = objective_planner.build_candidate_pool(
+                conn, objective_type="reach", seed_topic="고독감",
+            )
+            conn.close()
+        self.assertTrue(candidates)
+        self.assertTrue(all(item["topic"].startswith("고독감") for item in candidates))
+
+    def test_confidence_is_not_discounted_a_second_time_in_the_score(self):
+        # shrink_percentile and _score_blend_weights already price in sample
+        # uncertainty; a third low-confidence subtraction here is what held
+        # adjusted_score under the runnable threshold on a young channel.
+        candidate = {"confidence": 0.2, "duplicate_similarity": 0.0, "exploration_mode": "exploit"}
+        critic = {
+            "duplicate_risk": "low", "overfit_risk": "low", "evidence_risk": "low",
+            "recommended_action": "limited_test",
+        }
+        judgment = objective_planner.judge_candidate(
+            candidate, {"base_score": 60.0}, critic, desired_exploration="exploit",
+        )
+        self.assertNotIn("low_confidence", judgment["penalties"])
+        self.assertEqual(
+            judgment["adjusted_score"],
+            round(60.0 - judgment["penalties"]["critic_risk"], 4),
+        )
+        self.assertEqual(judgment["decision"], "limited_test")
+
+    def test_off_topic_channel_evidence_is_labelled_instead_of_shown_as_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            with conn:
+                objective_planner.feedback.store_videos(conn, [{
+                    "video_id": "blueberry",
+                    "title": "매일 먹어도 뇌에 안 닿는 블루베리",
+                    "published_at": "2026-06-01T00:00:00Z",
+                    "duration_seconds": 60,
+                    "fetched_at": "2026-07-01T00:00:00+00:00",
+                }])
+                objective_planner.feedback.store_performance_snapshot(conn, {
+                    "video_id": "blueberry",
+                    "window_name": "D28",
+                    "period_start": "2026-06-01",
+                    "period_end": "2026-06-28",
+                    "elapsed_days": 28,
+                    "views": 1000,
+                    "engaged_views": 700,
+                    "average_view_percentage": 80,
+                    "fetched_at": "2026-07-01T00:00:00+00:00",
+                })
+            candidates = objective_planner.build_candidate_pool(
+                conn, objective_type="reach", seed_topic="고독감",
+                interpretation={
+                    "resolved_family": "사회적고립",
+                    "family_source": "existing",
+                    "topics": {"exploit": ["혼자 있는 시간이 길어질 때 뇌에 생기는 변화"]},
+                    "evidence_relevance": {"video:blueberry": "pattern_only"},
+                },
+            )
+            conn.close()
+        with_evidence = [item for item in candidates if item["evidence_refs"]]
+        self.assertTrue(with_evidence)
+        for item in with_evidence:
+            self.assertEqual(item["evidence_scope"], "pattern_only")
+            self.assertIn("evidence_topic_mismatch", item["confounders"])
+            self.assertEqual(item["evidence_titles"], ["매일 먹어도 뇌에 안 닿는 블루베리"])
+
+    def test_seed_interpretation_validator_guards_refs_and_skips_bad_topics(self):
+        with self.assertRaises(objective_planner.PlannerValidationError):
+            objective_planner.validate_seed_interpretation(
+                {
+                    "resolved_family": "수면", "family_source": "existing",
+                    "topics": {"exploit": ["밤에 자주 깨는 이유가 있습니다"]},
+                    "evidence_relevance": [{"ref": "video:made_up", "relevance": "topical"}],
+                },
+                valid_refs={"video:v1"},
+            )
+        result = objective_planner.validate_seed_interpretation(
+            {
+                "resolved_family": "수면", "family_source": "existing",
+                "topics": {"exploit": [
+                    "30% 더 좋아지는 수면 습관", "밤에 자주 깨는 이유가 있습니다", "짧",
+                    "기존 제목 그대로입니다",
+                ]},
+            },
+            valid_refs={"video:v1"},
+            existing_titles=["기존 제목 그대로입니다"],
+        )
+        self.assertEqual(result["topics"], {"exploit": ["밤에 자주 깨는 이유가 있습니다"]})
+        self.assertEqual(
+            {item["reason"] for item in result["skipped_topics"]},
+            {"numeric_claim", "length", "existing_title_copy"},
+        )
+
+    def test_collected_search_phrases_reach_the_interpreter(self):
+        # Autocomplete phrases are the only viewer-language source available:
+        # comment bodies are deliberately not synced. They were already being
+        # collected into trend_observations but never shown to the interpreter.
+        captured = {}
+
+        def interpreter(prompt):
+            captured["prompt"] = prompt
+            return {
+                "resolved_family": "사회적고립", "family_source": "existing",
+                "topics": {"exploit": ["혼자 있는 시간이 길어질 때 뇌에 생기는 변화"]},
+                "evidence_relevance": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            objective_planner.plan_objective_topic(
+                "reach", seed_topic="고독감", job_id="search_phrases",
+                db_path=Path(tmp) / "feedback.db", allow_ai=False,
+                interpreter_call=interpreter,
+                trend_candidates=[
+                    {"keyword": "고독감 외로움 차이", "sources": ["google_suggest"]},
+                    "고독감 뜻",
+                ],
+            )
+        self.assertIn("실제 검색어", captured["prompt"])
+        self.assertIn("고독감 외로움 차이", captured["prompt"])
+        self.assertIn("고독감 뜻", captured["prompt"])
+
+    def test_interpreter_failure_falls_back_to_keyword_rules(self):
+        def broken_interpreter(_prompt):
+            raise objective_planner.PlannerValidationError("잘린 JSON")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = objective_planner.plan_objective_topic(
+                "reach", seed_topic="수면", job_id="interpreter_failure",
+                db_path=Path(tmp) / "feedback.db", allow_ai=False,
+                interpreter_call=broken_interpreter,
+            )
+        self.assertEqual(plan["planning"]["seed_interpreter_status"], "failed")
+        self.assertEqual(plan["content_design"]["topic_family"], "수면")
+        self.assertTrue(plan["topic"])
+
+    def test_interpreter_result_is_persisted_for_audit(self):
+        def interpreter(_prompt):
+            return {
+                "resolved_family": "사회적고립",
+                "family_source": "research_category",
+                "family_reason": "외로움 관련 계열",
+                "topics": {"exploit": ["혼자 있는 시간이 길어질 때 뇌에 생기는 변화"]},
+                "evidence_relevance": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "feedback.db"
+            plan = objective_planner.plan_objective_topic(
+                "reach", seed_topic="고독감", job_id="interpreter_success",
+                db_path=db_path, allow_ai=False, interpreter_call=interpreter,
+            )
+            conn = objective_planner.feedback.connect(db_path)
+            try:
+                stored = conn.execute(
+                    "SELECT seed_interpretation_json FROM planning_runs ORDER BY plan_id DESC LIMIT 1"
+                ).fetchone()["seed_interpretation_json"]
+            finally:
+                conn.close()
+        self.assertEqual(plan["planning"]["seed_interpreter_status"], "success")
+        self.assertEqual(plan["planning"]["seed_interpreter_family"], "사회적고립")
+        self.assertEqual(plan["planning"]["seed_interpreter_family_source"], "research_category")
+        self.assertEqual(plan["content_design"]["topic_family"], "사회적고립")
+        self.assertIn("사회적고립", stored)
+
     def test_deterministic_fallback_writes_compatible_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "topic_plan.json"

@@ -51,6 +51,25 @@ HOOK_TYPES = ("반전형", "공감형", "질문형", "경고형", "발견형", "
 EXPLORATION_MODES = ("exploit", "adjacent", "wildcard", "manual")
 DECISIONS = ("selected", "limited_test", "manual_review", "rejected")
 CRITIC_ENUM_FIELDS = ("duplicate_risk", "overfit_risk", "evidence_risk")
+# Seed interpreter: Claude decides direction (family + angles + which channel
+# evidence is actually on-topic) before any candidate string is built. Numeric
+# scoring stays in Python — the interpreter returns labels and phrases only.
+SEED_FAMILY_SOURCES = ("existing", "research_category", "new")
+EVIDENCE_RELEVANCE = ("topical", "pattern_only")
+SEED_INTERPRETER_REFERENCE_VIDEOS = 8
+# Google/YouTube autocomplete phrases are literally what viewers typed, so they
+# are the language reference the interpreter gets. Comment bodies are deliberately
+# not synced, so this and the channel's own titles are the only tone sources.
+SEED_INTERPRETER_SEARCH_PHRASES = 12
+SEED_INTERPRETER_MAX_TOPICS = 6
+SEED_FAMILY_MAX_CHARS = 24
+# The interpreter returns finished titles, not fragments to prefix with the seed,
+# so the bounds are title bounds. Viewers never need to see the seed word itself.
+SEED_TOPIC_MIN_CHARS = 8
+SEED_TOPIC_MAX_CHARS = 40
+# How many distinct topics each mode should supply. The candidate pool cannot be
+# larger than the number of distinct topics, so these are the exploration width.
+SEED_TOPIC_TARGETS = {"exploit": 4, "adjacent": 3, "wildcard": 2}
 DEFAULT_TOPICS = (
     "수면 중 자주 깨는 이유", "건망증과 기억력 저하의 차이", "아침 혈압 습관",
     "걷기와 뇌 건강", "식후 졸림이 보내는 신호", "물을 마시는 시간",
@@ -251,20 +270,78 @@ def _existing_titles(conn: sqlite3.Connection) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-def _candidate_topic(base: str, mode: str, index: int) -> str:
+def _candidate_topic(
+    base: str,
+    mode: str,
+    index: int,
+    topics: Sequence[str] | None = None,
+) -> str:
+    """Interpreter topics are finished titles; templates still need the seed prefix.
+
+    The `"{seed}: {angle}"` shape only exists because the hardcoded templates are
+    sentence fragments. It reads like a dictionary entry, so it is confined to the
+    deterministic fallback path.
+    """
+    options = tuple(topics or ())
+    if options:
+        return options[index % len(options)]
     base = " ".join(str(base or "").split()).strip()
     angles = TOPIC_ANGLE_TEMPLATES[mode]
     angle = angles[index % len(angles)]
     return f"{base}: {angle}" if base else angle
 
 
-def _topic_family(topic: str, seed_topic: str | None = None) -> str:
+def _topic_family(
+    topic: str,
+    seed_topic: str | None = None,
+    resolved_family: str | None = None,
+) -> str:
+    if str(resolved_family or "").strip():
+        return " ".join(str(resolved_family).split()).strip()
     text = " ".join((seed_topic or "", topic)).lower()
     for family, keywords in TOPIC_FAMILY_RULES:
         if any(keyword in text for keyword in keywords):
             return family
     words = sorted(_compact_words(seed_topic or topic))
     return words[0] if words else "기타"
+
+
+def known_topic_families(conn: sqlite3.Connection) -> list[str]:
+    """Family names the interpreter may reuse: rule table plus already-tagged videos."""
+    families = [family for family, _ in TOPIC_FAMILY_RULES]
+    families.extend(
+        str(row["topic_family"])
+        for row in conn.execute(
+            "SELECT DISTINCT topic_family FROM content_features WHERE topic_family IS NOT NULL AND topic_family!=''"
+        )
+    )
+    return list(dict.fromkeys(families))
+
+
+def channel_reference_videos(
+    conn: sqlite3.Connection,
+    limit: int = SEED_INTERPRETER_REFERENCE_VIDEOS,
+) -> list[dict[str, Any]]:
+    """Top channel videos with titles, so the interpreter can judge topical fit.
+
+    Performance is passed as a Python-computed classification label, never as a
+    raw number the model could re-interpret or restate as a causal claim.
+    """
+    scored = []
+    for row in _preferred_snapshot_rows(conn):
+        outcome = feedback.classify_exposure_quality(conn, row["video_id"], row["window_name"])
+        scored.append((float(outcome.get("quality_score") or 0.5), row, outcome))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [
+        {
+            "ref": f"video:{row['video_id']}",
+            "metric_ref": f"metric:{row['window_name']}:{row['video_id']}",
+            "video_id": str(row["video_id"]),
+            "title": str(row["title"] or ""),
+            "performance_label": str(outcome.get("classification") or "insufficient_data"),
+        }
+        for _, row, outcome in scored[:limit]
+    ]
 
 
 # Default containment cutoff: if 2+ words overlap and cover 80%+ of the
@@ -328,10 +405,15 @@ def build_candidate_pool(
     trend_candidates: Sequence[Mapping[str, Any] | str] | None = None,
     candidate_count: int = 12,
     rejected_duplicates: list[dict[str, Any]] | None = None,
+    interpretation: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build a 5/3/3/1 evidence, adjacent, trend, wildcard candidate pool."""
     objective_type = normalize_objective_type(objective_type)
     manual_seed = bool(str(seed_topic or "").strip())
+    interpretation = interpretation or {}
+    interpreted_topics = interpretation.get("topics") or {}
+    resolved_family = interpretation.get("resolved_family")
+    evidence_relevance = interpretation.get("evidence_relevance") or {}
     containment_cutoff = (
         CONTAINMENT_CUTOFF_MANUAL_SEED if manual_seed else CONTAINMENT_CUTOFF_DEFAULT
     )
@@ -372,99 +454,125 @@ def build_candidate_pool(
     discovery_bases = [str(seed_topic).strip()] if str(seed_topic or "").strip() else list(DEFAULT_TOPICS)
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for index in range(max(candidate_count * 8, 48)):
+    attempt = 0
+    for candidate_source in source_targets:
         if len(candidates) >= candidate_count:
             break
-        slot = len(candidates)
-        candidate_source = (
-            source_targets[slot]
-            if slot < len(source_targets)
-            else "wildcard"
-        )
         mode = SOURCE_EXPLORATION_MODE[candidate_source]
         trend_slot = candidate_source == "trend"
-        # Trend candidates are independent observations. Attaching a random
-        # channel video here would falsely present unrelated metrics as proof.
-        evidence_item = evidence[index % len(evidence)] if evidence and not trend_slot else None
-        if trend_slot:
-            if trend_values:
+        # A trend slot without a real trend observation used to fabricate a
+        # "<seed> 관련 검색: <template>" topic, which is neither a trend signal nor
+        # a usable title. Leave the slot empty instead.
+        if trend_slot and not trend_values:
+            continue
+        topic_options = tuple(interpreted_topics.get(mode) or ())
+        # Once the interpreter has supplied topics, never mix the prefixed fragment
+        # templates back in for a mode it left empty — that reintroduces the exact
+        # "<seed>: <fragment>" style the interpreter exists to replace. Trend slots
+        # are exempt: their topic comes from the observation, not from this list.
+        if interpreted_topics and not topic_options and not trend_slot:
+            continue
+        # Each source target gets a bounded number of tries, because a topic can
+        # already be used or blocked as a near-duplicate. When a mode runs out of
+        # usable options the loop must hand over to the next source target: the
+        # slot used to advance only on acceptance, so a single starved mode
+        # consumed the whole budget and the adjacent/trend/wildcard slots were
+        # never built at all.
+        variants = len(topic_options) or len(TOPIC_ANGLE_TEMPLATES[mode])
+        slot_budget = max(variants, len(discovery_bases), len(trend_values), 1)
+        for _ in range(slot_budget):
+            index = attempt
+            attempt += 1
+            # Trend candidates are independent observations. Attaching a random
+            # channel video here would falsely present unrelated metrics as proof.
+            evidence_item = evidence[index % len(evidence)] if evidence and not trend_slot else None
+            if trend_slot:
                 trend = trend_values[index % len(trend_values)]
                 topic = trend["topic"]
                 sources = trend["sources"]
                 repeat_days = int(trend.get("repeat_days") or 0)
             else:
                 base = discovery_bases[index % len(discovery_bases)]
-                topic = _candidate_topic(f"{base} 관련 검색", "adjacent", index)
-                sources = ["trend_fallback"]
+                topic = _candidate_topic(base, mode, index, topics=topic_options)
+                sources = ["channel_pattern"] if evidence_item else ["exploration"]
                 repeat_days = 0
-        else:
-            base = discovery_bases[index % len(discovery_bases)]
-            topic = _candidate_topic(base, mode, index)
-            sources = ["channel_pattern"] if evidence_item else ["exploration"]
-            repeat_days = 0
-        key = re.sub(r"\s+", "", topic).lower()
-        if not key or key in seen:
-            continue
-        duplicate = _topic_duplicate_info(
-            topic, existing_titles, duplicate_threshold, containment_cutoff=containment_cutoff
-        )
-        if duplicate["blocked"]:
-            if rejected_duplicates is not None:
-                rejected_duplicates.append({"topic": topic, **duplicate})
-            continue
-        seen.add(key)
-        closest = float(duplicate["similarity"])
-        if evidence_item:
-            _, source_row, normalized = evidence_item
-            metrics = _transfer_pattern_metrics(normalized)
-            evidence_refs = [
-                f"video:{source_row['video_id']}",
-                f"metric:{source_row['window_name']}:{source_row['video_id']}",
-            ]
-            confidence = float(normalized.get("confidence") or 0.0) * 0.70
-            classification = normalized.get("classification")
-            confounders = ["pattern_transfer_only"]
-            if classification == "exposure_luck":
-                confounders.append("shorts_feed_exposure")
-            if normalized.get("confidence_level") == "low":
-                confounders.append("small_sample")
-            if source_row["upload_jst_hour"] is not None:
-                confounders.append("upload_time_observed_not_causal")
-        else:
-            metrics, evidence_refs, confidence, classification = {}, [], 0.0, "insufficient_data"
-            confounders = ["small_sample"]
-        family = _topic_family(topic, seed_topic)
-        source_count = max(1, len(set(sources)))
-        research_depth, research_debug = (
-            research_depth_metric(family, research_signals, research_usage)
-            if research_signals else (0.5, {"matched": False, "reason": "no_category_data"})
-        )
-        metrics.update({
-            "trend_signal": min(1.0, 0.30 + 0.18 * source_count + 0.04 * min(repeat_days, 5)) if trend_slot else 0.5,
-            "novelty": max(0.0, 1.0 - closest),
-            "research_depth": research_depth,
-        })
-        candidates.append({
-            "candidate_id": f"cand_{len(candidates) + 1:02d}",
-            "topic": topic,
-            "topic_family": family,
-            "exploration_mode": mode,
-            "candidate_source": candidate_source,
-            "sources": sources,
-            "evidence_refs": evidence_refs,
-            "source_classification": classification,
-            "normalized_metrics": metrics,
-            "research_category": research_debug,
-            "confidence": confidence,
-            "channel_sample_count": evidence_profile["sample_count"],
-            "channel_reliability": round(float(evidence_profile["reliability"]), 6),
-            "channel_maturity": evidence_profile["stage"],
-            "duplicate_similarity": closest,
-            "duplicate_containment": duplicate["containment"],
-            "duplicate_threshold": duplicate_threshold,
-            "closest_existing_title": duplicate["title"],
-            "confounders": confounders,
-        })
+            key = re.sub(r"\s+", "", topic).lower()
+            if not key or key in seen:
+                continue
+            duplicate = _topic_duplicate_info(
+                topic, existing_titles, duplicate_threshold, containment_cutoff=containment_cutoff
+            )
+            if duplicate["blocked"]:
+                if rejected_duplicates is not None:
+                    rejected_duplicates.append({"topic": topic, **duplicate})
+                continue
+            seen.add(key)
+            closest = float(duplicate["similarity"])
+            if evidence_item:
+                _, source_row, normalized = evidence_item
+                metrics = _transfer_pattern_metrics(normalized)
+                evidence_refs = [
+                    f"video:{source_row['video_id']}",
+                    f"metric:{source_row['window_name']}:{source_row['video_id']}",
+                ]
+                evidence_titles = [str(source_row["title"] or "")]
+                # Report cohort reliability as-is. The old 0.70 multiplier made
+                # `confidence` mean something other than its name and stacked a
+                # second discount on top of shrink_percentile.
+                confidence = float(normalized.get("confidence") or 0.0)
+                classification = normalized.get("classification")
+                confounders = ["pattern_transfer_only"]
+                # Without an interpretation the attached video is only a
+                # round-robin format reference, so it must not read as topic proof.
+                evidence_scope = evidence_relevance.get(evidence_refs[0], "unclassified")
+                if evidence_scope != "topical":
+                    confounders.append("evidence_topic_mismatch")
+                if classification == "exposure_luck":
+                    confounders.append("shorts_feed_exposure")
+                if normalized.get("confidence_level") == "low":
+                    confounders.append("small_sample")
+                if source_row["upload_jst_hour"] is not None:
+                    confounders.append("upload_time_observed_not_causal")
+            else:
+                metrics, evidence_refs, confidence, classification = {}, [], 0.0, "insufficient_data"
+                confounders = ["small_sample"]
+                evidence_scope = "none"
+                evidence_titles = []
+            family = _topic_family(topic, seed_topic, resolved_family=resolved_family)
+            source_count = max(1, len(set(sources)))
+            research_depth, research_debug = (
+                research_depth_metric(family, research_signals, research_usage)
+                if research_signals else (0.5, {"matched": False, "reason": "no_category_data"})
+            )
+            metrics.update({
+                "trend_signal": min(1.0, 0.30 + 0.18 * source_count + 0.04 * min(repeat_days, 5)) if trend_slot else 0.5,
+                "novelty": max(0.0, 1.0 - closest),
+                "research_depth": research_depth,
+            })
+            candidates.append({
+                "candidate_id": f"cand_{len(candidates) + 1:02d}",
+                "topic": topic,
+                "topic_family": family,
+                "exploration_mode": mode,
+                "candidate_source": candidate_source,
+                "sources": sources,
+                "evidence_refs": evidence_refs,
+                "evidence_scope": evidence_scope,
+                "evidence_titles": evidence_titles,
+                "source_classification": classification,
+                "normalized_metrics": metrics,
+                "research_category": research_debug,
+                "confidence": confidence,
+                "channel_sample_count": evidence_profile["sample_count"],
+                "channel_reliability": round(float(evidence_profile["reliability"]), 6),
+                "channel_maturity": evidence_profile["stage"],
+                "duplicate_similarity": closest,
+                "duplicate_containment": duplicate["containment"],
+                "duplicate_threshold": duplicate_threshold,
+                "closest_existing_title": duplicate["title"],
+                "confounders": confounders,
+            })
+            break
     return candidates
 
 
@@ -481,6 +589,187 @@ def _unsupported_numeric_claim(candidate: Mapping[str, Any]) -> bool:
     fields = ("angle", "reason", "topic")
     text = " ".join(str(candidate.get(field) or "") for field in fields)
     return bool(re.search(r"\d+(?:\.\d+)?\s*(?:%|퍼센트|배|명|개월|년)", text))
+
+
+def _seed_interpreter_prompt(
+    seed_topic: str | None,
+    reference_videos: Sequence[Mapping[str, Any]],
+    known_families: Sequence[str],
+    research_categories: Sequence[Mapping[str, Any]],
+    search_phrases: Sequence[str] = (),
+) -> str:
+    compact_videos = [
+        {
+            "ref": item.get("ref"),
+            "title": item.get("title"),
+            "performance": item.get("performance_label"),
+        }
+        for item in reference_videos
+    ]
+    seed_text = " ".join(str(seed_topic or "").split()).strip()
+    seed_block = (
+        f'사용자 씨드: "{seed_text}"'
+        if seed_text
+        else "사용자 씨드: 없음 (채널 데이터를 보고 다음에 다룰 방향을 직접 제안하세요)"
+    )
+    return f"""50대 이상 시청자를 위한 뇌 건강 YouTube Shorts 채널의 다음 콘텐츠 방향을 정하세요.
+
+{seed_block}
+채널 기존 영상 (performance 등급은 이미 계산된 값입니다): {_json(compact_videos)}
+실제 검색어 (이용자가 직접 입력한 자동완성 표현): {_json(list(search_phrases))}
+기존 주제 계열 목록: {_json(list(known_families))}
+연구 카테고리 목록: {_json(list(research_categories))}
+
+할 일:
+1. resolved_family: 이 씨드를 어느 주제 계열로 다룰지 정하세요.
+   기존 목록이나 연구 카테고리에 맞는 값이 있으면 그대로 쓰고, 없으면 {SEED_FAMILY_MAX_CHARS}자 이내로 새 계열명을 제안하세요.
+   family_source는 existing / research_category / new 중 하나입니다.
+2. topics: 이 계열로 만들 수 있는 주제를 mode별로 제안하세요. 각 항목은 그대로 영상 제목이 됩니다.
+   - exploit {SEED_TOPIC_TARGETS['exploit']}개: 씨드 핵심을 정면으로 다루는 주제
+   - adjacent {SEED_TOPIC_TARGETS['adjacent']}개: 씨드에서 자연스럽게 확장되는 인접 주제
+   - wildcard {SEED_TOPIC_TARGETS['wildcard']}개: 의외의 관점이나 실험적인 주제
+3. evidence_relevance: 위 채널 영상 중 이 씨드와 내용상 실제로 관련된 것은 topical,
+   내용은 무관하지만 형식·훅 패턴만 참고할 수 있는 것은 pattern_only로 표시하세요.
+
+제목 작성 규칙:
+- 씨드 단어를 제목 앞에 붙이거나 "단어: 설명" 형태로 쓰지 마세요. 씨드는 다룰 내용일 뿐이고
+  제목에 그 단어가 그대로 나올 필요는 없습니다. 사전에서 용어를 설명하는 말투를 피하세요.
+- 위 "채널 기존 영상" 제목들의 어투를 참고하세요. 이 채널이 실제로 쓰는 말투가 기준입니다.
+- 위 "실제 검색어"는 이용자가 직접 입력한 표현입니다. 그대로 붙여넣지 말고, 사람들이 쓰는 단어 선택과
+  궁금해하는 지점을 참고하세요. 사전 정의나 용어 해설을 찾는 검색어는 제목의 근거로 삼지 마세요.
+- 시청자가 친구에게 말할 때 쓰는 구어체로 쓰세요. 남에게 옮겨 말하고 싶어지는 문장이 목표입니다.
+- 각 항목은 {SEED_TOPIC_MIN_CHARS}~{SEED_TOPIC_MAX_CHARS}자의 완결된 한국어 문장 또는 구문입니다.
+- 후보 풀 크기가 주제 개수로 제한되므로 mode별 개수를 채우고 서로 다른 표현을 쓰세요.
+- 기존 영상 제목과 단어가 많이 겹치면 중복으로 걸러지므로 표현을 달리하세요.
+
+금지:
+- 숫자, 통계, 성과 수치, 인과관계를 새로 만들지 마세요.
+- ref는 입력에 있는 값만 사용하세요.
+- 기존 영상 제목을 그대로 복사하지 마세요.
+- 씨드가 가리키는 내용을 다른 주제로 바꾸지 마세요.
+- 공포 조장이나 과장된 단정은 쓰지 마세요.
+
+JSON만 출력하세요.
+
+{{"resolved_family": "", "family_source": "", "family_reason": "",
+  "topics": {{"exploit": [], "adjacent": [], "wildcard": []}},
+  "evidence_relevance": [{{"ref": "", "relevance": ""}}]}}"""
+
+
+def validate_seed_interpretation(
+    output: Mapping[str, Any],
+    *,
+    valid_refs: Iterable[str] | None = None,
+    existing_titles: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Validate interpreter output. Bad topics are skipped; bad refs/family fail."""
+    if not isinstance(output, Mapping):
+        raise PlannerValidationError("Seed interpreter JSON schema가 올바르지 않습니다.")
+    family = " ".join(str(output.get("resolved_family") or "").split()).strip()
+    if not family:
+        raise PlannerValidationError("Seed interpreter resolved_family가 비어 있습니다.")
+    if len(family) > SEED_FAMILY_MAX_CHARS:
+        raise PlannerValidationError(f"resolved_family가 너무 깁니다: {len(family)}자")
+    if _unsupported_numeric_claim({"topic": family}):
+        raise PlannerValidationError(f"resolved_family에 근거 없는 수치가 있습니다: {family}")
+    family_source = str(output.get("family_source") or "new")
+    if family_source not in SEED_FAMILY_SOURCES:
+        raise PlannerValidationError(f"허용되지 않은 family_source입니다: {family_source}")
+
+    raw_topics = output.get("topics")
+    if not isinstance(raw_topics, Mapping):
+        raise PlannerValidationError("Seed interpreter topics는 JSON object여야 합니다.")
+    titles = {re.sub(r"\s+", "", str(title)).lower() for title in (existing_titles or ())}
+    topics: dict[str, list[str]] = {}
+    skipped: list[dict[str, str]] = []
+    for mode in TOPIC_ANGLE_TEMPLATES:
+        values = raw_topics.get(mode)
+        if values is None:
+            continue
+        if not isinstance(values, list):
+            raise PlannerValidationError(f"topics.{mode}는 배열이어야 합니다.")
+        cleaned: list[str] = []
+        for value in values:
+            topic = " ".join(str(value or "").split()).strip()
+            if not topic:
+                continue
+            # A bad topic only costs that one phrase; the remaining topics still
+            # beat falling back to the generic supplement-domain templates.
+            if not SEED_TOPIC_MIN_CHARS <= len(topic) <= SEED_TOPIC_MAX_CHARS:
+                skipped.append({"mode": mode, "topic": topic, "reason": "length"})
+                continue
+            if _unsupported_numeric_claim({"topic": topic}):
+                skipped.append({"mode": mode, "topic": topic, "reason": "numeric_claim"})
+                continue
+            if re.sub(r"\s+", "", topic).lower() in titles:
+                skipped.append({"mode": mode, "topic": topic, "reason": "existing_title_copy"})
+                continue
+            if topic not in cleaned:
+                cleaned.append(topic)
+        if cleaned:
+            topics[mode] = cleaned[:SEED_INTERPRETER_MAX_TOPICS]
+    if not topics:
+        reasons = "; ".join(f"{item['topic']}: {item['reason']}" for item in skipped)
+        raise PlannerValidationError(
+            f"Seed interpreter가 유효한 topic을 반환하지 않았습니다: {reasons or '빈 응답'}"
+        )
+
+    allowed_refs = None if valid_refs is None else set(valid_refs)
+    relevance: dict[str, str] = {}
+    for raw in output.get("evidence_relevance") or ():
+        if not isinstance(raw, Mapping):
+            raise PlannerValidationError("evidence_relevance 항목은 JSON object여야 합니다.")
+        ref = str(raw.get("ref") or "")
+        if allowed_refs is not None and ref not in allowed_refs:
+            raise PlannerValidationError(f"입력에 없는 evidence ref입니다: {ref}")
+        label = str(raw.get("relevance") or "")
+        if label not in EVIDENCE_RELEVANCE:
+            raise PlannerValidationError(f"허용되지 않은 relevance입니다: {label}")
+        relevance[ref] = label
+    return {
+        "resolved_family": family,
+        "family_source": family_source,
+        "family_reason": str(output.get("family_reason") or "")[:200],
+        "topics": topics,
+        "evidence_relevance": relevance,
+        "skipped_topics": skipped,
+    }
+
+
+def interpret_seed(
+    *,
+    seed_topic: str | None,
+    reference_videos: Sequence[Mapping[str, Any]],
+    known_families: Sequence[str],
+    research_categories: Sequence[Mapping[str, Any]],
+    search_phrases: Sequence[str] = (),
+    existing_titles: Iterable[str] = (),
+    job_id: str,
+    plan_id: int | None = None,
+    interpreter_call: Callable[[str], Mapping[str, Any]] | None = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Ask Claude for direction (family, topics, evidence relevance) for one seed."""
+    prompt = _seed_interpreter_prompt(
+        seed_topic, reference_videos, known_families, research_categories,
+        search_phrases=search_phrases,
+    )
+    if interpreter_call:
+        raw = interpreter_call(prompt)
+    else:
+        settings = load_runtime_settings()
+        raw = call_claude_json(
+            prompt,
+            model=model or settings.claude_interpreter_model,
+            max_tokens=max_tokens or settings.claude_interpreter_max_tokens,
+            stage="seed_interpreter", job_id=job_id, plan_id=plan_id,
+        )
+    return validate_seed_interpretation(
+        raw,
+        valid_refs={str(item.get("ref")) for item in reference_videos},
+        existing_titles=existing_titles,
+    )
 
 
 def validate_planner_output(
@@ -509,7 +798,11 @@ def validate_planner_output(
         if candidate_id in seen:
             raise PlannerValidationError(f"중복 candidate_id입니다: {candidate_id}")
         seen.add(candidate_id)
-        topic = str(raw.get("topic") or candidate_map[candidate_id].get("topic") or "").strip()
+        # The candidate topic is authoritative. The interpreter already turned the
+        # seed into natural phrasing and the pool already duplicate-checked it;
+        # letting the planner rewrite it here is how topics drifted off-seed and
+        # how a rewrite could slip past the duplicate gate unchecked.
+        topic = str(candidate_map[candidate_id].get("topic") or "").strip()
         if not topic:
             raise PlannerValidationError("Planner topic이 비어 있습니다.")
         if topic.lower() in titles:
@@ -628,6 +921,10 @@ def _planner_prompt(
         "exploration_mode": item.get("exploration_mode"),
         "candidate_source": item.get("candidate_source"),
         "evidence_refs": item.get("evidence_refs") or [],
+        # Titles and scope make the attached evidence auditable: without them the
+        # model sees only opaque video IDs and cannot spot an off-topic reference.
+        "evidence_titles": item.get("evidence_titles") or [],
+        "evidence_scope": item.get("evidence_scope") or "unclassified",
         "confidence": item.get("confidence", 0),
         "duplicate_similarity": item.get("duplicate_similarity", 0),
         "normalized_metrics": item.get("normalized_metrics") or {},
@@ -645,7 +942,7 @@ def _planner_prompt(
 규칙:
 - 숫자 점수, 검색량, 성과 수치, 인과관계를 새로 만들지 마세요.
 - candidate_id와 evidence_refs는 입력에 있는 값만 사용하세요.
-- 입력 주제의 핵심 대상을 바꾸지 말고 기존 제목을 복사하지 마세요.
+- topic은 이미 확정된 값입니다. 바꾸지 말고 그대로 두세요. 여러분이 정할 것은 형식·훅·정성 평가입니다.
 - 정성 enum은 low/medium/high만 사용하세요.
 - format_type은 반드시 다음 중 하나여야 합니다 (다른 값 절대 사용 금지):
   {list(FORMAT_TYPES)}
@@ -665,6 +962,8 @@ def _critic_prompt(candidates: Sequence[Mapping[str, Any]]) -> str:
         "format_type": item.get("format_type"),
         "hook_type": item.get("hook_type"),
         "evidence_refs": item.get("evidence_refs") or [],
+        "evidence_titles": item.get("evidence_titles") or [],
+        "evidence_scope": item.get("evidence_scope") or "unclassified",
         "confidence": item.get("confidence", 0),
         "duplicate_similarity": item.get("duplicate_similarity", 0),
         "confounders": item.get("confounders") or [],
@@ -672,6 +971,8 @@ def _critic_prompt(candidates: Sequence[Mapping[str, Any]]) -> str:
     return f"""아래 상위 Shorts 후보가 틀릴 수 있는 이유를 찾으세요. 후보를 지지하지 마세요.
 조회수 우연, Shorts Feed 노출 편향, 업로드 시간, 영상 길이, 계절성, 작은 표본,
 주제 중복, 제목-내용 불일치, 채널 과적합을 검토하세요.
+evidence_titles가 후보 주제와 무관하면 그 성과는 근거가 아니라 형식 참고일 뿐이므로
+evidence_risk를 높게 보고 그 이유를 reason에 적으세요.
 후보: {_json(compact_candidates)}
 숫자 점수를 만들지 말고 reviews 배열을 가진 JSON만 출력하세요.
 각 review 필드: candidate_id, contradicting_refs, confounders, duplicate_risk,
@@ -849,14 +1150,19 @@ def judge_candidate(
     critic_values = [ENUM_SCORE.get(str(critic.get(field) or "medium"), 0.5) for field in CRITIC_ENUM_FIELDS]
     critic_risk_penalty = min(10.0, 10.0 * statistics_mean(critic_values))
     confidence = float(candidate.get("confidence") or 0.0)
-    low_confidence_penalty = min(15.0, 15.0 * max(0.0, 0.6 - confidence) / 0.6)
+    # No separate low-confidence penalty. Sample uncertainty is already priced in
+    # twice upstream: shrink_percentile pulls every metric toward a neutral 0.5 by
+    # the same cohort reliability, and _score_blend_weights lowers the metric
+    # weight itself when reliability is low. Subtracting it a third time here is
+    # what kept adjusted_score below the runnable threshold on a young channel.
+    # Confidence still gates the strongest verdict in the decision ladder below.
     stale_penalty = 5.0 if stale_strategy else 0.0
     mode = str(candidate.get("exploration_mode") or "exploit")
     exploration_bonus = 0.0
     if mode == desired_exploration:
         exploration_bonus = 5.0 if mode == "wildcard" else 3.0 if mode == "adjacent" else 0.0
     adjusted = float(score["base_score"]) - duplicate_penalty - critic_risk_penalty
-    adjusted -= low_confidence_penalty + stale_penalty
+    adjusted -= stale_penalty
     adjusted += exploration_bonus
     if adjusted >= 70.0 and confidence >= 0.6 and critic.get("recommended_action") != "rejected":
         decision = "selected"
@@ -874,7 +1180,6 @@ def judge_candidate(
         "penalties": {
             "duplicate": round(duplicate_penalty, 4),
             "critic_risk": round(critic_risk_penalty, 4),
-            "low_confidence": round(low_confidence_penalty, 4),
             "stale_strategy": stale_penalty,
         },
         "exploration_bonus": exploration_bonus,
@@ -926,25 +1231,22 @@ def _local_candidate_rows(
 
 
 def _topic_plan(selected: Mapping[str, Any], plan_id: int, objective_id: int) -> dict[str, Any]:
+    """Build the planning contract for `0_script.py --topic-json`.
+
+    Deliberately carries no copywriting fields (main_keyword, title,
+    thumbnail_text, frame_header, core_message, ...). This stage decides *what* to
+    make and *how to frame* it; the wording is Stage 1's job. Emitting a
+    `main_keyword` here also made `0_script.py` skip Stage 1 entirely, so the
+    fabricated placeholders went straight to render — a whole-topic string as the
+    search keyword and mid-word slices in the on-screen header.
+    """
     candidate = selected["candidate"]
     planner = selected["planner"]
     judgment = selected["judgment"]
     topic = str(planner.get("topic") or candidate["topic"])
-    main_keyword = str(planner.get("main_keyword") or topic.split("-")[0].strip())[:24]
-    title = str(planner.get("title") or topic)[:60]
     format_type = str(planner.get("format_type") or "오해반전형")
     return {
         "topic": topic,
-        "main_keyword": main_keyword,
-        "sub_keywords": list(planner.get("sub_keywords") or list(_compact_words(topic))[:2]),
-        "search_intent": str(planner.get("search_intent") or "내 상황에 맞는 판단 기준이 궁금함"),
-        "hook_type": str(planner.get("hook_type") or "반전형"),
-        "title": title,
-        "search_title_format": format_type,
-        "core_message": str(planner.get("core_message") or "작은 신호를 알고 부담 없는 실천부터 시작하세요"),
-        "thumbnail_text": list(planner.get("thumbnail_text") or [main_keyword[:14]]),
-        "frame_header": {"title": main_keyword[:9], "subtitle": title[:18]},
-        "cta_next": str(planner.get("cta_next") or f"{planner.get('series_key') or main_keyword} 다음 편"),
         "objective": {
             "type": selected["objective_type"], "objective_id": objective_id,
             "plan_id": plan_id, "selection_mode": candidate.get("exploration_mode"),
@@ -954,18 +1256,23 @@ def _topic_plan(selected: Mapping[str, Any], plan_id: int, objective_id: int) ->
             "duplicate_threshold": candidate.get("duplicate_threshold"),
             "closest_existing_title": candidate.get("closest_existing_title") or "",
             "evidence_refs": list(planner.get("evidence_refs") or candidate.get("evidence_refs") or []),
+            "evidence_scope": candidate.get("evidence_scope") or "unclassified",
+            "evidence_titles": list(candidate.get("evidence_titles") or []),
             "reason": str(
                 selected.get("decision_reason")
                 or (selected.get("critic") or {}).get("reason")
                 or "결정론 점수와 위험 보정 결과"
             ),
         },
+        # Stage 1 receives this as a constraint and Stage 2 reads it back, so the
+        # planner's design decisions survive even though the wording does not.
         "content_design": {
             "topic_family": planner.get("topic_family") or candidate.get("topic_family"),
             "angle": planner.get("angle") or "생활 속 판단 기준",
             "format_type": format_type,
+            "hook_type": str(planner.get("hook_type") or "반전형"),
             "emotion_curve": list(planner.get("emotion_curve") or ["공감", "이해", "안심", "행동"]),
-            "series_key": planner.get("series_key") or main_keyword,
+            "series_key": planner.get("series_key") or topic,
             "cta_type": "series_next",
         },
         "strategy_source": selected.get("strategy_source", "objective_planner"),
@@ -983,6 +1290,7 @@ def plan_objective_topic(
     trend_candidates: Sequence[Mapping[str, Any] | str] | None = None,
     planner_call: Callable[[str], Mapping[str, Any]] | None = None,
     critic_call: Callable[[str], Mapping[str, Any]] | None = None,
+    interpreter_call: Callable[[str], Mapping[str, Any]] | None = None,
     allow_ai: bool = True,
 ) -> dict[str, Any]:
     settings = load_runtime_settings()
@@ -993,12 +1301,15 @@ def plan_objective_topic(
         database_file = Path(conn.execute("PRAGMA database_list").fetchone()[2])
         objective_id = _latest_objective(conn, config)
         observed_date = datetime.now(timezone.utc).date().isoformat()
+        search_phrases: list[str] = []
         for trend in trend_candidates or ():
             if isinstance(trend, Mapping):
                 topic = str(trend.get("keyword") or trend.get("topic") or "").strip()
                 sources = [str(item) for item in trend.get("sources") or ["suggest"]]
             else:
                 topic, sources = str(trend).strip(), ["suggest"]
+            if topic and topic not in search_phrases:
+                search_phrases.append(topic)
             for source in sources:
                 if topic:
                     conn.execute(
@@ -1006,10 +1317,45 @@ def plan_objective_topic(
                         (topic, source, observed_date),
                     )
         conn.commit()
+
+        # Seed interpreter: the only stage allowed to decide *direction* for an
+        # arbitrary seed. It runs before any candidate string exists, so a seed
+        # the keyword rules cannot classify ("고독감") still gets a real family
+        # and seed-specific angles instead of supplement-domain boilerplate.
+        # Any failure falls back to the deterministic keyword/template path.
+        interpretation: dict[str, Any] | None = None
+        interpreter_error = None
+        if not allow_ai and interpreter_call is None:
+            interpreter_status = "disabled"
+        else:
+            try:
+                interpretation = interpret_seed(
+                    seed_topic=seed_topic,
+                    reference_videos=channel_reference_videos(conn),
+                    known_families=known_topic_families(conn),
+                    research_categories=[
+                        {"category_id": signal.category_id, "label_ko": signal.label_ko}
+                        for signal in load_category_signals().values()
+                    ],
+                    search_phrases=search_phrases[:SEED_INTERPRETER_SEARCH_PHRASES],
+                    existing_titles=_existing_titles(conn),
+                    job_id=job_id,
+                    interpreter_call=interpreter_call,
+                )
+                interpreter_status = "success"
+            except Exception as exc:
+                interpreter_error = str(exc)
+                interpreter_status = "failed"
+                print(
+                    f"Seed interpreter 실패(기계적 분류로 계속 진행): {exc}",
+                    file=sys.stderr,
+                )
+
         rejected_duplicates: list[dict[str, Any]] = []
         candidates = build_candidate_pool(
             conn, objective_type=config.objective_type, seed_topic=seed_topic,
             trend_candidates=trend_candidates, rejected_duplicates=rejected_duplicates,
+            interpretation=interpretation,
         )
         duplicate_threshold = float(feedback.adaptive_topic_thresholds(
             conn, os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS", "balanced")
@@ -1019,9 +1365,13 @@ def plan_objective_topic(
             candidates = [{
                 "candidate_id": "cand_00",
                 "topic": str(seed_topic or "새 주제 후보 없음"),
-                "topic_family": _topic_family(str(seed_topic or ""), seed_topic),
+                "topic_family": _topic_family(
+                    str(seed_topic or ""), seed_topic,
+                    resolved_family=(interpretation or {}).get("resolved_family"),
+                ),
                 "exploration_mode": "manual", "candidate_source": "none",
-                "sources": [], "evidence_refs": [], "source_classification": "insufficient_data",
+                "sources": [], "evidence_refs": [], "evidence_scope": "none",
+                "evidence_titles": [], "source_classification": "insufficient_data",
                 "normalized_metrics": {"trend_signal": 0.0, "novelty": 0.0},
                 "confidence": 0.0, "duplicate_similarity": 1.0,
                 "duplicate_containment": 1.0, "duplicate_threshold": duplicate_threshold,
@@ -1096,12 +1446,15 @@ def plan_objective_topic(
                     raw_planner, planner_candidates, valid_refs=planner_refs,
                     existing_video_ids=video_ids, existing_titles=titles,
                 )
-                seed_words = _compact_words(seed_topic or "")
                 planner_containment_cutoff = (
                     CONTAINMENT_CUTOFF_MANUAL_SEED
                     if str(seed_topic or "").strip()
                     else CONTAINMENT_CUTOFF_DEFAULT
                 )
+                # No seed-word containment check here any more. A natural title
+                # ("혼자 밥 먹는 날이 많아졌다면") deliberately need not repeat the
+                # seed word, and scope is now guaranteed structurally: the planner
+                # cannot change the topic, so it cannot leave the seed's scope.
                 for item in planner_output["candidates"]:
                     duplicate = _topic_duplicate_info(
                         item["topic"], titles, duplicate_threshold,
@@ -1112,8 +1465,6 @@ def plan_objective_topic(
                         raise PlannerValidationError(
                             f"Planner 후보가 기존 제목과 중복됩니다: {duplicate['similarity']:.2f}"
                         )
-                    if seed_words and len(seed_words & _compact_words(item["topic"])) < min(2, len(seed_words)):
-                        raise PlannerValidationError("Planner가 사용자가 지정한 씨드 범위를 벗어났습니다.")
                 planner_status = "success"
                 strategy_source = "objective_planner"
             except Exception as exc:
@@ -1204,6 +1555,12 @@ def plan_objective_topic(
             decision_reason = str((selected.get("critic") or {}).get("reason") or "점수와 위험 검토 결과")
         selected["decision_reason"] = decision_reason
         selected["planning"] = {
+            "seed_interpreter_status": interpreter_status,
+            "seed_interpreter_family": (interpretation or {}).get("resolved_family") or "",
+            "seed_interpreter_family_source": (interpretation or {}).get("family_source") or "",
+            "seed_interpreter_topic_count": sum(
+                len(values) for values in ((interpretation or {}).get("topics") or {}).values()
+            ),
             "preflight_status": "passed" if preflight_passed else "blocked",
             "preflight_best_score": round(preflight_best, 4),
             "preflight_threshold": preflight_threshold,
@@ -1221,12 +1578,14 @@ def plan_objective_topic(
         conn.execute(
             """UPDATE planning_runs SET
                 planner_output_json=?, critic_output_json=?, selected_candidate_json=?,
+                seed_interpretation_json=?,
                 selection_mode=?, base_score=?, adjusted_score=?, confidence=?, decision=?
                 WHERE plan_id=?""",
             (
                 _json({**planner_output, "error": planner_error}),
                 _json({**critic_output, "error": critic_error}),
                 _json({**selected["candidate"], **selected["planner"], "judgment": selected["judgment"]}),
+                _json({"status": interpreter_status, "error": interpreter_error, **(interpretation or {})}),
                 selected["candidate"].get("exploration_mode") or "manual",
                 selected["judgment"]["base_score"], selected["judgment"]["adjusted_score"],
                 selected["judgment"]["confidence"], final_decision, plan_id,

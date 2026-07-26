@@ -124,13 +124,17 @@ def _feedback_module():
 def persist_upload_link(result: dict[str, Any], video_meta: dict[str, Any]) -> None:
     module = _feedback_module()
     topic_plan = load_json(WORK_DIR / "topic_plan.json", {}) or {}
-    plan = topic_plan or {
-        "topic": video_meta.get("topic"),
-        "main_keyword": video_meta.get("main_keyword"),
-        "sub_keywords": video_meta.get("sub_keywords") or [],
-        "hook_type": video_meta.get("hook_type"),
-        "objective": video_meta.get("objective") or {},
-        "content_design": video_meta.get("content_design") or {},
+    # video_meta holds the copy that was actually rendered and uploaded; topic_plan
+    # holds objective/design provenance and deliberately carries no copywriting
+    # fields. Preferring the plan wholesale used to store its placeholder
+    # main_keyword (the whole topic string) instead of Stage 1's real keyword.
+    plan = {
+        "topic": video_meta.get("topic") or topic_plan.get("topic"),
+        "main_keyword": video_meta.get("main_keyword") or topic_plan.get("main_keyword"),
+        "sub_keywords": video_meta.get("sub_keywords") or topic_plan.get("sub_keywords") or [],
+        "hook_type": video_meta.get("hook_type") or topic_plan.get("hook_type"),
+        "objective": video_meta.get("objective") or topic_plan.get("objective") or {},
+        "content_design": video_meta.get("content_design") or topic_plan.get("content_design") or {},
     }
     last_error = None
     for attempt in range(1, 4):

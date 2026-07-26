@@ -177,8 +177,10 @@ top_margin_px: 20
 
 `0_script.py`는 대본 생성 결과에 `frame_header`를 함께 요청합니다. 이 값은 사용자가 입력한 주제어를 그대로 복사하는 문구가 아니라, 전체 대본의 맥락을 보고 만든 짧은 2줄 훅입니다.
 
-- `frame_header.title`: 상단 프레임 1줄째 대제목. 4~9자 권장, 최대 12자 가드레일.
-- `frame_header.subtitle`: 상단 프레임 2줄째 소제목. 5~12자 권장, 최대 16자 가드레일.
+- `frame_header.title`: 상단 프레임 1줄째 대제목. 4~10자 권장.
+- `frame_header.subtitle`: 상단 프레임 2줄째 소제목. 10~22자 권장.
+- 두 줄 모두 의미가 끊기지 않는 완결된 구문이어야 합니다. 글자 수 상한에 맞춰 문장을 자르지 않습니다. `frame_style.py`가 길이에 맞춰 글자 크기를 자동으로 줄이고(`fit_top_font_sizes`) 소제목은 필요하면 두 줄로 나누므로(`wrap_subtitle_if_needed`), 짧게 만드는 것보다 문맥이 완결되는 것이 우선입니다.
+- `normalize_frame_header`의 20자/40자 상한은 비정상 응답만 막는 안전장치이며, 잘라낼 때도 단어 경계에서 자릅니다(`clip_at_word_boundary`).
 - 생성 결과는 `video_meta.json` 안에 저장되고, 렌더가 바로 읽을 수 있도록 `frame_header.json`에도 별도로 저장됩니다.
 - `2_render.sh --frame-mode framed`는 `--top-title`/`--top-subtitle`이 명시되지 않은 경우 `data/work/{JOB_ID}/frame_header.json`을 자동으로 읽어 상단 프레임에 적용합니다.
 - 수동으로 테스트하거나 고정 문구를 강제하려면 기존처럼 `--top-title`, `--top-subtitle` 또는 `frame_top_styles.yaml` 프리셋을 사용하면 됩니다. CLI override가 자동 생성값보다 우선합니다.

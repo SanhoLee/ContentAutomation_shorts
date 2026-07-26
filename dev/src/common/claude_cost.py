@@ -94,7 +94,7 @@ def _default_db_path() -> Path:
     configured = os.environ.get("YOUTUBE_FEEDBACK_DB")
     if configured:
         return Path(configured).expanduser()
-    return Path(__file__).resolve().parent.parent / "data" / "youtube_feedback.db"
+    return Path(__file__).resolve().parent.parent.parent / "data" / "youtube_feedback.db"
 
 
 def record_usage(

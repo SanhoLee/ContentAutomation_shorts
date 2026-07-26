@@ -32,7 +32,7 @@ from script_runtime import load_runtime_settings
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 _FEEDBACK_SPEC = importlib.util.spec_from_file_location(
-    "brain50_objective_feedback", SCRIPT_DIR / "6_youtube_feedback.py"
+    "brain50_objective_feedback", SCRIPT_DIR.parent / "youtube" / "6_youtube_feedback.py"
 )
 if _FEEDBACK_SPEC is None or _FEEDBACK_SPEC.loader is None:
     raise RuntimeError("6_youtube_feedback.py를 로드할 수 없습니다.")

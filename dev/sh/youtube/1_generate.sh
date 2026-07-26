@@ -2,7 +2,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$SCRIPT_DIR/../config.sh"
+source "$SCRIPT_DIR/../../config.sh"
 
 "$SCRIPT_DIR/1_tts.sh"
 "$SCRIPT_DIR/1_caption.sh"

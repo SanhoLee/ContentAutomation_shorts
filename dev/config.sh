@@ -70,6 +70,12 @@ PY
 
 eval "$CONFIG_EXPORTS"
 
+# dev/src가 common/youtube/instagram으로 나뉘어 있어도 기존의 평평한
+# 모듈 임포트(from script_runtime import ...)가 그대로 동작하도록 세 폴더를
+# 모두 PYTHONPATH에 얹는다. 이렇게 하면 어느 폴더 파일이든 서로의 임포트
+# 문장을 고치지 않고 그대로 참조할 수 있다.
+export PYTHONPATH="$SRC_DIR/common:$SRC_DIR/youtube:$SRC_DIR/instagram${PYTHONPATH:+:$PYTHONPATH}"
+
 # JOB_ID 처리 (없으면 자동 생성)
 if [ -z "$JOB_ID" ]; then
     JOB_ID=$(date +%Y%m%d_%H%M%S)

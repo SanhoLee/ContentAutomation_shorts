@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-source "$(dirname "$0")/../config.sh"
+source "$(dirname "$0")/../../config.sh"
 
 mkdir -p "$WORK_DIR" "$BACKUP_DIR"
 
@@ -27,6 +27,6 @@ if [ ${#EXISTING[@]} -gt 0 ]; then
 fi
 
 echo "3. B-roll 다운로드 중..."
-python3 "$SRC_DIR/3_broll.py"
+python3 "$SRC_DIR/youtube/3_broll.py"
 
 echo "완료. $WORK_DIR/broll.mp4 생성됨"

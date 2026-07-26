@@ -8,7 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "dev" / "src"
-sys.path.insert(0, str(SRC))
+sys.path.insert(0, str(SRC / "common"))
+sys.path.insert(0, str(SRC / "youtube"))
 
 
 def load_module(name, filename):
@@ -18,8 +19,8 @@ def load_module(name, filename):
     return module
 
 
-script0 = load_module("goal_script0", "0_script.py")
-upload = load_module("goal_upload", "4_upload.py")
+script0 = load_module("goal_script0", "common/0_script.py")
+upload = load_module("goal_upload", "youtube/4_upload.py")
 
 
 class GoalPipelineTests(unittest.TestCase):

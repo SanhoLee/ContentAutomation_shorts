@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "dev" / "src"
+SRC = ROOT / "dev" / "src" / "common"
 sys.path.insert(0, str(SRC))
 import slack_bot
 
@@ -387,7 +387,7 @@ class SlackBotTests(unittest.TestCase):
         self.assertIn("document", message)
 
     def test_slack_source_does_not_import_or_reference_telegram_bot(self):
-        for relative_path in ("dev/src/slack_bot.py", "prod/src/slack_bot.py"):
+        for relative_path in ("dev/src/common/slack_bot.py", "prod/src/slack_bot.py"):
             source = (ROOT / relative_path).read_text(encoding="utf-8")
             self.assertNotIn("import telegram_bot", source)
             self.assertNotIn("from telegram_bot", source)

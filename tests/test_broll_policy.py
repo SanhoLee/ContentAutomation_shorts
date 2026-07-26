@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("broll_policy", ROOT / "dev" / "src" / "broll_policy.py")
+spec = importlib.util.spec_from_file_location("broll_policy", ROOT / "dev" / "src" / "youtube" / "broll_policy.py")
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 

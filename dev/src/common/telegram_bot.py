@@ -853,15 +853,15 @@ def run_remaining_to_upload(chat_id, job):
     send_message(chat_id, "스크립트/타이틀 승인 완료. 이후 단계를 YouTube 업로드까지 자동 진행합니다.")
 
     send_message(chat_id, "1/5 TTS 음성 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
+    run_command([str(BASE_DIR / "sh" / "youtube" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
     send_message(chat_id, "1/5 TTS 완료")
 
     send_message(chat_id, "2/5 자막 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
+    run_command([str(BASE_DIR / "sh" / "youtube" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
     send_message(chat_id, "2/5 자막 완료")
 
     send_message(chat_id, "3/5 B-roll 수집 중...")
-    run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
+    run_command([str(BASE_DIR / "sh" / "youtube" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
     send_message(chat_id, "3/5 B-roll 완료")
 
     send_message(chat_id, "4/5 렌더링 중...")
@@ -869,7 +869,7 @@ def run_remaining_to_upload(chat_id, job):
     send_message(chat_id, "4/5 렌더링 완료")
 
     send_message(chat_id, "5/5 YouTube 비공개 업로드 중...")
-    run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
+    run_command([str(BASE_DIR / "sh" / "youtube" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
     job["stage"] = "done"
     send_message(chat_id, "완료! YouTube Studio에서 비공개 영상을 확인하세요.")
 
@@ -916,7 +916,7 @@ def handle_run_goal(chat_id, job, text):
         job["busy"] = busy
     plan_path = work_dir(job_id) / "topic_plan.json"
     args = [
-        "python3", str(BASE_DIR / "src" / "0_topic_plan.py"), "plan",
+        "python3", str(BASE_DIR / "src" / "common" / "0_topic_plan.py"), "plan",
         "--objective", objective, "--job-id", job_id, "--output", str(plan_path),
     ]
     if seed:
@@ -952,14 +952,14 @@ def handle_run_goal(chat_id, job, text):
         return
     run_script_generation(
         chat_id, job,
-        [str(BASE_DIR / "sh" / "0_script.sh"), "--topic-json", str(plan_path)],
+        [str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--topic-json", str(plan_path)],
     )
 
 
 def handle_goal_query(chat_id, job, command):
     job_id = job.get("job_id") or "goal_status"
     output = run_command(
-        ["python3", str(BASE_DIR / "src" / "0_topic_plan.py"), command], job_id,
+        ["python3", str(BASE_DIR / "src" / "common" / "0_topic_plan.py"), command], job_id,
         job.get("topic"), extra_env=_build_extra_env(job),
     )
     send_message(chat_id, output[-MAX_TEXT_PREVIEW:] or "목표 기획 이력이 없습니다.")
@@ -998,21 +998,21 @@ def handle_run_auto(chat_id, job, text):
 
     send_message(chat_id, "1/5 스크립트 생성 중...")
     run_command(
-        [str(BASE_DIR / "sh" / "0_script.sh"), "--allow-no-pubmed", topic],
+        [str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--allow-no-pubmed", topic],
         job_id, topic, extra_env=extra_env,
     )
     send_message(chat_id, "1/5 스크립트 완료")
 
     send_message(chat_id, "2/5 TTS 음성 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
+    run_command([str(BASE_DIR / "sh" / "youtube" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
     send_message(chat_id, "2/5 TTS 완료")
 
     send_message(chat_id, "3/5 자막 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
+    run_command([str(BASE_DIR / "sh" / "youtube" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
     send_message(chat_id, "3/5 자막 완료")
 
     send_message(chat_id, "4/5 B-roll 수집 중...")
-    run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
+    run_command([str(BASE_DIR / "sh" / "youtube" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
     send_message(chat_id, "4/5 B-roll 완료")
 
     send_message(chat_id, "5/5 렌더링 중...")
@@ -1020,7 +1020,7 @@ def handle_run_auto(chat_id, job, text):
     send_message(chat_id, "5/5 렌더링 완료")
 
     send_message(chat_id, "업로드 중...")
-    run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
+    run_command([str(BASE_DIR / "sh" / "youtube" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
 
     job["stage"] = "done"
     send_message(chat_id, "완료! YouTube Studio에서 비공개 영상을 확인하세요.")
@@ -1041,7 +1041,7 @@ def handle_run(chat_id, job, text, trend=False):
     if trend:
         job["stage"] = "await_trend_choice"
         send_message(chat_id, f"트렌드 후보 조회 시작: {topic}")
-        run_command([str(BASE_DIR / "sh" / "0_script.sh"), "--trend", topic], job_id, topic, extra_env=_build_extra_env(job))
+        run_command([str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--trend", topic], job_id, topic, extra_env=_build_extra_env(job))
         candidates_path = work_dir(job_id) / "trend_candidates.json"
         payload = json.loads(candidates_path.read_text(encoding="utf-8"))
         lines = ["후보를 선택하세요: /pick 번호"]
@@ -1052,7 +1052,7 @@ def handle_run(chat_id, job, text, trend=False):
     else:
         job["stage"] = "await_script_approval"
         send_message(chat_id, f"스크립트 생성 시작: JOB_ID={job_id}")
-        run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), topic])
+        run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "common" / "0_script.sh"), topic])
 
 def handle_retry(chat_id, job, text):
     topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
@@ -1064,7 +1064,7 @@ def handle_retry(chat_id, job, text):
     job["topic"] = topic
     job["approval_required"] = True
     send_message(chat_id, f"새 주제로 스크립트 생성 재시도: {topic}")
-    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), topic])
+    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "common" / "0_script.sh"), topic])
 
 
 def handle_proceed(chat_id, job):
@@ -1077,7 +1077,7 @@ def handle_proceed(chat_id, job):
         send_message(chat_id, "근거 부족 상태에서 이어갈 명령이 없습니다.")
         return
     send_message(chat_id, "PubMed 근거 부족을 감수하고 일반 설명 중심으로 스크립트 생성을 진행합니다.")
-    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), "--allow-no-pubmed", *pending])
+    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--allow-no-pubmed", *pending])
 
 def handle_pick(chat_id, job, text):
     if job.get("stage") != "await_trend_choice":
@@ -1090,7 +1090,7 @@ def handle_pick(chat_id, job, text):
     choice = parts[1]
     job_id = job["job_id"]
     send_message(chat_id, f"선택 후보로 스크립트 생성 시작: {choice}")
-    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "0_script.sh"), "--trend-choice", choice])
+    run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--trend-choice", choice])
 
 
 
@@ -1406,9 +1406,9 @@ def handle_rerun(chat_id, job, text):
         send_message(chat_id, "진행 중인 작업이 없습니다.")
         return
     mapping = {
-        "tts": ("1_tts.sh", "await_tts_approval", send_tts),
-        "caption": ("1_caption.sh", "await_caption_approval", send_caption),
-        "broll": ("1_broll.sh", "await_broll_approval", send_broll),
+        "tts": ("youtube/1_tts.sh", "await_tts_approval", send_tts),
+        "caption": ("youtube/1_caption.sh", "await_caption_approval", send_caption),
+        "broll": ("youtube/1_broll.sh", "await_broll_approval", send_broll),
     }
     if target not in mapping:
         send_message(chat_id, "사용법: /rerun tts | /rerun caption | /rerun broll")

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-source "$(dirname "$0")/../config.sh"
+source "$(dirname "$0")/../../config.sh"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -170,7 +170,7 @@ if [ -n "$POS_Y" ]; then
 fi
 
 CAPTION_ASS_FILE="$WORK_DIR/subs_styled.ass"
-CAPTION_STYLE_JSON="$(python3 "$SRC_DIR/caption_style.py" "${STYLE_ARGS[@]}" --srt-in "$WORK_DIR/subs.srt" --ass-out "$CAPTION_ASS_FILE" --json)"
+CAPTION_STYLE_JSON="$(python3 "$SRC_DIR/youtube/caption_style.py" "${STYLE_ARGS[@]}" --srt-in "$WORK_DIR/subs.srt" --ass-out "$CAPTION_ASS_FILE" --json)"
 
 echo "자막 설정: Style=${CAPTION_STYLE_NAME}, FontSize=${FONT_SIZE}, MarginV=${MARGIN_V}, MarginH=${MARGIN_H}, OffsetX=${OFFSET_X:-preset}, OffsetY=${OFFSET_Y:-preset}, PosX=${POS_X:-preset}, PosY=${POS_Y:-preset}"
 echo "프레임 설정: Mode=${FRAME_MODE}, TopPreset=${FRAME_TOP_PRESET}, BottomPreset=${FRAME_BOTTOM_PRESET}, TopMarginPct=${FRAME_TOP_MARGIN_PCT:-preset}, TopMarginXPct=${FRAME_TOP_MARGIN_X_PCT:-preset}, BrollFit=${BROLL_FIT_MODE}"
@@ -240,7 +240,7 @@ PY
     if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then
         FRAME_ARGS+=(--channel-name "$FRAME_BOTTOM_CHANNEL_NAME")
     fi
-    eval "$(python3 "$SRC_DIR/frame_style.py" "${FRAME_ARGS[@]}" --shell)"
+    eval "$(python3 "$SRC_DIR/youtube/frame_style.py" "${FRAME_ARGS[@]}" --shell)"
 
     CONTENT_W=1080
     CONTENT_H="$FRAME_CONTENT_H"

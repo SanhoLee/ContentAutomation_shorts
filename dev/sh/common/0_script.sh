@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-source "$(dirname "$0")/../config.sh"
+source "$(dirname "$0")/../../config.sh"
 
 if [ "$#" -gt 0 ]; then
     SCRIPT_ARGS=("$@")
@@ -17,7 +17,7 @@ fi
 mkdir -p "$WORK_DIR"
 
 echo "0. PubMed 리서치 + 대본/메타데이터 작성 중..."
-python3 "$SRC_DIR/0_script.py" "${SCRIPT_ARGS[@]}"
+python3 "$SRC_DIR/common/0_script.py" "${SCRIPT_ARGS[@]}"
 
 if [ "${SCRIPT_ARGS[0]}" = "--trend" ]; then
     echo "완료. $WORK_DIR/trend_candidates.json 후보를 확인하세요."

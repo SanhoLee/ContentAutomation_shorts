@@ -82,7 +82,7 @@ def build_extra_env(job):
 
 
 def _render_args(ctx, job):
-    args = [str(ctx.BASE_DIR / "sh" / "2_render.sh")]
+    args = [str(ctx.BASE_DIR / "sh" / "youtube" / "2_render.sh")]
     font_size = job.get("caption_font_size")
     margin_v = job.get("caption_margin_v")
     margin_h = job.get("caption_margin_h")
@@ -173,17 +173,17 @@ def run_next_stage(ctx, chat_id, job, *, final_message=None):
     extra_env = build_extra_env(job)
     if stage == "await_script_approval":
         ctx.send_message(chat_id, "TTS 생성 시작")
-        ctx.run_command([str(ctx.BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
+        ctx.run_command([str(ctx.BASE_DIR / "sh" / "youtube" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "await_tts_approval"
         ctx.send_tts(chat_id, job_id)
     elif stage == "await_tts_approval":
         ctx.send_message(chat_id, "자막 생성 시작")
-        ctx.run_command([str(ctx.BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
+        ctx.run_command([str(ctx.BASE_DIR / "sh" / "youtube" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "await_caption_approval"
         ctx.send_caption(chat_id, job_id)
     elif stage == "await_caption_approval":
         ctx.send_message(chat_id, "B-roll 생성 시작")
-        ctx.run_command([str(ctx.BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
+        ctx.run_command([str(ctx.BASE_DIR / "sh" / "youtube" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "await_broll_approval"
         ctx.send_broll(chat_id, job_id)
     elif stage == "await_broll_approval":
@@ -196,7 +196,7 @@ def run_next_stage(ctx, chat_id, job, *, final_message=None):
         ctx.send_upload_meta(chat_id, job_id)
     elif stage == "await_upload_meta_approval":
         ctx.send_message(chat_id, "YouTube 비공개 업로드 시작")
-        ctx.run_command([str(ctx.BASE_DIR / "sh" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
+        ctx.run_command([str(ctx.BASE_DIR / "sh" / "youtube" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "done"
         default_text = "업로드 완료. YouTube Studio에서 비공개 영상을 확인하세요."
         ctx.send_message(chat_id, final_message(job, default_text) if final_message else default_text)

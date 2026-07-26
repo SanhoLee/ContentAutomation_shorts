@@ -21,9 +21,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEV_SRC = REPO_ROOT / "dev" / "src"
 os.environ.setdefault("WORK_DIR", tempfile.mkdtemp(prefix="script_quality_import_"))
-sys.path.insert(0, str(DEV_SRC))
+sys.path.insert(0, str(DEV_SRC / "common"))
 
-spec = importlib.util.spec_from_file_location("script0", DEV_SRC / "0_script.py")
+spec = importlib.util.spec_from_file_location("script0", DEV_SRC / "common" / "0_script.py")
 script0 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(script0)
 

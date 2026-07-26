@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "dev" / "src"
+SRC = ROOT / "dev" / "src" / "common"
 sys.path.insert(0, str(SRC))
 
 import script_runtime

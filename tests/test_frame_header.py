@@ -9,7 +9,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEV_SRC = REPO_ROOT / "dev" / "src"
 os.environ.setdefault("WORK_DIR", tempfile.mkdtemp(prefix="frame_header_import_"))
-sys.path.insert(0, str(DEV_SRC))
+sys.path.insert(0, str(DEV_SRC / "common"))
+sys.path.insert(0, str(DEV_SRC / "youtube"))
 
 
 def load_module(name, path):
@@ -19,9 +20,9 @@ def load_module(name, path):
     return module
 
 
-dev_script = load_module("frame_header_dev_script", DEV_SRC / "0_script.py")
+dev_script = load_module("frame_header_dev_script", DEV_SRC / "common" / "0_script.py")
 prod_script = load_module("frame_header_prod_script", REPO_ROOT / "prod" / "src" / "0_script.py")
-dev_frame_style = load_module("frame_header_dev_style", DEV_SRC / "frame_style.py")
+dev_frame_style = load_module("frame_header_dev_style", DEV_SRC / "youtube" / "frame_style.py")
 prod_frame_style = load_module("frame_header_prod_style", REPO_ROOT / "prod" / "src" / "frame_style.py")
 
 

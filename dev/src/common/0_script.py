@@ -603,7 +603,7 @@ def fetch_case_and_stat_research(topic, pubmed_query):
 # ─────────────────────────────────────────────
 
 def load_youtube_guidance(topic):
-    module_path = Path(__file__).with_name("6_youtube_feedback.py")
+    module_path = Path(__file__).resolve().parent.parent / "youtube" / "6_youtube_feedback.py"
     if not module_path.is_file():
         return {}
     try:

@@ -15,7 +15,7 @@ fi
 export JOB_ID
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$BASE_DIR/config.sh"
-source "$BASE_DIR/sh/notify.sh"
+source "$BASE_DIR/sh/common/notify.sh"
 
 trap 'notify_error "목표 기반 파이프라인 실패 (단계: ${CURRENT_STEP:-unknown}, JOB_ID: $JOB_ID)"' ERR
 
@@ -24,18 +24,18 @@ PLAN_ARGS=(plan --objective "$OBJECTIVE" --job-id "$JOB_ID" --output "$WORK_DIR/
 if [ -n "$SEED" ]; then
     PLAN_ARGS+=(--seed "$SEED")
 fi
-python3 "$SRC_DIR/0_topic_plan.py" "${PLAN_ARGS[@]}"
+python3 "$SRC_DIR/common/0_topic_plan.py" "${PLAN_ARGS[@]}"
 
 CURRENT_STEP="0_script"
-"$BASE_DIR/sh/0_script.sh" --topic-json "$WORK_DIR/topic_plan.json"
+"$BASE_DIR/sh/common/0_script.sh" --topic-json "$WORK_DIR/topic_plan.json"
 
 CURRENT_STEP="1_generate"
-"$BASE_DIR/sh/1_generate.sh"
+"$BASE_DIR/sh/youtube/1_generate.sh"
 
 CURRENT_STEP="2_render"
-"$BASE_DIR/sh/2_render.sh"
+"$BASE_DIR/sh/youtube/2_render.sh"
 
 CURRENT_STEP="3_upload"
-"$BASE_DIR/sh/3_upload.sh"
+"$BASE_DIR/sh/youtube/3_upload.sh"
 
 notify_success "목표 기반 영상 생성+업로드 완료 (JOB_ID: $JOB_ID)"

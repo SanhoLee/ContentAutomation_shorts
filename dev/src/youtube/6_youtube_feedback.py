@@ -61,7 +61,7 @@ MATURITY_GROWING_VIDEOS = 75
 MATURITY_STABLE_VIDEOS = 150
 EMPIRICAL_PRIOR_STRENGTH = 50.0
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_DIR = SCRIPT_DIR.parent / "data"
+DEFAULT_DATA_DIR = SCRIPT_DIR.parent.parent / "data"
 
 # All decisions are relative to the channel's own distribution. Priors prevent
 # tiny cohorts from producing extreme conclusions; empirical data gradually

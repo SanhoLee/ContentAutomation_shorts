@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-source "$(dirname "$0")/../config.sh"
+source "$(dirname "$0")/../../config.sh"
 
 mkdir -p "$WORK_DIR" "$BACKUP_DIR"
 
@@ -27,6 +27,6 @@ if [ ${#EXISTING[@]} -gt 0 ]; then
 fi
 
 echo "1. TTS 생성 중..."
-python3 "$SRC_DIR/1_tts.py"
+python3 "$SRC_DIR/youtube/1_tts.py"
 
 echo "완료. $WORK_DIR/voice.wav 생성됨"

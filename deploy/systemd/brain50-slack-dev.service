@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/brain50/dev
-ExecStart=/home/ubuntu/brain50/dev/sh/slack_bot.sh
+ExecStart=/home/ubuntu/brain50/dev/sh/common/slack_bot.sh
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

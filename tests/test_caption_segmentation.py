@@ -6,7 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault("CAPTION_MAX_CHARS", "24")
 os.environ.setdefault("CAPTION_LINE_MAX_UNITS", "13")
-spec = importlib.util.spec_from_file_location("caption2", REPO_ROOT / "dev" / "src" / "2_caption.py")
+spec = importlib.util.spec_from_file_location("caption2", REPO_ROOT / "dev" / "src" / "youtube" / "2_caption.py")
 caption2 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(caption2)
 

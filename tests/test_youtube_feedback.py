@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "dev" / "src" / "6_youtube_feedback.py"
+MODULE_PATH = ROOT / "dev" / "src" / "youtube" / "6_youtube_feedback.py"
 SPEC = importlib.util.spec_from_file_location("youtube_feedback", MODULE_PATH)
 youtube_feedback = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

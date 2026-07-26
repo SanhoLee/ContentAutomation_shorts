@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-source "$(dirname "$0")/../config.sh"
+source "$(dirname "$0")/../../config.sh"
 
 mkdir -p "$WORK_DIR" "$BACKUP_DIR"
 
@@ -32,6 +32,6 @@ if [ ${#EXISTING[@]} -gt 0 ]; then
 fi
 
 echo "2. 자막 생성 중..."
-python3 "$SRC_DIR/2_caption.py"
+python3 "$SRC_DIR/youtube/2_caption.py"
 
 echo "완료. $WORK_DIR/subs.srt, scenes_timed.json 생성됨"

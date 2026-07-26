@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -19,6 +20,12 @@ from content_objectives import (
     get_objective_profile,
     normalize_objective_type,
     objective_label,
+)
+from research_signals import (
+    load_category_signals,
+    load_usage_log,
+    record_category_usage,
+    research_depth_metric,
 )
 from script_runtime import load_runtime_settings
 
@@ -77,6 +84,14 @@ TOPIC_FAMILY_RULES = (
     ("혈당", ("혈당", "당뇨", "식후")),
     ("운동", ("걷기", "근력", "운동", "낙상")),
     ("영양", ("음식", "식품", "식사", "간식", "음료")),
+    # 2026-07-26 research_categories.json 확장 카테고리 반영.
+    # 기존 규칙과 겹치는 키워드(수면/기억력/혈압/혈당/운동/영양)는 위에서
+    # 이미 매칭되므로 순서상 아래로 배치해 우선순위 충돌을 피한다.
+    ("스트레스", ("스트레스", "코티솔")),
+    ("명상", ("명상", "마음챙김")),
+    ("사회적고립", ("외로움", "고립")),
+    ("우울", ("우울", "무기력")),
+    ("청력시각", ("청력", "난청", "시력", "시각")),
 )
 CANDIDATE_SOURCE_TARGETS = (
     ("performance_exploit",) * 5
@@ -323,6 +338,8 @@ def build_candidate_pool(
     rows = _preferred_snapshot_rows(conn)
     existing_titles = _existing_titles(conn)
     evidence_profile = _channel_evidence_profile(conn)
+    research_signals = load_category_signals()
+    research_usage = load_usage_log() if research_signals else {}
     source_targets = tuple(evidence_profile["source_targets"])
     strictness = os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS", "balanced")
     duplicate_threshold = float(feedback.adaptive_topic_thresholds(conn, strictness)["duplicate"])
@@ -418,9 +435,14 @@ def build_candidate_pool(
             confounders = ["small_sample"]
         family = _topic_family(topic, seed_topic)
         source_count = max(1, len(set(sources)))
+        research_depth, research_debug = (
+            research_depth_metric(family, research_signals, research_usage)
+            if research_signals else (0.5, {"matched": False, "reason": "no_category_data"})
+        )
         metrics.update({
             "trend_signal": min(1.0, 0.30 + 0.18 * source_count + 0.04 * min(repeat_days, 5)) if trend_slot else 0.5,
             "novelty": max(0.0, 1.0 - closest),
+            "research_depth": research_depth,
         })
         candidates.append({
             "candidate_id": f"cand_{len(candidates) + 1:02d}",
@@ -432,6 +454,7 @@ def build_candidate_pool(
             "evidence_refs": evidence_refs,
             "source_classification": classification,
             "normalized_metrics": metrics,
+            "research_category": research_debug,
             "confidence": confidence,
             "channel_sample_count": evidence_profile["sample_count"],
             "channel_reliability": round(float(evidence_profile["reliability"]), 6),
@@ -1211,6 +1234,12 @@ def plan_objective_topic(
         )
         plan = _topic_plan(selected, plan_id, objective_id)
         if final_decision in {"selected", "limited_test"}:
+            research_category_id = ((selected.get("candidate") or {}).get("research_category") or {}).get("category_id")
+            if research_category_id:
+                try:
+                    record_category_usage(research_category_id)
+                except OSError as exc:
+                    print(f"research_category_usage 기록 실패(계속 진행): {exc}", file=sys.stderr)
             statement = (
                 f"{plan['content_design'].get('topic_family') or '건강'} 주제의 "
                 f"{plan['content_design'].get('format_type') or '설명'} 형식은 "

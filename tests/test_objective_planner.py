@@ -12,20 +12,31 @@ import objective_planner
 
 class ObjectivePlannerTests(unittest.TestCase):
     def test_objective_changes_candidate_ranking(self):
+        # channel_reliability is explicit here because build_candidate_pool
+        # always populates it from evidence_profile; omitting it makes
+        # score_candidate treat the channel as brand-new (reliability=0),
+        # which maxes out trend_novelty_weight (0.25) and lets an extreme
+        # trend_signal/novelty=1 candidate override a much stronger metric
+        # fit. A reliability of 1.0 reflects a channel with an established
+        # performance history, which is the realistic case this test is
+        # trying to check ("does the objective's metric weighting matter").
         subscriber_candidate = {
+            "channel_reliability": 1.0,
             "normalized_metrics": {
                 "net_subscriber_conversion": 1, "subscriber_conversion": 1,
                 "average_view_percentage": 0.5, "initial_engagement": 0.5,
                 "share_rate": 0.5, "comment_rate": 0.5,
-                "trend_signal": 0.2, "novelty": 0.2,
+                "trend_signal": 0.2, "novelty": 0.2, "research_depth": 0.5,
             }
         }
         reach_candidate = {
+            "channel_reliability": 1.0,
             "normalized_metrics": {
                 "views_percentile": 1, "initial_engagement": 1,
                 "average_view_percentage": 0.5, "trend_signal": 1,
                 "share_rate": 0.5, "novelty": 1,
                 "net_subscriber_conversion": 0.1, "subscriber_conversion": 0.1,
+                "research_depth": 0.5,
             }
         }
         planner = {field: "medium" for field in objective_planner.ENUM_FIELDS}
@@ -215,12 +226,28 @@ class ObjectivePlannerTests(unittest.TestCase):
             calls["critic"] += 1
             return {"reviews": []}
 
+        # Monkey-patch _local_candidate_rows to return sub-threshold scores so
+        # the preflight gate fires regardless of which seed is supplied.
+        # Without this, a manual seed ("수면") lowers the threshold to 20.0,
+        # which the default candidate scoring already exceeds on an empty DB.
+        original_local_rows = objective_planner._local_candidate_rows
+
+        def low_score_rows(candidates, *args, **kwargs):
+            rows = original_local_rows(candidates, *args, **kwargs)
+            for row in rows:
+                row["judgment"]["adjusted_score"] = 5.0
+            return rows
+
         with tempfile.TemporaryDirectory() as tmp:
-            plan = objective_planner.plan_objective_topic(
-                "reach", seed_topic="수면", job_id="local_preflight",
-                db_path=Path(tmp) / "feedback.db", planner_call=planner,
-                critic_call=critic,
-            )
+            objective_planner._local_candidate_rows = low_score_rows
+            try:
+                plan = objective_planner.plan_objective_topic(
+                    "reach", seed_topic="수면", job_id="local_preflight",
+                    db_path=Path(tmp) / "feedback.db", planner_call=planner,
+                    critic_call=critic,
+                )
+            finally:
+                objective_planner._local_candidate_rows = original_local_rows
         self.assertEqual(calls, {"planner": 0, "critic": 0})
         self.assertEqual(plan["planning"]["preflight_status"], "blocked")
         self.assertEqual(plan["planning"]["claude_cost_usd"], 0.0)

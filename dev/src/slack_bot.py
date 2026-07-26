@@ -4,6 +4,7 @@ import re
 import signal
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -11,7 +12,25 @@ from datetime import datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from config_settings import (
+    CONFIG_CATEGORIES,
+    CONFIG_INPUT_ALIASES,
+    SYSTEM_CONFIG_FIELDS,
+    build_config_settings,
+    display_setting_value,
+    effective_setting_value,
+    env_value,
+    positive_int,
+    positive_number,
+    resolve_model_alias,
+    safe_caption_style,
+    safe_choice,
+    set_config_value,
+    signed_int,
+    validate_setting_value,
+)
 from content_objectives import normalize_objective_type, objective_label
+import pipeline_orchestrator as _po
 from script_runtime import speech_pace_profile
 
 # Slack Socket Mode transport configuration.
@@ -19,7 +38,6 @@ BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
 ALLOWED_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID")
 ALLOWED_USER_ID = os.environ.get("SLACK_ALLOWED_USER_ID")
-ALLOWED_CHAT_ID = None
 BASE_DIR = Path(os.environ.get("BASE_DIR", Path.cwd())).resolve()
 WORK_DIR_BASE = Path(os.environ.get("WORK_DIR_BASE", BASE_DIR / "data" / "work"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", BASE_DIR / "data" / "output"))
@@ -36,48 +54,6 @@ ACTIVE_PROCESSES = {}
 CANCELLED_JOB_IDS = set()
 _STATE = {"chats": {}}
 MAX_BLOCK_TEXT = 3000
-
-# ── Claude 모델 alias: /set 명령에서 짧은 이름으로 모델 지정 가능하게 함.
-#    테이블에 없는 값은 alias가 아닌 것으로 간주하고 입력값을 모델 ID로 그대로 사용한다.
-#    telegram_bot.py와 동일한 테이블을 유지해야 함 (두 봇의 /set model 동작 일치).
-MODEL_ALIASES = {
-    # Haiku 계열 (경량/저비용)
-    "haiku": "claude-haiku-4-5-20251001",
-    "haiku4.5": "claude-haiku-4-5-20251001",
-    "haiku-4-5": "claude-haiku-4-5-20251001",
-
-    # Sonnet 계열 (기본 스크립트 작업용)
-    "sonnet": "claude-sonnet-4-6",
-    "sonnet4.6": "claude-sonnet-4-6",
-    "sonnet-4-6": "claude-sonnet-4-6",
-    "sonnet5": "claude-sonnet-5",
-    "sonnet-5": "claude-sonnet-5",
-    "sonnet4.5": "claude-sonnet-4-5-20250929",
-    "sonnet-4-5": "claude-sonnet-4-5-20250929",
-
-    # Opus 계열 (상위 모델, 필요 시 최고품질 실험용)
-    "opus": "claude-opus-4-8",
-    "opus4.8": "claude-opus-4-8",
-    "opus-4-8": "claude-opus-4-8",
-    "opus4.7": "claude-opus-4-7",
-    "opus-4-7": "claude-opus-4-7",
-    "opus4.6": "claude-opus-4-6",
-    "opus-4-6": "claude-opus-4-6",
-    "opus4.5": "claude-opus-4-5-20251101",
-    "opus-4-5": "claude-opus-4-5-20251101",
-
-    # Fable 계열 (최신 최고성능 라인업 실험용)
-    "fable": "claude-fable-5",
-    "fable5": "claude-fable-5",
-    "fable-5": "claude-fable-5",
-}
-
-
-def resolve_model_alias(value):
-    """alias면 정식 모델 ID로 치환하고, alias가 아니면 입력값을 그대로 모델 ID로 사용한다."""
-    raw = str(value).strip()
-    return MODEL_ALIASES.get(raw.lower(), raw)
-
 
 class WorkflowCancelled(RuntimeError):
     pass
@@ -285,7 +261,7 @@ def action_request_label(data):
 def _send_recovery_error(chat_id, data, exc, label=None):
     label = label or action_request_label(data)
     text = f"요청 처리 실패: {label}\n오류: {exc}\n\n아래 버튼으로 안전하게 돌아가 다시 선택할 수 있습니다."
-    rows = [[button("메뉴 표시", "show_home_top"), button("제작 설정", "open_settings"), button("현재 작업", "show_status")]]
+    rows = [[button("메뉴 표시", "show_home"), button("제작 설정", "open_settings"), button("현재 작업", "show_status")]]
     try:
         send_action_message(chat_id, text, rows)
     except Exception:
@@ -339,7 +315,7 @@ def home_button_rows():
     return [
         [button("단계별 검수 제작", "start_content:review"), button("자동 제작", "start_content:auto")],
         [button("목표 기반 자동 기획", "start_goal"), button("트렌드에서 시작", "start_content:trend")],
-        [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("메뉴 표시", "show_home_top")],
+        [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("메뉴 표시", "show_home")],
     ]
 
 
@@ -1084,49 +1060,6 @@ def parse_key_values(text):
     return values
 
 
-def positive_int(value, name):
-    text = str(value).strip()
-    if not text.isdigit() or int(text) <= 0:
-        raise ValueError(f"{name}은 양의 정수로 입력하세요: {value}")
-    return text
-
-
-def signed_int(value, name):
-    text = str(value).strip()
-    if text.startswith("-"):
-        digits = text[1:]
-    else:
-        digits = text
-    if not digits.isdigit():
-        raise ValueError(f"{name}은 정수로 입력하세요: {value}")
-    return text
-
-
-def safe_caption_style(value):
-    value = str(value).strip()
-    if not value or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in value):
-        raise ValueError(f"style은 영문/숫자/_/- 만 입력하세요: {value}")
-    return value
-
-
-def safe_choice(value, name, choices):
-    value = str(value).strip()
-    if value not in choices:
-        raise ValueError(f"{name}은 {', '.join(choices)} 중 하나여야 합니다: {value}")
-    return value
-
-
-def positive_number(value, name):
-    text = str(value).strip()
-    try:
-        number = float(text)
-    except ValueError:
-        raise ValueError(f"{name}은 양수로 입력하세요: {value}")
-    if number <= 0:
-        raise ValueError(f"{name}은 양수로 입력하세요: {value}")
-    return text
-
-
 def display_config_value(value):
     return str(value) if value not in (None, "") else "config"
 
@@ -1136,152 +1069,33 @@ def display_effective_model(job, job_key, value):
     return f"{value} ({source})"
 
 
-def env_value(key, default="-"):
-    value = os.environ.get(key)
-    return default if value in (None, "") else value
-
-
 # ── 설정 키: /set 메뉴 또는 key=value로 저장, run_auto/run 실행 시 자동 적용
-CONFIG_CATEGORIES = (
-    ("models", "AI 모델", "스크립트·조사·전략·검색 모델"),
-    ("research", "조사 / 검색", "웹 검색과 사례 조사"),
-    ("channel", "채널 성과", "YouTube 실데이터 동기화와 판단 강도"),
-    ("audio", "음성 / 영상 길이", "TTS 목소리·속도·목표 길이"),
-    ("caption", "자막", "글자·여백·스타일·위치"),
-    ("frame", "프레임 / B-roll", "화면 프레임·프리셋·채널명"),
-    ("system", "시스템 (읽기 전용)", "실행 환경과 API 제한값"),
+# (data table + validation logic shared with telegram_bot.py via config_settings.py)
+CONFIG_SETTINGS = build_config_settings(
+    default_web_research=DEFAULT_WEB_RESEARCH,
+    default_caption_font_size=DEFAULT_CAPTION_FONT_SIZE,
+    default_caption_margin_v=DEFAULT_CAPTION_MARGIN_V,
+    default_caption_margin_h=DEFAULT_CAPTION_MARGIN_H,
+    default_caption_style=DEFAULT_CAPTION_STYLE,
 )
-
-MODEL_CHOICES = (
-    ("Haiku 4.5", "claude-haiku-4-5-20251001"),
-    ("Sonnet 4.6", "claude-sonnet-4-6"),
-    ("Sonnet 4.5", "claude-sonnet-4-5-20250929"),
-    ("Opus 4.8", "claude-opus-4-8"),
-)
-
-# callback_data의 길이 제한을 피하기 위해 짧은 id를 쓰고 실제 값은 여기서 찾는다.
-CONFIG_SETTINGS = {
-    "script_model": {"category": "models", "label": "스크립트 모델", "job_key": "claude_script_model", "env": "CLAUDE_SCRIPT_MODEL", "default": lambda job: env_value("CLAUDE_MODEL", "claude-sonnet-4-6"), "kind": "model", "choices": MODEL_CHOICES},
-    "research_model": {"category": "models", "label": "조사 모델", "job_key": "claude_research_model", "env": "CLAUDE_RESEARCH_MODEL", "default": lambda job: _effective_setting_value(job, "script_model")[0], "kind": "model", "choices": MODEL_CHOICES},
-    "strategy_model": {"category": "models", "label": "전략 모델", "job_key": "claude_strategy_model", "env": "CLAUDE_STRATEGY_MODEL", "default": "claude-haiku-4-5-20251001", "kind": "model", "choices": MODEL_CHOICES},
-    "query_model": {"category": "models", "label": "검색어 모델", "job_key": "claude_query_model", "env": "CLAUDE_QUERY_MODEL", "default": lambda job: _effective_setting_value(job, "strategy_model")[0], "kind": "model", "choices": MODEL_CHOICES},
-    "web": {"category": "research", "label": "웹 검색", "job_key": "web_research", "env": "ENABLE_WEB_RESEARCH", "default": DEFAULT_WEB_RESEARCH, "kind": "bool", "choices": (("켜기", True), ("끄기", False))},
-    "case": {"category": "research", "label": "사례 조사", "job_key": "case_research", "env": "ENABLE_CASE_RESEARCH", "default": True, "kind": "bool", "choices": (("켜기", True), ("끄기", False))},
-    "feedback_policy": {"category": "channel", "label": "판단 강도", "job_key": "youtube_feedback_strictness", "env": "YOUTUBE_FEEDBACK_STRICTNESS", "default": "balanced", "kind": "choice", "choices": (("느슨함", "loose"), ("중간", "balanced"), ("엄격함", "strict"))},
-    "feedback_sync": {"category": "channel", "label": "생성 전 동기화", "job_key": "youtube_feedback_auto_sync", "env": "YOUTUBE_FEEDBACK_AUTO_SYNC", "default": True, "kind": "bool", "choices": (("켜기", True), ("끄기", False))},
-    "voice": {"category": "audio", "label": "TTS 목소리", "job_key": "tts_voice", "env": "TTS_VOICE", "default": "M2", "kind": "voice", "choices": tuple((voice, voice) for voice in ("F1", "F2", "M1", "M2"))},
-    "pace": {"category": "audio", "label": "말하기 속도", "job_key": "speech_pace", "env": "SPEECH_PACE", "default": "legacy", "kind": "pace", "choices": (("느리게", "slow"), ("보통", "normal"), ("빠르게", "fast"), ("매우 빠르게", "very_fast"))},
-    "duration": {"category": "audio", "label": "목표 길이(초)", "job_key": "target_duration_sec", "env": "TARGET_DURATION_SEC", "default": "60", "kind": "positive_int"},
-    "font_size": {"category": "caption", "label": "글자 크기", "job_key": "caption_font_size", "env": "CAPTION_FONT_SIZE", "default": DEFAULT_CAPTION_FONT_SIZE, "kind": "positive_int"},
-    "margin_v": {"category": "caption", "label": "세로 여백", "job_key": "caption_margin_v", "env": "CAPTION_MARGIN_V", "default": DEFAULT_CAPTION_MARGIN_V, "kind": "positive_int"},
-    "margin_h": {"category": "caption", "label": "가로 여백", "job_key": "caption_margin_h", "env": "CAPTION_MARGIN_H", "default": DEFAULT_CAPTION_MARGIN_H, "kind": "positive_int"},
-    "style": {"category": "caption", "label": "자막 스타일", "job_key": "caption_style", "env": "CAPTION_STYLE", "default": DEFAULT_CAPTION_STYLE, "kind": "style", "choices": tuple((style, style) for style in ("default", "center-outline", "center-yellow", "center-white"))},
-    "offset_x": {"category": "caption", "label": "가로 위치 보정", "job_key": "caption_offset_x", "env": "CAPTION_OFFSET_X", "default": "0", "kind": "signed_int"},
-    "offset_y": {"category": "caption", "label": "세로 위치 보정", "job_key": "caption_offset_y", "env": "CAPTION_OFFSET_Y", "default": "0", "kind": "signed_int"},
-    "frame": {"category": "frame", "label": "프레임 모드", "job_key": "frame_mode", "env": "FRAME_MODE", "default": "full", "kind": "choice", "choices": (("전체 화면", "full"), ("상하 프레임", "framed"))},
-    "broll_fit": {"category": "frame", "label": "B-roll 맞춤", "job_key": "broll_fit_mode", "env": "BROLL_FIT_MODE", "default": "cover", "kind": "choice", "choices": (("채우기", "cover"), ("원본 유지", "contain"), ("블러 여백", "blur-contain"))},
-    "top_preset": {"category": "frame", "label": "상단 프리셋", "job_key": "frame_top_preset", "env": "FRAME_TOP_PRESET", "default": "default", "kind": "style", "choices": (("default", "default"), ("brain50", "brain50"))},
-    "bottom_preset": {"category": "frame", "label": "하단 프리셋", "job_key": "frame_bottom_preset", "env": "FRAME_BOTTOM_PRESET", "default": "default", "kind": "style", "choices": (("default", "default"), ("minimal", "minimal"))},
-    "top_pct": {"category": "frame", "label": "상단 높이(%)", "job_key": "frame_top_pct", "env": "FRAME_TOP_PCT", "default": "preset", "kind": "positive_number"},
-    "bottom_pct": {"category": "frame", "label": "하단 높이(%)", "job_key": "frame_bottom_pct", "env": "FRAME_BOTTOM_PCT", "default": "preset", "kind": "positive_number"},
-    "channel": {"category": "frame", "label": "하단 채널명", "job_key": "frame_bottom_channel_name", "env": "FRAME_BOTTOM_CHANNEL_NAME", "default": "브레인피프티", "kind": "text"},
-    "header": {"category": "frame", "label": "상단 제목", "job_key": "frame_header_text", "env": "FRAME_HEADER_TEXT", "default": "자동 생성", "kind": "text"},
-}
-
-CONFIG_INPUT_ALIASES = {
-    "caption_style": "style",
-    "frame_mode": "frame",
-    "broll_fit_mode": "broll_fit",
-    "speech_pace": "pace",
-    "target_duration_sec": "duration",
-    "web_research": "web",
-    "case_research": "case",
-    "feedback_strictness": "feedback_policy",
-    "youtube_feedback_strictness": "feedback_policy",
-    "youtube_feedback_auto_sync": "feedback_sync",
-}
 
 _PRESERVED_KEYS = {setting["job_key"] for setting in CONFIG_SETTINGS.values()}
 
-SYSTEM_CONFIG_FIELDS = (
-    ("ENV_NAME", "-"),
-    ("CLAUDE_MODEL", "claude-sonnet-4-6"),
-    ("MAX_TOKENS", "2600"),
-    ("CLAUDE_HTTP_RETRIES", "1"),
-    ("PUBMED_RETMAX", "3"),
-    ("PUBMED_ABSTRACT_CHAR_LIMIT", "7000"),
-    ("LOG_LEVEL", "-"),
-)
-
-
-def _env_bool(value):
-    return str(value).strip().lower() not in ("off", "0", "false", "no")
-
 
 def _effective_setting_value(job, setting_id):
-    setting = CONFIG_SETTINGS[setting_id]
-    job_key = setting["job_key"]
-    if job_key in job:
-        return job[job_key], "작업 override"
-    env_name = setting.get("env")
-    env_value_raw = os.environ.get(env_name) if env_name else None
-    if env_value_raw not in (None, ""):
-        value = _env_bool(env_value_raw) if setting["kind"] == "bool" else env_value_raw
-        return value, "환경 설정"
-    default = setting.get("default", "-")
-    if callable(default):
-        default = default(job)
-    return default, "기본값"
+    return effective_setting_value(job, setting_id, CONFIG_SETTINGS)
 
 
 def _display_setting_value(value):
-    if isinstance(value, bool):
-        return "켜짐" if value else "꺼짐"
-    return str(value) if value not in (None, "") else "(비어 있음)"
+    return display_setting_value(value)
 
 
 def _validate_setting_value(setting_id, value):
-    setting = CONFIG_SETTINGS[setting_id]
-    kind = setting["kind"]
-    if kind == "positive_int":
-        return positive_int(value, setting_id)
-    if kind == "signed_int":
-        return signed_int(value, setting_id)
-    if kind == "positive_number":
-        return positive_number(value, setting_id)
-    if kind == "pace":
-        return speech_pace_profile(value)[0]
-    if kind == "model":
-        return resolve_model_alias(value)
-    if kind == "style":
-        return safe_caption_style(value)
-    if kind == "voice":
-        text = str(value).strip().upper()
-        allowed = tuple(choice_value for _, choice_value in setting.get("choices", ()))
-        if text not in allowed:
-            raise ValueError(f"voice은 {', '.join(allowed)} 중 하나여야 합니다: {value}")
-        return text
-    if kind == "bool":
-        if isinstance(value, bool):
-            return value
-        lowered = str(value).strip().lower()
-        if lowered not in ("on", "off", "true", "false", "1", "0", "yes", "no"):
-            raise ValueError(f"{setting_id}은 on 또는 off로 입력하세요: {value}")
-        return lowered in ("on", "true", "1", "yes")
-    if kind == "choice":
-        allowed = tuple(choice_value for _, choice_value in setting.get("choices", ()))
-        return safe_choice(value, setting_id, allowed)
-    text = str(value).strip()
-    if not text:
-        raise ValueError(f"{setting_id}은 빈 값으로 설정할 수 없습니다.")
-    return text
+    return validate_setting_value(setting_id, value, CONFIG_SETTINGS)
 
 
 def _set_config_value(job, setting_id, value):
-    setting = CONFIG_SETTINGS[setting_id]
-    validated = _validate_setting_value(setting_id, value)
-    job[setting["job_key"]] = validated
-    return validated
+    return set_config_value(job, setting_id, value, CONFIG_SETTINGS)
 
 
 def _category_label(category_id):
@@ -1404,62 +1218,7 @@ def _preserve_settings(job):
 
 
 def _build_extra_env(job):
-    env = {}
-    if "caption_font_size" in job:
-        env["CAPTION_FONT_SIZE"] = str(job["caption_font_size"])
-    if "caption_margin_v" in job:
-        env["CAPTION_MARGIN_V"] = str(job["caption_margin_v"])
-    if "caption_margin_h" in job:
-        env["CAPTION_MARGIN_H"] = str(job["caption_margin_h"])
-    if "caption_style" in job:
-        env["CAPTION_STYLE"] = str(job["caption_style"])
-    if "caption_offset_x" in job:
-        env["CAPTION_OFFSET_X"] = str(job["caption_offset_x"])
-    if "caption_offset_y" in job:
-        env["CAPTION_OFFSET_Y"] = str(job["caption_offset_y"])
-    if "frame_mode" in job:
-        env["FRAME_MODE"] = str(job["frame_mode"])
-    if "broll_fit_mode" in job:
-        env["BROLL_FIT_MODE"] = str(job["broll_fit_mode"])
-    if "frame_top_preset" in job:
-        env["FRAME_TOP_PRESET"] = str(job["frame_top_preset"])
-    if "frame_bottom_preset" in job:
-        env["FRAME_BOTTOM_PRESET"] = str(job["frame_bottom_preset"])
-    if "frame_top_pct" in job:
-        env["FRAME_TOP_PCT"] = str(job["frame_top_pct"])
-    if "frame_bottom_pct" in job:
-        env["FRAME_BOTTOM_PCT"] = str(job["frame_bottom_pct"])
-    if "frame_bottom_channel_name" in job:
-        env["FRAME_BOTTOM_CHANNEL_NAME"] = str(job["frame_bottom_channel_name"])
-    if "frame_header_text" in job:
-        env["FRAME_HEADER_TEXT"] = str(job["frame_header_text"])
-    if "tts_voice" in job:
-        env["TTS_VOICE"] = str(job["tts_voice"])
-    if "web_research" in job:
-        env["ENABLE_WEB_RESEARCH"] = "true" if job.get("web_research") else "false"
-    if "case_research" in job:
-        env["ENABLE_CASE_RESEARCH"] = "true" if job.get("case_research") else "false"
-    if "youtube_feedback_strictness" in job:
-        env["YOUTUBE_FEEDBACK_STRICTNESS"] = str(job["youtube_feedback_strictness"])
-    if "youtube_feedback_auto_sync" in job:
-        env["YOUTUBE_FEEDBACK_AUTO_SYNC"] = "true" if job.get("youtube_feedback_auto_sync") else "false"
-    if "speech_pace" in job:
-        pace, profile = speech_pace_profile(job["speech_pace"])
-        env["SPEECH_PACE"] = pace
-        env["ATEMPO"] = str(profile["atempo"])
-    if "target_duration_sec" in job:
-        env["TARGET_DURATION_SEC"] = str(job["target_duration_sec"])
-    if "claude_script_model" in job:
-        env["CLAUDE_SCRIPT_MODEL"] = str(job["claude_script_model"])
-    if "claude_research_model" in job:
-        env["CLAUDE_RESEARCH_MODEL"] = str(job["claude_research_model"])
-    if "claude_strategy_model" in job:
-        env["CLAUDE_STRATEGY_MODEL"] = str(job["claude_strategy_model"])
-    if "claude_query_model" in job:
-        env["CLAUDE_QUERY_MODEL"] = str(job["claude_query_model"])
-    if job.get("claude_budget_override"):
-        env["CLAUDE_BUDGET_OVERRIDE"] = "true"
-    return env
+    return _po.build_extra_env(job)
 
 
 def _settings_summary(job):
@@ -1616,153 +1375,18 @@ def start_render_progress(chat_id, job_id, stop_event):
 
 
 def run_render(chat_id, job):
-    job_id = job["job_id"]
-    args = [str(BASE_DIR / "sh" / "2_render.sh")]
-    font_size = job.get("caption_font_size")
-    margin_v = job.get("caption_margin_v")
-    margin_h = job.get("caption_margin_h")
-    caption_style = job.get("caption_style")
-    offset_x = job.get("caption_offset_x")
-    offset_y = job.get("caption_offset_y")
-    frame_mode = job.get("frame_mode")
-    broll_fit = job.get("broll_fit_mode")
-    frame_top_preset = job.get("frame_top_preset")
-    frame_bottom_preset = job.get("frame_bottom_preset")
-    frame_top_pct = job.get("frame_top_pct")
-    frame_bottom_pct = job.get("frame_bottom_pct")
-    frame_top_title = job.get("frame_top_title", job.get("frame_header_text", ""))
-    frame_top_subtitle = job.get("frame_top_subtitle", "")
-    frame_bottom_channel = job.get("frame_bottom_channel_name", "")
-
-    def add_arg(flag, value):
-        if value not in (None, ""):
-            args.extend([flag, str(value)])
-
-    add_arg("--font-size", font_size)
-    add_arg("--margin-v", margin_v)
-    add_arg("--margin-h", margin_h)
-    add_arg("--style", caption_style)
-    add_arg("--offset-x", offset_x)
-    add_arg("--offset-y", offset_y)
-    add_arg("--frame-mode", frame_mode)
-    add_arg("--broll-fit", broll_fit)
-    add_arg("--frame-top-preset", frame_top_preset)
-    add_arg("--frame-bottom-preset", frame_bottom_preset)
-    add_arg("--frame-top-pct", frame_top_pct)
-    add_arg("--frame-bottom-pct", frame_bottom_pct)
-    add_arg("--top-title", frame_top_title)
-    add_arg("--top-subtitle", frame_top_subtitle)
-    add_arg("--bottom-channel-name", frame_bottom_channel)
-
-    extra_env = _build_extra_env(job)
-    send_message(
-        chat_id,
-        "렌더링 시작: font=" + display_config_value(font_size) +
-        ", margin_v=" + display_config_value(margin_v) + ", margin_h=" + display_config_value(margin_h) +
-        ", style=" + display_config_value(caption_style) +
-        ", offset_x=" + display_config_value(offset_x) + ", offset_y=" + display_config_value(offset_y) +
-        ", frame=" + display_config_value(frame_mode) + ", broll_fit=" + display_config_value(broll_fit),
-    )
-    stop_progress = threading.Event()
-    progress_thread = start_render_progress(chat_id, job_id, stop_progress)
-    try:
-        run_command(args, job_id, job.get("topic"), extra_env=extra_env)
-    finally:
-        stop_progress.set()
-        if progress_thread:
-            progress_thread.join(timeout=1)
-    send_message(chat_id, "렌더링 진행률: 완료")
-    job["stage"] = "await_render_approval"
-    send_rendered_video(chat_id, job_id)
+    return _po.run_render(sys.modules[__name__], chat_id, job)
 
 
 def _run_render_silent(chat_id, job, extra_env=None):
-    job_id = job["job_id"]
-    args = [str(BASE_DIR / "sh" / "2_render.sh")]
-    font_size = job.get("caption_font_size")
-    margin_v = job.get("caption_margin_v")
-    margin_h = job.get("caption_margin_h")
-    caption_style = job.get("caption_style")
-    offset_x = job.get("caption_offset_x")
-    offset_y = job.get("caption_offset_y")
-    frame_mode = job.get("frame_mode")
-    broll_fit = job.get("broll_fit_mode")
-    frame_top_preset = job.get("frame_top_preset")
-    frame_bottom_preset = job.get("frame_bottom_preset")
-    frame_top_pct = job.get("frame_top_pct")
-    frame_bottom_pct = job.get("frame_bottom_pct")
-    frame_top_title = job.get("frame_top_title", job.get("frame_header_text", ""))
-    frame_top_subtitle = job.get("frame_top_subtitle", "")
-    frame_bottom_channel = job.get("frame_bottom_channel_name", "")
-
-    def add_arg(flag, value):
-        if value not in (None, ""):
-            args.extend([flag, str(value)])
-
-    add_arg("--font-size", font_size)
-    add_arg("--margin-v", margin_v)
-    add_arg("--margin-h", margin_h)
-    add_arg("--style", caption_style)
-    add_arg("--offset-x", offset_x)
-    add_arg("--offset-y", offset_y)
-    add_arg("--frame-mode", frame_mode)
-    add_arg("--broll-fit", broll_fit)
-    add_arg("--frame-top-preset", frame_top_preset)
-    add_arg("--frame-bottom-preset", frame_bottom_preset)
-    add_arg("--frame-top-pct", frame_top_pct)
-    add_arg("--frame-bottom-pct", frame_bottom_pct)
-    add_arg("--top-title", frame_top_title)
-    add_arg("--top-subtitle", frame_top_subtitle)
-    add_arg("--bottom-channel-name", frame_bottom_channel)
-
-    env = _build_extra_env(job)
-    env.update(extra_env or {})
-    stop_progress = threading.Event()
-    progress_thread = start_render_progress(chat_id, job_id, stop_progress)
-    try:
-        run_command(args, job_id, job.get("topic"), extra_env=env)
-    finally:
-        stop_progress.set()
-        if progress_thread:
-            progress_thread.join(timeout=1)
+    return _po.run_render_silent(sys.modules[__name__], chat_id, job, extra_env)
 
 
 def run_next_stage(chat_id, job):
-    job_id = job["job_id"]
-    topic = job.get("topic")
-    stage = job.get("stage")
-
-    extra_env = _build_extra_env(job)
-    if stage == "await_script_approval":
-        send_message(chat_id, "TTS 생성 시작")
-        run_command([str(BASE_DIR / "sh" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
-        job["stage"] = "await_tts_approval"
-        send_tts(chat_id, job_id)
-    elif stage == "await_tts_approval":
-        send_message(chat_id, "자막 생성 시작")
-        run_command([str(BASE_DIR / "sh" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
-        job["stage"] = "await_caption_approval"
-        send_caption(chat_id, job_id)
-    elif stage == "await_caption_approval":
-        send_message(chat_id, "B-roll 생성 시작")
-        run_command([str(BASE_DIR / "sh" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
-        job["stage"] = "await_broll_approval"
-        send_broll(chat_id, job_id)
-    elif stage == "await_broll_approval":
-        job["stage"] = "await_render_config"
-        send_render_ready(chat_id, job)
-    elif stage == "await_render_config":
-        run_render(chat_id, job)
-    elif stage == "await_render_approval":
-        job["stage"] = "await_upload_meta_approval"
-        send_upload_meta(chat_id, job_id)
-    elif stage == "await_upload_meta_approval":
-        send_message(chat_id, "YouTube 비공개 업로드 시작")
-        run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
-        job["stage"] = "done"
-        send_message(chat_id, workflow_status_text(job, "업로드 완료. YouTube Studio에서 비공개 영상을 확인하세요."))
-    else:
-        send_message(chat_id, f"승인할 단계가 없습니다. 현재 단계: {stage}")
+    return _po.run_next_stage(
+        sys.modules[__name__], chat_id, job,
+        final_message=lambda job, default_text: workflow_status_text(job, default_text),
+    )
 
 def run_remaining_to_upload(chat_id, job):
     job_id = job.get("job_id")
@@ -1975,7 +1599,7 @@ def handle_run_auto(chat_id, job, text):
     send_message(chat_id, "5/5 렌더링 완료")
 
     send_message(chat_id, "업로드 중...")
-    run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic)
+    run_command([str(BASE_DIR / "sh" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
 
     job["stage"] = "done"
     send_message(chat_id, workflow_status_text(job, "YouTube Studio에서 비공개 영상을 확인하세요."))
@@ -2584,9 +2208,6 @@ def handle_message(state, message):
     chat_id = message.get("chat", {}).get("id")
     text = (message.get("text") or "").strip()
     if not chat_id:
-        return
-    if ALLOWED_CHAT_ID and str(chat_id) != str(ALLOWED_CHAT_ID):
-        send_message(chat_id, "허용되지 않은 chat_id입니다.")
         return
 
     job = chat_state(state, chat_id)

@@ -9,6 +9,7 @@ WORK_DIR = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
 TEMP_DIR = os.path.join(WORK_DIR, "broll_parts")
 PEXELS_API_KEY = os.environ["PEXELS_API_KEY"]
 headers = {"Authorization": PEXELS_API_KEY}
+FADE_DURATION = 0.3
 
 
 def fetch_clip(query, save_path, used_video_ids, orientation_history, min_duration):
@@ -30,7 +31,7 @@ def fetch_clip(query, save_path, used_video_ids, orientation_history, min_durati
 
 
 def normalize(raw_path, out_path, duration, fit_mode):
-    subprocess.run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", raw_path, "-t", str(duration), "-filter_complex", normalization_filter(fit_mode, duration), "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", out_path], check=True, capture_output=True)
+    subprocess.run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", raw_path, "-t", str(duration), "-filter_complex", normalization_filter(fit_mode, duration, FADE_DURATION), "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", out_path], check=True, capture_output=True)
 
 
 with open(os.path.join(WORK_DIR, "scenes_timed.json"), "r", encoding="utf-8") as f:

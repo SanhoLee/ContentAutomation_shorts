@@ -600,15 +600,19 @@ def fetch_analytics(analytics, start: str, end: str) -> tuple[dict[str, dict[str
             raise
 
     supported: list[str] = []
+    skipped: list[str] = []
     for metric in ANALYTICS_METRICS:
         try:
             response = _analytics_query(analytics, start, end, (metric,))
         except Exception as exc:
             if _http_status(exc) == 400:
+                skipped.append(metric)
                 continue
             raise
         supported.append(metric)
         _merge_analytics_response(merged, response)
+    if skipped:
+        print(f"\u26a0\ufe0f  Analytics \uc9c0\ud45c \uc2a4\ud0b5\ub428 (400 \uc751\ub2f5): {', '.join(skipped)}", file=sys.stderr)
     if not supported:
         raise RuntimeError("\ud604\uc7ac \ucc44\ub110/\uae30\uac04\uc5d0\uc11c \uc9c0\uc6d0\ub418\ub294 Analytics \uc9c0\ud45c\ub97c \ucc3e\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.")
     return merged, supported
@@ -1769,6 +1773,7 @@ def build_report_data(conn: sqlite3.Connection, strictness: str = "balanced") ->
     ) if scored else 0.5
     prior_strength = float(profile["keyword_prior_strength"]) + (1.0 - sample_reliability) * 6.0
     keyword_min_count = max(2 if 0 < len(scored) < MATURITY_GROWING_VIDEOS else 1, math.ceil(len(scored) * float(profile["keyword_min_fraction"])))
+    keyword_min_count = min(keyword_min_count, max(1, len(scored)))
     keyword_rows = []
     for row in raw_keyword_rows:
         count = int(row["video_count"])

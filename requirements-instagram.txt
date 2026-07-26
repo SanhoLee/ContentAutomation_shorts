@@ -1,0 +1,2 @@
+# Static card image rendering for dev/src/instagram (card_render.py)
+Pillow>=10,<11

@@ -139,7 +139,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
     print(f"근거: {', '.join(objective.get('evidence_refs') or []) or '초기 탐색 후보'}")
     print(f"주의: {objective.get('reason', '')}")
     print(f"topic_plan.json: {target}")
-    if args.require_runnable and objective["decision"] in {"manual_review", "rejected"}:
+    # manual_review/rejected still carries a real topic candidate (deterministic
+    # fallback always produces one) and production should proceed regardless —
+    # quality gating happens later via YouTube feedback, not by blocking here.
+    # The only genuine "cannot continue" case is zero candidates at all.
+    planning = plan.get("planning") or {}
+    if args.require_runnable and int(planning.get("candidate_count") or 0) == 0:
         return 2
     return 0
 

@@ -172,6 +172,7 @@ STAGE_LABELS = {
     "running_after_review": "끝까지 자동 처리",
     "done": "완료",
     "cancelled": "취소됨",
+    "loaded_history": "이전 작업 불러옴",
 }
 
 
@@ -316,6 +317,7 @@ def home_button_rows():
         [button("단계별 검수 제작", "start_content:review"), button("자동 제작", "start_content:auto")],
         [button("목표 기반 자동 기획", "start_goal"), button("트렌드에서 시작", "start_content:trend")],
         [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("메뉴 표시", "show_home")],
+        [button("이전 작업 불러오기", "browse_jobs")],
     ]
 
 
@@ -370,6 +372,61 @@ def publish_home(user_id, client=None):
     text = home_screen_text(job, None if channel_id else "채널 작업을 시작하려면 SLACK_CHANNEL_ID를 설정하세요.")
     client = client or _slack_client()
     return client.views_publish(user_id=user_id, view={"type": "home", "blocks": _blocks(text, home_button_rows())})
+
+
+def send_job_browser(chat_id, notice=None):
+    job_ids = list_recent_jobs(10)
+    if not job_ids:
+        send_home_screen(chat_id, "불러올 이전 작업이 없습니다.")
+        return
+    text_lines = ["*이전 작업 불러오기*", "산출물은 그대로 두고, 특정 단계만 다시 만들 수 있습니다."]
+    if notice:
+        text_lines = [notice, ""] + text_lines
+    rows = []
+    for job_id in job_ids:
+        topic = job_topic_label(job_id)[:60]
+        status = job_status_label(job_id)
+        rows.append([button(f"{topic} · {status}", f"load_job:{job_id}")])
+    rows.append([button("← 홈으로", "show_home")])
+    send_action_message(chat_id, "\n".join(text_lines), rows)
+
+
+def send_loaded_job_menu(chat_id, job, notice=None):
+    job_id = job.get("job_id")
+    if not job_id:
+        send_home_screen(chat_id, "불러온 작업이 없습니다.")
+        return
+    lines = [
+        "*이전 작업*",
+        f"주제: {job.get('topic') or job_id}",
+        f"작업 ID: `{job_id}`",
+        f"상태: {job_status_label(job_id)}",
+    ]
+    if notice:
+        lines.extend(("", notice))
+    send_action_message(
+        chat_id,
+        "\n".join(lines),
+        [
+            [button("다시 렌더링", "hist_render"), button("B-roll 다시 만들기", "hist_rerun:broll")],
+            [button("TTS 다시 만들기", "hist_rerun:tts"), button("자막 다시 만들기", "hist_rerun:caption")],
+            [button("다른 작업 선택", "browse_jobs"), button("메뉴 표시", "show_home")],
+        ],
+    )
+
+
+def load_previous_job(chat_id, job, job_id):
+    directory = work_dir(job_id)
+    if not directory.is_dir():
+        send_job_browser(chat_id, "해당 작업 폴더를 찾지 못했습니다.")
+        return
+    job.pop("start_draft", None)
+    job.pop("goal_draft", None)
+    job["job_id"] = job_id
+    job["topic"] = job_topic_label(job_id)
+    job["stage"] = "loaded_history"
+    job.pop("last_error", None)
+    send_loaded_job_menu(chat_id, job)
 
 
 def prompt_start_topic(chat_id, job):
@@ -818,6 +875,54 @@ def load_frame_header(job_id):
         if not header["subtitle"]:
             header["subtitle"] = str(data.get("subtitle") or "").strip()
     return header
+
+
+def job_topic_label(job_id):
+    """Best-effort topic label for a past job folder, read straight off its
+    own artifacts (no separate index to keep in sync)."""
+    directory = work_dir(job_id)
+    for name, key in (("strategy.json", "title"), ("strategy.json", "topic"),
+                       ("topic_plan.json", "topic")):
+        path = directory / name
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        value = str((data or {}).get(key) or "").strip()
+        if value:
+            return value
+    return job_id
+
+
+def job_status_label(job_id):
+    directory = work_dir(job_id)
+    if (directory / "video_meta.json").exists() or output_file(job_id).exists():
+        return "완료"
+    if (directory / "scenes.json").exists():
+        return "대본 생성됨"
+    if (directory / "strategy.json").exists() or (directory / "topic_plan.json").exists():
+        return "전략만 있음"
+    return "빈 작업"
+
+
+def _job_has_content(directory):
+    return any(
+        (directory / name).exists()
+        for name in ("strategy.json", "topic_plan.json", "scenes.json", "video_meta.json")
+    )
+
+
+def list_recent_jobs(limit=10):
+    """Recent job folders with actual output, newest first. Bots create an empty
+    work dir for every JOB_ID at startup even before a command runs, so those are
+    filtered out here rather than cluttering the picker."""
+    if not WORK_DIR_BASE.exists():
+        return []
+    entries = [entry for entry in WORK_DIR_BASE.iterdir() if entry.is_dir() and _job_has_content(entry)]
+    entries.sort(key=lambda entry: entry.stat().st_mtime, reverse=True)
+    return [entry.name for entry in entries[:limit]]
 
 
 def save_frame_header(job_id, header):
@@ -1878,6 +1983,26 @@ def handle_callback(state, callback):
             send_config_menu(chat_id, job)
         elif data == "show_status":
             handle_status(chat_id, job)
+        elif data == "browse_jobs":
+            send_job_browser(chat_id)
+        elif data.startswith("load_job:"):
+            load_previous_job(chat_id, job, data.split(":", 1)[1])
+        elif data == "hist_render":
+            if not job.get("job_id"):
+                send_home_screen(chat_id, "불러온 작업이 없습니다.")
+                return
+            start_background_task(state, chat_id, job, "렌더링(이전 작업)", lambda: run_render(chat_id, job))
+        elif data.startswith("hist_rerun:"):
+            target = data.split(":", 1)[1]
+            if target not in ("tts", "caption", "broll"):
+                raise ValueError(f"알 수 없는 재생성 대상입니다: {target}")
+            if not job.get("job_id"):
+                send_home_screen(chat_id, "불러온 작업이 없습니다.")
+                return
+            start_background_task(
+                state, chat_id, job, f"{target} 재생성(이전 작업)",
+                lambda: handle_rerun(chat_id, job, f"/rerun {target}"),
+            )
         elif data == "cancel_all":
             send_action_message(
                 chat_id,
@@ -2135,6 +2260,9 @@ def handle_status(chat_id, job):
         send_home_screen(chat_id, "현재 진행 중인 작업이 없습니다.")
         return
     stage = job.get("stage")
+    if stage == "loaded_history" and not is_busy(job):
+        send_loaded_job_menu(chat_id, job, "현재 산출물은 유지됩니다.")
+        return
     if stage == "await_render_config" and not is_busy(job):
         send_render_ready(chat_id, job)
         return

@@ -27,6 +27,7 @@ CLAUDE_HTTP_RETRIES = SETTINGS.claude_http_retries
 PUBMED_QUERY_TIMEOUT = SETTINGS.pubmed_query_timeout
 PUBMED_RETMAX = SETTINGS.pubmed_retmax
 PUBMED_ABSTRACT_CHAR_LIMIT = SETTINGS.pubmed_abstract_char_limit
+NCBI_API_KEY = SETTINGS.ncbi_api_key
 CLAUDE_SCRIPT_MODEL = SETTINGS.claude_script_model
 CLAUDE_QUERY_MODEL = SETTINGS.claude_query_model
 CLAUDE_RESEARCH_MODEL = SETTINGS.claude_research_model
@@ -348,10 +349,11 @@ def assess_pubmed_query(topic):
         return "소비자형 키워드입니다. 효능/위험/기전 중심으로 바꿔보세요."
     return "PubMed에서 직접 맞는 초록을 찾지 못했습니다."
 
-def write_pubmed_status(topic, pmids, status, message, abstracts_preview="", pubmed_query=None):
+def write_pubmed_status(topic, pmids, status, message, abstracts_preview="", pubmed_query=None, citations=None):
     payload = {"topic": topic, "pubmed_query": pubmed_query or topic,
                "status": status, "pmids": pmids, "pmid_count": len(pmids),
-               "message": message, "abstracts_preview": abstracts_preview[:1200]}
+               "message": message, "abstracts_preview": abstracts_preview[:1200],
+               "citations": citations or []}
     with open(PUBMED_STATUS_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -395,11 +397,53 @@ def translate_pubmed_query(topic):
         print(f"PubMed 검색어 영어 변환 실패. 원문으로 검색합니다: {exc}")
     return topic
 
+def _ncbi_params(params):
+    """Merge in NCBI_API_KEY when configured (raises the anonymous 3 req/sec
+    E-utilities limit to 10 req/sec); falls back to unauthenticated calls otherwise."""
+    return {**params, "api_key": NCBI_API_KEY} if NCBI_API_KEY else params
+
+
+def fetch_pubmed_citations(pmids):
+    """Ground evidence_brief's source/year in real bibliographic data instead of
+    letting Claude guess them from raw abstract text. Failure never blocks script
+    generation — abstracts alone are still usable without this."""
+    if not pmids:
+        return [], ""
+    try:
+        data = request_json(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+            params=_ncbi_params({"db": "pubmed", "id": ",".join(pmids), "retmode": "json"}),
+        )
+    except Exception as exc:
+        print(f"PubMed 서지 정보(esummary) 조회 실패(초록만으로 계속 진행): {type(exc).__name__}", file=sys.stderr)
+        return [], ""
+    result = data.get("result") or {}
+    citations = []
+    for pmid in result.get("uids") or pmids:
+        doc = result.get(pmid) or {}
+        year_match = re.search(r"\d{4}", str(doc.get("pubdate") or ""))
+        citations.append({
+            "pmid": pmid,
+            "journal": " ".join(str(doc.get("source") or "").split()).strip(),
+            "year": year_match.group(0) if year_match else "",
+            "title": " ".join(str(doc.get("title") or "").split()).strip(),
+        })
+    lines = [
+        f"- PMID {c['pmid']} · {c['journal'] or '출처 미상'} ({c['year'] or '연도 미상'}): {c['title']}"
+        for c in citations if c["title"]
+    ]
+    block = (
+        "[PubMed 서지 정보 — 실제 저널·연도. evidence_brief의 source/year는 이 값만 사용할 것]\n"
+        + "\n".join(lines)
+    ) if lines else ""
+    return citations, block
+
+
 def fetch_pubmed_abstracts(topic):
     pubmed_query = translate_pubmed_query(topic)
     search = request_json(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-        params={"db": "pubmed", "term": pubmed_query, "retmax": PUBMED_RETMAX, "sort": "relevance", "retmode": "json"},
+        params=_ncbi_params({"db": "pubmed", "term": pubmed_query, "retmax": PUBMED_RETMAX, "sort": "relevance", "retmode": "json"}),
     )
     pmids = search.get("esearchresult", {}).get("idlist", [])
     if not pmids:
@@ -407,12 +451,16 @@ def fetch_pubmed_abstracts(topic):
         write_pubmed_status(topic, pmids, "no_results", message, pubmed_query=pubmed_query)
         return "PubMed에서 직접 관련 초록을 찾지 못했습니다. 이 경우 논문 수치나 특정 연구 결과를 지어내지 말고, 신뢰 가능한 일반 의학 지식과 건강 커뮤니케이션 원칙을 바탕으로 조심스럽게 작성하세요. 근거가 불확실한 내용은 가능성이 있습니다, 도움될 수 있습니다처럼 표현하세요."
 
+    citations, citation_block = fetch_pubmed_citations(pmids)
+
     text = request_text(
         "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
-        params={"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "text"},
+        params=_ncbi_params({"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "text"}),
     )
     text = limit_pubmed_abstracts(text)
-    write_pubmed_status(topic, pmids, "ok", "PubMed 초록을 찾았습니다.", text, pubmed_query=pubmed_query)
+    if citation_block:
+        text = citation_block + "\n\n" + text
+    write_pubmed_status(topic, pmids, "ok", "PubMed 초록을 찾았습니다.", text, pubmed_query=pubmed_query, citations=citations)
     return text
 
 
@@ -760,8 +808,10 @@ def strategy_output_schema():
     for field in ("sub_keywords", "thumbnail_text", "comparison_targets", "comparison_criteria", "required_beats"):
         properties[field] = {"type": "array", "items": {"type": "string"}}
     properties["evidence_brief"] = {
+        # Claude structured output (output_config.format: json_schema) rejects
+        # "maxItems" on array types with HTTP 400 — the 6-item cap is enforced
+        # only via the prompt instruction below, not the schema.
         "type": "array",
-        "maxItems": 6,
         "items": {
             "type": "object",
             "properties": {
@@ -963,6 +1013,8 @@ comparison_targets: 비교형이면 사용자가 요청한 비교 대상을 2개
 comparison_criteria: 비교 기준 2~4개
 evidence_status: sufficient / limited / insufficient 중 하나
 evidence_brief: 근거 자료에서 대본에 필요한 사실 0~6개. 각 항목은 claim, source, year, caveat를 포함하고 자료가 없으면 빈 배열
+               - [PubMed 서지 정보] 블록이 있으면 source/year는 반드시 그 목록의 값을 그대로 사용할 것 (추측 금지)
+               - 그 블록이 없으면 근거 자료 텍스트에서 실제로 확인되는 값만 쓰고, 불확실하면 빈 문자열로 둘 것
 source_mix   : [case_and_stat_research] 블록이 있으면 그 내용을 바탕으로 채우고, 없으면 모든 값을 빈 문자열로 둘 것.
                case_summary는 반드시 완전히 새로운 문장으로 재구성하고 실명·특정 가능 정보는 제거할 것. 절대 원문 문장을 그대로 옮기지 말 것.
 final_answer : 현재 근거로 가능한 최종 답의 초안. 단정 불가 시 그 한계를 포함

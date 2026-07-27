@@ -86,6 +86,7 @@ class ScriptRuntimeSettings:
     pubmed_query_timeout: int
     pubmed_retmax: int
     pubmed_abstract_char_limit: int
+    ncbi_api_key: str
     claude_model: str
     claude_script_model: str
     claude_query_model: str
@@ -148,6 +149,7 @@ def load_runtime_settings():
         pubmed_query_timeout=env_int("PUBMED_QUERY_TIMEOUT", 60),
         pubmed_retmax=env_int("PUBMED_RETMAX", 3),
         pubmed_abstract_char_limit=env_int("PUBMED_ABSTRACT_CHAR_LIMIT", 7000),
+        ncbi_api_key=os.environ.get("NCBI_API_KEY", ""),
         claude_model=claude_model,
         claude_script_model=os.environ.get("CLAUDE_SCRIPT_MODEL", claude_model),
         claude_query_model=os.environ.get("CLAUDE_QUERY_MODEL", os.environ.get("CLAUDE_STRATEGY_MODEL", "claude-haiku-4-5-20251001")),

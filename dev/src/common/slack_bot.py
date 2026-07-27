@@ -1521,14 +1521,16 @@ def handle_run_goal(chat_id, job, text):
         details.insert(5, f"가장 가까운 기존 제목: {closest}")
     send_message(chat_id, "\n".join(details))
     send_file_or_path(chat_id, plan_path, "topic_plan.json")
-    if decision in ("manual_review", "rejected"):
+    if int(planning.get("candidate_count") or 0) == 0:
         job["stage"] = "await_goal_review"
         send_action_message(
             chat_id,
-            f"자동 제작을 중단했습니다.\n{goal.get('reason', '수동 검토가 필요합니다.')}",
+            f"이 씨드로는 만들 수 있는 후보가 없어 자동 제작을 중단했습니다.\n{goal.get('reason', '수동 검토가 필요합니다.')}",
             [[button("설정 바꿔 다시 기획", "start_goal"), button("홈으로", "show_home")]],
         )
         return
+    if decision in ("manual_review", "rejected"):
+        send_message(chat_id, "확신도가 낮거나 위험 신호가 있지만, 목표 기반 자동 제작은 계속 진행합니다.")
     run_script_generation(
         chat_id, job,
         [str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--topic-json", str(plan_path)],

@@ -108,7 +108,7 @@ python3 src/0_topic_plan.py report --output "$WORK_DIR/goal_report.json"
 python3 src/0_topic_plan.py refresh --objective subscriber_growth
 ```
 
-`--require-runnable`을 사용하면 `manual_review` 또는 `rejected` 상태에서 exit code 2로 중단한다. `run_goal.sh`은 이 옵션을 사용하므로 오래된 데이터나 거절된 후보를 자동 업로드하지 않는다.
+`--require-runnable`을 사용해도 `manual_review`/`rejected`만으로는 중단하지 않는다. 결정론적 fallback은 항상 후보를 하나 만들어내므로, confidence가 낮거나 Planner/Critic 호출이 실패해도 그 후보로 제작을 계속 진행한다(품질 판단은 이후 성과 데이터로 반영). exit code 2로 중단하는 유일한 경우는 씨드로 만들 수 있는 후보가 하나도 없을 때(`planning.candidate_count == 0`)뿐이다. `run_goal.sh`은 이 옵션을 사용하므로 오래된 YouTube 동기화 데이터(`--allow-stale` 미지정 시)나 후보가 전혀 없는 경우에만 자동 진행을 멈춘다.
 
 ## Telegram / Slack
 
@@ -119,7 +119,7 @@ python3 src/0_topic_plan.py refresh --objective subscriber_growth
 /goal_report
 ```
 
-봇의 `/run_goal`은 기획 후 기존 승인형 스크립트 검수 흐름으로 연결한다. `manual_review` 또는 `rejected`이면 `topic_plan.json`을 보존하고 제작을 시작하지 않는다.
+봇의 `/run_goal`은 기획 후 기존 승인형 스크립트 검수 흐름으로 연결한다. `manual_review` 또는 `rejected`이어도 후보가 하나라도 있으면(`planning.candidate_count > 0`) 그 후보로 제작을 계속 진행하며, 낮은 확신도 상태임을 메시지로만 알린다. 씨드로 만들 수 있는 후보가 전혀 없을 때만 `topic_plan.json`을 보존하고 버튼으로 재기획/홈 이동을 안내한다.
 
 Slack `dev` 홈에서는 명령 입력 없이 `목표 기반 자동 기획` 버튼으로 같은 흐름을 시작할 수 있다. 버튼 UI는 목표 선택, 씨드 없음/직접 입력 선택, 최종 실행 확인의 3단계로 구성한다. 최종 확인 전에는 기존 작업 상태를 유지한다. 이 UI는 dev 제한 원칙에 따라 `prod`에는 아직 반영하지 않는다.
 

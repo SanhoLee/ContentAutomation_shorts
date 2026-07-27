@@ -1533,8 +1533,14 @@ def plan_objective_topic(
         judged.sort(key=lambda item: item["judgment"]["adjusted_score"], reverse=True)
         eligible = [item for item in judged if item["judgment"]["decision"] != "rejected"]
         selected = eligible[0] if eligible else judged[0]
-        pipeline_ready = planner_status == "success" and critic_status == "success"
-        final_decision = selected["judgment"]["decision"] if eligible and pipeline_ready else "manual_review"
+        # Planner/Critic AI failure already falls back to deterministic scoring
+        # (_default_planner_item + a neutral "medium risk" critic inside
+        # judge_candidate), so it must not be forced to manual_review on top of
+        # that. The deterministic judgment's own decision already reflects low
+        # confidence or a weak score where that is warranted; overriding it here
+        # made every AI hiccup halt production regardless of how the fallback
+        # candidate actually scored.
+        final_decision = selected["judgment"]["decision"] if eligible else "manual_review"
         selected["judgment"]["decision"] = final_decision
 
         if no_unique_candidates:

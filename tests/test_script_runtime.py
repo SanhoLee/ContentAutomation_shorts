@@ -81,7 +81,7 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
     def test_objective_planner_cost_and_sync_defaults(self):
         settings = self.load_settings()
         self.assertEqual(settings.claude_planner_model, "claude-haiku-4-5-20251001")
-        self.assertEqual(settings.claude_critic_max_tokens, 900)
+        self.assertEqual(settings.claude_critic_max_tokens, 1500)
         self.assertEqual(settings.research_mode, "adaptive")
         self.assertEqual(settings.youtube_feedback_sync_ttl_hours, 6)
         self.assertEqual(settings.claude_job_budget_usd, 0.30)

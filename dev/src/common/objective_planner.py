@@ -948,6 +948,8 @@ def _planner_prompt(
   {list(FORMAT_TYPES)}
 - hook_type은 반드시 다음 중 하나여야 합니다 (다른 값 절대 사용 금지):
   {list(HOOK_TYPES)}
+- angle은 20자 이내 한 문장으로 요약하세요.
+- risk_flags는 최대 2개, 각 15자 이내로 작성하세요.
 - candidates 배열을 가진 JSON 객체만 출력하세요.
 각 후보 필드: candidate_id, topic, topic_family, angle, format_type, hook_type,
 series_potential, channel_fit, family_relevance, actionability, narrative_fit,
@@ -977,7 +979,8 @@ evidence_risk를 높게 보고 그 이유를 reason에 적으세요.
 숫자 점수를 만들지 말고 reviews 배열을 가진 JSON만 출력하세요.
 각 review 필드: candidate_id, contradicting_refs, confounders, duplicate_risk,
 overfit_risk, evidence_risk, recommended_action, reason.
-위험 enum은 low/medium/high, recommended_action은 selected/limited_test/rejected 중 하나입니다."""
+위험 enum은 low/medium/high, recommended_action은 selected/limited_test/rejected 중 하나입니다.
+confounders는 최대 2개, 각 15자 이내로, reason은 40자 이내로 작성하세요."""
 
 
 def _extract_claude_json(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -1018,48 +1021,64 @@ def call_claude_json(
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY가 없어 deterministic fallback을 사용합니다.")
     usage_path = Path(os.environ.get("WORK_DIR", ".")) / "claude_usage.jsonl"
-    try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key, "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]},
-            timeout=settings.claude_timeout,
-        )
-    except Exception:
-        record_usage(
-            stage, model, {}, jsonl_path=usage_path, job_id=job_id,
-            plan_id=plan_id, success=False,
-        )
-        raise
-    if response.status_code >= 400:
+
+    attempt_max_tokens = max_tokens
+    for attempt in range(2):
         try:
-            failed_data = response.json()
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key, "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": model, "max_tokens": attempt_max_tokens,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=settings.claude_timeout,
+            )
         except Exception:
-            failed_data = {}
-        failed_data["_request_id"] = response.headers.get("request-id")
-        record_usage(
-            stage, model, failed_data, jsonl_path=usage_path, job_id=job_id,
-            plan_id=plan_id, success=False,
-        )
-    response.raise_for_status()
-    data = response.json()
-    data["_request_id"] = response.headers.get("request-id")
-    try:
-        parsed = _extract_claude_json(data)
-    except Exception:
+            record_usage(
+                stage, model, {}, jsonl_path=usage_path, job_id=job_id,
+                plan_id=plan_id, success=False,
+            )
+            raise
+        if response.status_code >= 400:
+            try:
+                failed_data = response.json()
+            except Exception:
+                failed_data = {}
+            failed_data["_request_id"] = response.headers.get("request-id")
+            record_usage(
+                stage, model, failed_data, jsonl_path=usage_path, job_id=job_id,
+                plan_id=plan_id, success=False,
+            )
+        response.raise_for_status()
+        data = response.json()
+        data["_request_id"] = response.headers.get("request-id")
+        # A max_tokens truncation is a completed response, not an in-flight request,
+        # so retrying it once with more headroom carries none of the duplicate-cost
+        # risk that a timeout retry would (see KNOWN_ISSUES.md #5).
+        if attempt == 0 and str(data.get("stop_reason") or "") == "max_tokens":
+            record_usage(
+                stage, model, data, jsonl_path=usage_path, job_id=job_id,
+                plan_id=plan_id, success=False,
+            )
+            attempt_max_tokens = int(max_tokens * 1.5)
+            continue
+        try:
+            parsed = _extract_claude_json(data)
+        except Exception:
+            record_usage(
+                stage, model, data, jsonl_path=usage_path, job_id=job_id,
+                plan_id=plan_id, success=False,
+            )
+            raise
         record_usage(
             stage, model, data, jsonl_path=usage_path, job_id=job_id,
-            plan_id=plan_id, success=False,
+            plan_id=plan_id, success=True,
         )
-        raise
-    record_usage(
-        stage, model, data, jsonl_path=usage_path, job_id=job_id,
-        plan_id=plan_id, success=True,
-    )
-    return parsed
+        return parsed
 
 
 def _qualitative_score(planner: Mapping[str, Any]) -> float:
@@ -1486,7 +1505,12 @@ def plan_objective_topic(
         initial.sort(key=lambda item: item["score"]["base_score"], reverse=True)
         top_three = initial[:3]
         critic_error = None
-        if planner_status != "success":
+        # Critic only needs top_three, not a successful planner call — a failed
+        # planner already falls back to deterministic candidates above, and Critic
+        # can still weigh duplicate/overfit/evidence risk on those. Only skip when
+        # AI was never invoked in the first place (disabled, or preflight rejected
+        # the candidate pool before any AI spend).
+        if planner_status in ("disabled", "skipped"):
             critic_status = "skipped"
             critic_output = {"reviews": []}
         else:

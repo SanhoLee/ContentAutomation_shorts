@@ -1,6 +1,8 @@
+import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 
@@ -165,6 +167,42 @@ class ObjectivePlannerTests(unittest.TestCase):
                 "content": [{"type": "text", "text": '{"candidates": ['}],
             })
 
+    def test_call_claude_json_retries_once_with_more_tokens_on_truncation(self):
+        responses = [
+            {"stop_reason": "max_tokens", "content": [{"type": "text", "text": '{"candidates": ['}]},
+            {"stop_reason": "end_turn", "content": [{"type": "text", "text": '{"ok": true}'}]},
+        ]
+        sent_max_tokens = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.status_code = 200
+                self.headers = {}
+                self._payload = payload
+
+            def json(self):
+                return dict(self._payload)
+
+            def raise_for_status(self):
+                return None
+
+        def fake_post(_url, headers=None, json=None, timeout=None):
+            sent_max_tokens.append(json["max_tokens"])
+            return FakeResponse(responses[len(sent_max_tokens) - 1])
+
+        env = {"ANTHROPIC_API_KEY": "test-key"}
+        with tempfile.TemporaryDirectory() as tmp:
+            env["WORK_DIR"] = tmp
+            with unittest.mock.patch.dict(os.environ, env), \
+                    unittest.mock.patch("requests.post", side_effect=fake_post):
+                result = objective_planner.call_claude_json(
+                    "prompt", model="claude-haiku-4-5-20251001", max_tokens=100,
+                    stage="candidate_planner", job_id="retry_test",
+                )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(sent_max_tokens, [100, 150])
+
     def test_manual_planning_history_is_part_of_duplicate_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "feedback.db"
@@ -182,7 +220,7 @@ class ObjectivePlannerTests(unittest.TestCase):
                 conn.close()
         self.assertTrue(duplicate["blocked"])
 
-    def test_planner_failure_skips_critic_and_forces_manual_review(self):
+    def test_planner_failure_still_runs_critic_on_fallback_candidates(self):
         calls = {"planner": 0, "critic": 0}
         original_local_rows = objective_planner._local_candidate_rows
 
@@ -210,10 +248,9 @@ class ObjectivePlannerTests(unittest.TestCase):
             finally:
                 objective_planner._local_candidate_rows = original_local_rows
 
-        self.assertEqual(calls, {"planner": 1, "critic": 0})
-        self.assertEqual(plan["objective"]["decision"], "manual_review")
+        self.assertEqual(calls, {"planner": 1, "critic": 1})
         self.assertEqual(plan["planning"]["planner_status"], "failed")
-        self.assertEqual(plan["planning"]["critic_status"], "skipped")
+        self.assertEqual(plan["planning"]["critic_status"], "success")
 
     def test_low_local_preflight_spends_no_model_calls(self):
         calls = {"planner": 0, "critic": 0}

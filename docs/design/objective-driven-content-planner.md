@@ -191,6 +191,17 @@ adjusted_score = base_score - duplicate - critic_risk - stale_strategy + explora
 
 `confidence`는 cohort 신뢰도를 그대로 보고한다. 예전에는 후보 생성 시 0.70을 한 번 더 곱해 필드 이름과 값의 의미가 어긋났다.
 
+### 동적 결정 임계값
+
+`DECISIONS = (selected, limited_test, manual_review, rejected)` 네 값 중 실제로 다르게 동작하는 지점은 코드베이스 전체에서 딱 하나뿐이다: `judge_candidate()`의 `adjusted_score >= 임계값` 여부. `selected`와 `limited_test`는 카테고리 사용 기록(`record_category_usage`)과 critic-conflict 감지 어디에서도 구분되지 않고 항상 `{"selected", "limited_test"}`로 함께 취급되며, `manual_review`/`rejected`도 `4580d95`(2026-07-27) 이후 봇 메시지·제작 진행 여부가 동일해서 서로 구분되지 않는다. `selected` 전용 조건(`adjusted_score>=70 and confidence>=0.6`)은 지금까지 실측 adjusted_score가 70을 넘긴 적이 없어(2026-07-28 기준 최고 56.0) 사실상 죽어있는 코드다.
+
+이 때문에 과거에는 고정값 `adjusted_score >= 55.0` 하나가 사실상 유일한 게이트였는데, 2026-07-28 기준 실측 `planning_runs.adjusted_score` 13건(36.3~56.0, 중앙값 ≈41.4)으로는 상위 1건(≈8%)만 통과하는 지나치게 엄격한 기준이었다. 이제 이 임계값은 고정 55 대신 `planning_runs.adjusted_score` 히스토리의 `CLAUDE_SELECTION_PERCENTILE`(기본 `0.5`=중앙값) 퍼센타일로 매 job마다 동적으로 계산한다(`_dynamic_decision_threshold`). 계산된 값과 표본 수는 `topic_plan.json`의 `planning.decision_threshold` / `decision_threshold_percentile` / `decision_threshold_sample_count`에 매번 기록되어 감사 가능하다. 히스토리가 아예 없을 때만 55.0으로 폴백한다.
+
+2026-07-28 시점에는 표본이 13건뿐이라 중앙값을 골랐다. **TODO(표본이 늘어나면 재검토):**
+- job/게시물 수가 통계적으로 유의미해지면(예: 50~100건 이상) `CLAUDE_SELECTION_PERCENTILE`을 60~75th로 올리는 것을 재검토한다.
+- 지금은 `objective_type`별로 나누지 않고 전체 히스토리를 함께 쓴다. 표본이 늘면 목표별로 분리할지 재검토한다.
+- `selected` 등급이 계속 `limited_test`와 동일하게 죽은 채로 둘지, 아니면 실제로 다른 처리(예: 완전 자동 업로드)를 부여할지 재검토한다.
+
 ## 연구·모델·비용
 
 기본 설정:
@@ -204,6 +215,7 @@ CLAUDE_PLANNER_MAX_TOKENS=2400
 CLAUDE_CRITIC_MAX_TOKENS=1500
 CLAUDE_AUDIT_MAX_TOKENS=1600
 CLAUDE_INTERPRETER_MAX_TOKENS=900
+CLAUDE_SELECTION_PERCENTILE=0.5
 CLAUDE_JOB_BUDGET_USD=0.30
 CLAUDE_DAILY_BUDGET_USD=1.00
 CLAUDE_MAX_WEB_SEARCHES_PER_JOB=4

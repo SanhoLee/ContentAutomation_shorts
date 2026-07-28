@@ -203,6 +203,48 @@ class ObjectivePlannerTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(sent_max_tokens, [100, 150])
 
+    def test_dynamic_decision_threshold_falls_back_when_no_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            try:
+                threshold, count = objective_planner._dynamic_decision_threshold(
+                    conn, percentile=0.5, default=55.0,
+                )
+            finally:
+                conn.close()
+        self.assertEqual((threshold, count), (55.0, 0))
+
+    def test_dynamic_decision_threshold_interpolates_percentile_from_history(self):
+        scores = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0]
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            try:
+                conn.execute(
+                    """INSERT INTO objectives (
+                        objective_id, objective_type, weights_json, created_at, updated_at
+                    ) VALUES (1, 'reach', '{}', '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00')"""
+                )
+                for i, score in enumerate(scores):
+                    conn.execute(
+                        """INSERT INTO planning_runs (
+                            job_id, objective_id, candidate_pool_json, selection_mode,
+                            base_score, adjusted_score, confidence, decision, created_at
+                        ) VALUES (?, 1, '[]', 'exploit', ?, ?, 0.3, 'manual_review', ?)""",
+                        (f"job_{i}", score, score, f"2026-07-{i + 1:02d}T00:00:00+00:00"),
+                    )
+                conn.commit()
+
+                median, count = objective_planner._dynamic_decision_threshold(conn, percentile=0.5)
+                quartile, _ = objective_planner._dynamic_decision_threshold(conn, percentile=0.25)
+                interpolated, _ = objective_planner._dynamic_decision_threshold(conn, percentile=0.6)
+            finally:
+                conn.close()
+
+        self.assertEqual(count, 9)
+        self.assertAlmostEqual(median, 50.0)
+        self.assertAlmostEqual(quartile, 30.0)
+        self.assertAlmostEqual(interpolated, 58.0)
+
     def test_manual_planning_history_is_part_of_duplicate_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "feedback.db"

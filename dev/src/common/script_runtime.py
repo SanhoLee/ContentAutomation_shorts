@@ -102,6 +102,7 @@ class ScriptRuntimeSettings:
     claude_critic_max_tokens: int
     claude_audit_max_tokens: int
     claude_interpreter_max_tokens: int
+    claude_selection_percentile: float
     claude_job_budget_usd: float
     claude_daily_budget_usd: float
     claude_max_web_searches_per_job: int
@@ -165,6 +166,10 @@ def load_runtime_settings():
         claude_critic_max_tokens=env_int("CLAUDE_CRITIC_MAX_TOKENS", 1500),
         claude_audit_max_tokens=env_int("CLAUDE_AUDIT_MAX_TOKENS", 1600),
         claude_interpreter_max_tokens=env_int("CLAUDE_INTERPRETER_MAX_TOKENS", 900),
+        # Percentile of historical planning_runs.adjusted_score used as the
+        # limited_test/selected pass bar instead of a fixed number — see
+        # docs/design/objective-driven-content-planner.md "동적 결정 임계값".
+        claude_selection_percentile=env_float("CLAUDE_SELECTION_PERCENTILE", 0.5),
         claude_job_budget_usd=env_float("CLAUDE_JOB_BUDGET_USD", 0.30),
         claude_daily_budget_usd=env_float("CLAUDE_DAILY_BUDGET_USD", 1.00),
         claude_max_web_searches_per_job=env_int("CLAUDE_MAX_WEB_SEARCHES_PER_JOB", 4),

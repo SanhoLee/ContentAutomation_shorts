@@ -1150,6 +1150,31 @@ def exploration_target(job_id: str) -> str:
     return "wildcard"
 
 
+def _dynamic_decision_threshold(
+    conn: sqlite3.Connection, *, percentile: float = 0.5, default: float = 55.0,
+) -> tuple[float, int]:
+    """Nth percentile of past planning_runs.adjusted_score, replacing a fixed pass bar.
+
+    A young channel's real adjusted_score history rarely clears an arbitrary
+    absolute number (see docs/design/objective-driven-content-planner.md
+    "동적 결정 임계값"), so the limited_test/selected bar tracks what this channel
+    has actually scored instead. Falls back to `default` only when there is no
+    history yet to compute from. Returns (threshold, sample_count) so callers can
+    record both for audit.
+    """
+    rows = conn.execute("SELECT adjusted_score FROM planning_runs").fetchall()
+    scores = sorted(float(row[0]) for row in rows if row[0] is not None)
+    if not scores:
+        return default, 0
+    if len(scores) == 1:
+        return scores[0], 1
+    position = percentile * (len(scores) - 1)
+    lower, upper = int(position), min(len(scores) - 1, int(position) + 1)
+    fraction = position - lower
+    threshold = scores[lower] + (scores[upper] - scores[lower]) * fraction
+    return threshold, len(scores)
+
+
 def judge_candidate(
     candidate: Mapping[str, Any],
     score: Mapping[str, Any],
@@ -1157,6 +1182,7 @@ def judge_candidate(
     *,
     desired_exploration: str,
     stale_strategy: bool = False,
+    decision_threshold: float = 55.0,
 ) -> dict[str, Any]:
     critic = critic or {
         "duplicate_risk": "medium", "overfit_risk": "medium", "evidence_risk": "medium",
@@ -1185,7 +1211,7 @@ def judge_candidate(
     adjusted += exploration_bonus
     if adjusted >= 70.0 and confidence >= 0.6 and critic.get("recommended_action") != "rejected":
         decision = "selected"
-    elif adjusted >= 55.0:
+    elif adjusted >= decision_threshold:
         decision = "limited_test"
     elif confidence < 0.6:
         decision = "manual_review"
@@ -1542,6 +1568,9 @@ def plan_objective_topic(
             (config.objective_type,),
         ).fetchone())
         desired_mode = exploration_target(job_id)
+        decision_threshold, decision_threshold_sample_count = _dynamic_decision_threshold(
+            conn, percentile=settings.claude_selection_percentile,
+        )
         judged = []
         for item in initial:
             candidate_id = item["candidate"]["candidate_id"]
@@ -1549,6 +1578,7 @@ def plan_objective_topic(
             judgment = judge_candidate(
                 item["candidate"], item["score"], critic,
                 desired_exploration=desired_mode, stale_strategy=stale_strategy,
+                decision_threshold=decision_threshold,
             )
             judged.append({
                 **item, "critic": critic, "judgment": judgment,
@@ -1597,6 +1627,9 @@ def plan_objective_topic(
             "preflight_mode": "manual_seed" if manual_seed else "auto",
             "planner_status": planner_status,
             "critic_status": critic_status,
+            "decision_threshold": round(decision_threshold, 4),
+            "decision_threshold_percentile": settings.claude_selection_percentile,
+            "decision_threshold_sample_count": decision_threshold_sample_count,
             "candidate_count": len(candidates) if not no_unique_candidates else 0,
             "planner_candidate_count": len(planner_candidates) if preflight_passed else 0,
             "format_hook_skipped": len(planner_output.get("skipped_candidates") or []),

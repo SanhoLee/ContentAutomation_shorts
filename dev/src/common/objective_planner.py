@@ -1150,6 +1150,19 @@ def exploration_target(job_id: str) -> str:
     return "wildcard"
 
 
+def _percentile_of(scores: Sequence[float], percentile: float, default: float) -> tuple[float, int]:
+    ordered = sorted(float(value) for value in scores if value is not None)
+    if not ordered:
+        return default, 0
+    if len(ordered) == 1:
+        return ordered[0], 1
+    position = percentile * (len(ordered) - 1)
+    lower, upper = int(position), min(len(ordered) - 1, int(position) + 1)
+    fraction = position - lower
+    threshold = ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+    return threshold, len(ordered)
+
+
 def _dynamic_decision_threshold(
     conn: sqlite3.Connection, *, percentile: float = 0.5, default: float = 55.0,
 ) -> tuple[float, int]:
@@ -1163,16 +1176,25 @@ def _dynamic_decision_threshold(
     record both for audit.
     """
     rows = conn.execute("SELECT adjusted_score FROM planning_runs").fetchall()
-    scores = sorted(float(row[0]) for row in rows if row[0] is not None)
-    if not scores:
-        return default, 0
-    if len(scores) == 1:
-        return scores[0], 1
-    position = percentile * (len(scores) - 1)
-    lower, upper = int(position), min(len(scores) - 1, int(position) + 1)
-    fraction = position - lower
-    threshold = scores[lower] + (scores[upper] - scores[lower]) * fraction
-    return threshold, len(scores)
+    return _percentile_of([row[0] for row in rows], percentile, default)
+
+
+def _dynamic_confidence_threshold(
+    conn: sqlite3.Connection, *, percentile: float = 0.5, default: float = 0.6,
+) -> tuple[float, int]:
+    """Nth percentile of past planning_runs.confidence, replacing the fixed 0.6 gate.
+
+    `confidence` is evidence-transfer reliability (shrink_percentile x
+    cohort_reliability, see 6_youtube_feedback.py), not a content-quality
+    score — that is scored separately by base_score/critic. On a young channel
+    it structurally caps out well under 0.6 regardless of how good a
+    candidate is (see docs/design/objective-driven-content-planner.md "동적
+    결정 임계값"), so the "selected" bar tracks what this channel's evidence
+    has actually produced instead. Falls back to `default` only when there is
+    no history yet to compute from.
+    """
+    rows = conn.execute("SELECT confidence FROM planning_runs").fetchall()
+    return _percentile_of([row[0] for row in rows], percentile, default)
 
 
 def judge_candidate(
@@ -1183,6 +1205,7 @@ def judge_candidate(
     desired_exploration: str,
     stale_strategy: bool = False,
     decision_threshold: float = 55.0,
+    confidence_threshold: float = 0.6,
 ) -> dict[str, Any]:
     critic = critic or {
         "duplicate_risk": "medium", "overfit_risk": "medium", "evidence_risk": "medium",
@@ -1209,11 +1232,11 @@ def judge_candidate(
     adjusted = float(score["base_score"]) - duplicate_penalty - critic_risk_penalty
     adjusted -= stale_penalty
     adjusted += exploration_bonus
-    if adjusted >= 70.0 and confidence >= 0.6 and critic.get("recommended_action") != "rejected":
+    if adjusted >= 70.0 and confidence >= confidence_threshold and critic.get("recommended_action") != "rejected":
         decision = "selected"
     elif adjusted >= decision_threshold:
         decision = "limited_test"
-    elif confidence < 0.6:
+    elif confidence < confidence_threshold:
         decision = "manual_review"
     else:
         decision = "rejected"
@@ -1571,6 +1594,9 @@ def plan_objective_topic(
         decision_threshold, decision_threshold_sample_count = _dynamic_decision_threshold(
             conn, percentile=settings.claude_selection_percentile,
         )
+        confidence_threshold, confidence_threshold_sample_count = _dynamic_confidence_threshold(
+            conn, percentile=settings.claude_confidence_percentile,
+        )
         judged = []
         for item in initial:
             candidate_id = item["candidate"]["candidate_id"]
@@ -1579,6 +1605,7 @@ def plan_objective_topic(
                 item["candidate"], item["score"], critic,
                 desired_exploration=desired_mode, stale_strategy=stale_strategy,
                 decision_threshold=decision_threshold,
+                confidence_threshold=confidence_threshold,
             )
             judged.append({
                 **item, "critic": critic, "judgment": judgment,
@@ -1630,6 +1657,9 @@ def plan_objective_topic(
             "decision_threshold": round(decision_threshold, 4),
             "decision_threshold_percentile": settings.claude_selection_percentile,
             "decision_threshold_sample_count": decision_threshold_sample_count,
+            "confidence_threshold": round(confidence_threshold, 6),
+            "confidence_threshold_percentile": settings.claude_confidence_percentile,
+            "confidence_threshold_sample_count": confidence_threshold_sample_count,
             "candidate_count": len(candidates) if not no_unique_candidates else 0,
             "planner_candidate_count": len(planner_candidates) if preflight_passed else 0,
             "format_hook_skipped": len(planner_output.get("skipped_candidates") or []),

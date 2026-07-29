@@ -245,6 +245,68 @@ class ObjectivePlannerTests(unittest.TestCase):
         self.assertAlmostEqual(quartile, 30.0)
         self.assertAlmostEqual(interpolated, 58.0)
 
+    def test_dynamic_confidence_threshold_falls_back_when_no_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            try:
+                threshold, count = objective_planner._dynamic_confidence_threshold(
+                    conn, percentile=0.5, default=0.6,
+                )
+            finally:
+                conn.close()
+        self.assertEqual((threshold, count), (0.6, 0))
+
+    def test_dynamic_confidence_threshold_interpolates_percentile_from_history(self):
+        confidences = [0.017, 0.185, 0.214, 0.214, 0.221, 0.227, 0.227, 0.265, 0.295, 0.324, 0.667]
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            try:
+                conn.execute(
+                    """INSERT INTO objectives (
+                        objective_id, objective_type, weights_json, created_at, updated_at
+                    ) VALUES (1, 'reach', '{}', '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00')"""
+                )
+                for i, confidence in enumerate(confidences):
+                    conn.execute(
+                        """INSERT INTO planning_runs (
+                            job_id, objective_id, candidate_pool_json, selection_mode,
+                            base_score, adjusted_score, confidence, decision, created_at
+                        ) VALUES (?, 1, '[]', 'exploit', 50.0, 50.0, ?, 'manual_review', ?)""",
+                        (f"job_{i}", confidence, f"2026-07-{i + 1:02d}T00:00:00+00:00"),
+                    )
+                conn.commit()
+
+                median, count = objective_planner._dynamic_confidence_threshold(conn, percentile=0.5)
+            finally:
+                conn.close()
+
+        self.assertEqual(count, 11)
+        self.assertAlmostEqual(median, 0.227)
+
+    def test_confidence_threshold_shifts_manual_review_boundary(self):
+        # base_score 40.0 minus the neutral critic-risk penalty (5.0) settles
+        # adjusted_score at 35.0, below decision_threshold=40.0 either way, so
+        # only the confidence gate decides manual_review vs rejected here.
+        strict_gate = objective_planner.judge_candidate(
+            {"confidence": 0.3, "duplicate_similarity": 0.0},
+            {"base_score": 40.0},
+            None,
+            desired_exploration="exploit",
+            decision_threshold=40.0,
+            confidence_threshold=0.6,
+        )
+        self.assertEqual(strict_gate["decision"], "manual_review")
+
+        lowered_gate = objective_planner.judge_candidate(
+            {"confidence": 0.3, "duplicate_similarity": 0.0},
+            {"base_score": 40.0},
+            None,
+            desired_exploration="exploit",
+            decision_threshold=40.0,
+            confidence_threshold=0.25,
+        )
+        self.assertEqual(lowered_gate["decision"], "rejected")
+
     def test_manual_planning_history_is_part_of_duplicate_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "feedback.db"

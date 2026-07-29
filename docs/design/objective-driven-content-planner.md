@@ -202,6 +202,16 @@ adjusted_score = base_score - duplicate - critic_risk - stale_strategy + explora
 - 지금은 `objective_type`별로 나누지 않고 전체 히스토리를 함께 쓴다. 표본이 늘면 목표별로 분리할지 재검토한다.
 - `selected` 등급이 계속 `limited_test`와 동일하게 죽은 채로 둘지, 아니면 실제로 다른 처리(예: 완전 자동 업로드)를 부여할지 재검토한다.
 
+### 동적 확신도(confidence) 임계값
+
+`confidence`는 스크립트/주제 자체의 품질 점수가 아니라, 후보에 붙은 참고 영상의 성과 지표가 이 채널 규모에서 통계적으로 얼마나 믿을만한지를 나타내는 값이다(`shrink_percentile` x `cohort_reliability`, `6_youtube_feedback.py`). 콘텐츠 품질은 `base_score`/`adjusted_score`와 Critic의 `recommended_action`이 이미 별도로 채점한다.
+
+`judge_candidate()`의 `confidence >= 0.6` 고정 게이트는 `adjusted_score`가 겪었던 것과 같은 문제를 갖고 있었다: `cohort_reliability = 표본 수/(표본 수+50)`이라 채널 영상이 150개(stable 단계)에 도달하기 전까지는 후보 품질과 무관하게 confidence가 구조적으로 0.6을 넘기 어렵다. 2026-07-29 기준 실측 `planning_runs.confidence` 15건의 중앙값은 ≈0.265, 0.6을 넘은 건 1건(0.667)뿐이었다.
+
+`decision` 자체는 봇 알림 문구("선정 주제" vs "최상위 검토 후보")와 경고 한 줄만 바꿀 뿐 제작 진행 여부를 막지 않으므로(`telegram_bot.py`/`slack_bot.py`), 이 게이트를 낮추는 것은 콘텐츠 품질 리스크가 아니라 라벨링 정확도 문제다. 고정 0.6 대신 `planning_runs.confidence` 히스토리의 `CLAUDE_CONFIDENCE_PERCENTILE`(기본 `0.5`=중앙값) 퍼센타일로 매 job마다 동적으로 계산한다(`_dynamic_confidence_threshold`). 계산된 값과 표본 수는 `topic_plan.json`의 `planning.confidence_threshold` / `confidence_threshold_percentile` / `confidence_threshold_sample_count`에 기록된다. 히스토리가 없을 때만 0.6으로 폴백한다.
+
+**TODO(표본이 늘어나면 재검토):** `decision_threshold`와 마찬가지로 표본이 50~100건 이상 쌓이면 `CLAUDE_CONFIDENCE_PERCENTILE` 상향을 재검토한다.
+
 ## 연구·모델·비용
 
 기본 설정:
@@ -216,6 +226,7 @@ CLAUDE_CRITIC_MAX_TOKENS=1500
 CLAUDE_AUDIT_MAX_TOKENS=1600
 CLAUDE_INTERPRETER_MAX_TOKENS=900
 CLAUDE_SELECTION_PERCENTILE=0.5
+CLAUDE_CONFIDENCE_PERCENTILE=0.5
 CLAUDE_JOB_BUDGET_USD=0.30
 CLAUDE_DAILY_BUDGET_USD=1.00
 CLAUDE_MAX_WEB_SEARCHES_PER_JOB=4

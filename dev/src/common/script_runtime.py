@@ -103,6 +103,7 @@ class ScriptRuntimeSettings:
     claude_audit_max_tokens: int
     claude_interpreter_max_tokens: int
     claude_selection_percentile: float
+    claude_confidence_percentile: float
     claude_job_budget_usd: float
     claude_daily_budget_usd: float
     claude_max_web_searches_per_job: int
@@ -170,6 +171,13 @@ def load_runtime_settings():
         # limited_test/selected pass bar instead of a fixed number — see
         # docs/design/objective-driven-content-planner.md "동적 결정 임계값".
         claude_selection_percentile=env_float("CLAUDE_SELECTION_PERCENTILE", 0.5),
+        # Same rationale as claude_selection_percentile, applied to the
+        # confidence gate: a young channel's evidence-transfer confidence
+        # (shrink_percentile x cohort_reliability) rarely clears an arbitrary
+        # absolute 0.6 either, so the "selected" bar tracks what this channel
+        # has actually produced instead. See "동적 결정 임계값" in
+        # docs/design/objective-driven-content-planner.md.
+        claude_confidence_percentile=env_float("CLAUDE_CONFIDENCE_PERCENTILE", 0.5),
         claude_job_budget_usd=env_float("CLAUDE_JOB_BUDGET_USD", 0.30),
         claude_daily_budget_usd=env_float("CLAUDE_DAILY_BUDGET_USD", 1.00),
         claude_max_web_searches_per_job=env_int("CLAUDE_MAX_WEB_SEARCHES_PER_JOB", 4),

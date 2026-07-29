@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import random
 import re
 import sqlite3
 import sys
@@ -275,19 +276,25 @@ def _candidate_topic(
     mode: str,
     index: int,
     topics: Sequence[str] | None = None,
+    offset: int = 0,
 ) -> str:
     """Interpreter topics are finished titles; templates still need the seed prefix.
 
     The `"{seed}: {angle}"` shape only exists because the hardcoded templates are
     sentence fragments. It reads like a dictionary entry, so it is confined to the
     deterministic fallback path.
+
+    `offset` rotates the starting angle so consecutive jobs do not always open
+    with the same one. It must stay fixed for the whole pool build: the caller
+    still increments `index`, so a constant offset walks every option before
+    repeating, while a per-call random offset would collide and starve the pool.
     """
     options = tuple(topics or ())
     if options:
-        return options[index % len(options)]
+        return options[(index + offset) % len(options)]
     base = " ".join(str(base or "").split()).strip()
     angles = TOPIC_ANGLE_TEMPLATES[mode]
-    angle = angles[index % len(angles)]
+    angle = angles[(index + offset) % len(angles)]
     return f"{base}: {angle}" if base else angle
 
 
@@ -406,9 +413,11 @@ def build_candidate_pool(
     candidate_count: int = 12,
     rejected_duplicates: list[dict[str, Any]] | None = None,
     interpretation: Mapping[str, Any] | None = None,
+    rng: random.Random | None = None,
 ) -> list[dict[str, Any]]:
     """Build a 5/3/3/1 evidence, adjacent, trend, wildcard candidate pool."""
     objective_type = normalize_objective_type(objective_type)
+    rng = rng or random.Random()
     manual_seed = bool(str(seed_topic or "").strip())
     interpretation = interpretation or {}
     interpreted_topics = interpretation.get("topics") or {}
@@ -451,10 +460,23 @@ def build_candidate_pool(
                 "repeat_days": int(repeat_row["days"] or 0) if repeat_row else 0,
             })
 
-    discovery_bases = [str(seed_topic).strip()] if str(seed_topic or "").strip() else list(DEFAULT_TOPICS)
+    # A manual seed is an explicit instruction, so it is never shuffled. The
+    # auto-discovery list is: walking DEFAULT_TOPICS in fixed order made every
+    # unattended run start from the same first entries, so the channel kept
+    # revisiting the same few families.
+    if str(seed_topic or "").strip():
+        discovery_bases = [str(seed_topic).strip()]
+    else:
+        discovery_bases = list(DEFAULT_TOPICS)
+        rng.shuffle(discovery_bases)
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     attempt = 0
+    # One offset per mode, fixed for this whole build — see `_candidate_topic`.
+    angle_offsets = {
+        mode: rng.randrange(max(len(angles), 1))
+        for mode, angles in TOPIC_ANGLE_TEMPLATES.items()
+    }
     for candidate_source in source_targets:
         if len(candidates) >= candidate_count:
             break
@@ -493,7 +515,10 @@ def build_candidate_pool(
                 repeat_days = int(trend.get("repeat_days") or 0)
             else:
                 base = discovery_bases[index % len(discovery_bases)]
-                topic = _candidate_topic(base, mode, index, topics=topic_options)
+                topic = _candidate_topic(
+                    base, mode, index, topics=topic_options,
+                    offset=angle_offsets.get(mode, 0),
+                )
                 sources = ["channel_pattern"] if evidence_item else ["exploration"]
                 repeat_days = 0
             key = re.sub(r"\s+", "", topic).lower()
@@ -1150,6 +1175,20 @@ def exploration_target(job_id: str) -> str:
     return "wildcard"
 
 
+def job_rng(job_id: str) -> random.Random:
+    """Per-job RNG seeded from the job id, so runs vary but stay reproducible.
+
+    Topic building used to walk DEFAULT_TOPICS and the angle templates from
+    index 0 every time, so auto-discovered runs kept proposing the same handful
+    of topics. Randomizing that needs to stay auditable: seeding from job_id
+    (the same input `exploration_target` already hashes) means a given job
+    always rebuilds the identical pool, and selection stays a Python decision
+    rather than something Claude improvises.
+    """
+    seed = int(hashlib.sha256(str(job_id or "").encode("utf-8")).hexdigest()[:16], 16)
+    return random.Random(seed)
+
+
 def _percentile_of(scores: Sequence[float], percentile: float, default: float) -> tuple[float, int]:
     ordered = sorted(float(value) for value in scores if value is not None)
     if not ordered:
@@ -1195,6 +1234,49 @@ def _dynamic_confidence_threshold(
     """
     rows = conn.execute("SELECT confidence FROM planning_runs").fetchall()
     return _percentile_of([row[0] for row in rows], percentile, default)
+
+
+def select_within_band(
+    eligible: Sequence[Mapping[str, Any]],
+    rng: random.Random,
+    *,
+    band: float,
+    existing_titles: Sequence[str],
+    duplicate_threshold: float,
+    containment_cutoff: float = CONTAINMENT_CUTOFF_DEFAULT,
+) -> tuple[Mapping[str, Any], dict[str, Any]]:
+    """Pick at random among candidates statistically tied with the best one.
+
+    Always taking `eligible[0]` made the channel converge on one topic shape:
+    the scores inside the top band differ by less than the noise in a 15-sample
+    history, so treating a 0.4-point lead as a real winner is false precision.
+    Candidates are re-checked against existing titles here — the pool-build gate
+    already ran, but this path can now surface a lower-ranked candidate, and a
+    near-duplicate must never win on a coin flip. Returns the pick plus audit
+    fields. Falls back to the top candidate if the strict re-check empties the
+    band, because the run must keep moving.
+    """
+    if not eligible:
+        raise ValueError("eligible candidates must not be empty")
+    best_score = float(eligible[0]["judgment"]["adjusted_score"])
+    in_band = [
+        item for item in eligible
+        if best_score - float(item["judgment"]["adjusted_score"]) <= band
+    ]
+    fresh = [
+        item for item in in_band
+        if not _topic_duplicate_info(
+            str(item["candidate"]["topic"]), existing_titles, duplicate_threshold,
+            containment_cutoff=containment_cutoff,
+        )["blocked"]
+    ]
+    pool = fresh or [eligible[0]]
+    return rng.choice(pool), {
+        "selection_band": round(float(band), 4),
+        "selection_band_size": len(in_band),
+        "selection_pool_size": len(pool),
+        "selection_duplicate_filtered": len(in_band) - len(fresh),
+    }
 
 
 def judge_candidate(
@@ -1420,10 +1502,13 @@ def plan_objective_topic(
                 )
 
         rejected_duplicates: list[dict[str, Any]] = []
+        # Seeded from job_id so the pool and the final pick vary between runs but
+        # stay reproducible for a given job — see `job_rng`.
+        planning_rng = job_rng(job_id)
         candidates = build_candidate_pool(
             conn, objective_type=config.objective_type, seed_topic=seed_topic,
             trend_candidates=trend_candidates, rejected_duplicates=rejected_duplicates,
-            interpretation=interpretation,
+            interpretation=interpretation, rng=planning_rng,
         )
         duplicate_threshold = float(feedback.adaptive_topic_thresholds(
             conn, os.environ.get("YOUTUBE_FEEDBACK_STRICTNESS", "balanced")
@@ -1613,7 +1698,22 @@ def plan_objective_topic(
             })
         judged.sort(key=lambda item: item["judgment"]["adjusted_score"], reverse=True)
         eligible = [item for item in judged if item["judgment"]["decision"] != "rejected"]
-        selected = eligible[0] if eligible else judged[0]
+        if eligible:
+            selected, selection_audit = select_within_band(
+                eligible, planning_rng, band=settings.claude_selection_band,
+                existing_titles=_existing_titles(conn),
+                duplicate_threshold=duplicate_threshold,
+                containment_cutoff=(
+                    CONTAINMENT_CUTOFF_MANUAL_SEED if str(seed_topic or "").strip()
+                    else CONTAINMENT_CUTOFF_DEFAULT
+                ),
+            )
+        else:
+            selected, selection_audit = judged[0], {
+                "selection_band": round(float(settings.claude_selection_band), 4),
+                "selection_band_size": 0, "selection_pool_size": 0,
+                "selection_duplicate_filtered": 0,
+            }
         # Planner/Critic AI failure already falls back to deterministic scoring
         # (_default_planner_item + a neutral "medium risk" critic inside
         # judge_candidate), so it must not be forced to manual_review on top of
@@ -1660,6 +1760,7 @@ def plan_objective_topic(
             "confidence_threshold": round(confidence_threshold, 6),
             "confidence_threshold_percentile": settings.claude_confidence_percentile,
             "confidence_threshold_sample_count": confidence_threshold_sample_count,
+            **selection_audit,
             "candidate_count": len(candidates) if not no_unique_candidates else 0,
             "planner_candidate_count": len(planner_candidates) if preflight_passed else 0,
             "format_hook_skipped": len(planner_output.get("skipped_candidates") or []),

@@ -48,9 +48,7 @@ def load_json(path: Path, default: Any = None) -> Any:
 def build_description(video_meta: dict[str, Any]) -> str:
     template = (ASSETS_DIR / "description_template.txt").read_text(encoding="utf-8")
     template = template.replace("{{TOPIC_HASHTAGS}}", str(video_meta.get("hashtags") or ""))
-    summary = str(video_meta.get("summary") or "").strip()
-    summary_block = f"영상 요약\n{summary}\n\n" if summary else ""
-    return f"{video_meta.get('description', '')}\n\n{summary_block}{template}"
+    return f"{video_meta.get('description', '')}\n\n{template}"
 
 
 def upload_video(video_path: Path, video_meta: dict[str, Any]) -> dict[str, Any]:

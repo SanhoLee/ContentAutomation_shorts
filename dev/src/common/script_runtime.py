@@ -104,6 +104,7 @@ class ScriptRuntimeSettings:
     claude_interpreter_max_tokens: int
     claude_selection_percentile: float
     claude_confidence_percentile: float
+    claude_selection_band: float
     claude_job_budget_usd: float
     claude_daily_budget_usd: float
     claude_max_web_searches_per_job: int
@@ -178,6 +179,11 @@ def load_runtime_settings():
         # has actually produced instead. See "동적 결정 임계값" in
         # docs/design/objective-driven-content-planner.md.
         claude_confidence_percentile=env_float("CLAUDE_CONFIDENCE_PERCENTILE", 0.5),
+        # adjusted_score points below the best candidate that still count as a
+        # statistical tie. Candidates inside the band are picked at random so
+        # unattended runs stop converging on one topic shape — see
+        # objective_planner.select_within_band. 0 restores strict top-1.
+        claude_selection_band=env_float("CLAUDE_SELECTION_BAND", 6.0),
         claude_job_budget_usd=env_float("CLAUDE_JOB_BUDGET_USD", 0.30),
         claude_daily_budget_usd=env_float("CLAUDE_DAILY_BUDGET_USD", 1.00),
         claude_max_web_searches_per_job=env_int("CLAUDE_MAX_WEB_SEARCHES_PER_JOB", 4),

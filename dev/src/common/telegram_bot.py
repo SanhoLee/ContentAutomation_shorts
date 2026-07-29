@@ -489,7 +489,6 @@ def send_upload_meta(chat_id, job_id):
     text = (
         "YouTube 업로드 메타데이터 확인 단계입니다.\n"
         f"제목: {meta.get('title', '')}\n\n"
-        f"요약: {meta.get('summary', '')}\n\n"
         f"해시태그: {meta.get('hashtags', '')}\n\n"
         f"설명:\n{meta.get('description', '')}\n\n"
         "승인하면 비공개 영상으로 업로드합니다."

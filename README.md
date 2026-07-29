@@ -405,6 +405,21 @@ python 0_script.py "다음 주제"
 | `WEB_RESEARCH_MAX_TOKENS` | `900` | web_search 요약 응답 토큰 상한 |
 | `WEB_RESEARCH_MAX_TOOL_TURNS` | `2` | web_search 보조 호출 루프 상한 |
 
+### B-roll 수집
+
+`3_broll.py` / `broll_policy.py`가 Pexels 결과를 고를 때 쓰는 값입니다. 스톡 영상은 기본적으로 잔잔하게 촬영돼 빠른 Shorts 내레이션 아래에서는 늘어져 보이므로, 재생 속도를 살짝 올리고 정지에 가까운 롱테이크보다 실제 움직임이 있는 짧은 클립을 우선합니다.
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `BROLL_PLAYBACK_SPEED` | `1.18` | 정규화 시 적용할 재생 속도 배율. `1.0`이면 속도 보정 없음. 출력 길이는 `-t`로 고정되므로 장면 타이밍/자막 싱크에는 영향이 없음 |
+| `BROLL_IDEAL_SOURCE_DURATION` | `12` | 이 길이 이하의 원본 클립에 보너스. 짧은 클립일수록 실제 동작이 담겨 있음 |
+| `BROLL_LONG_SOURCE_SECONDS` | `25` | 이보다 긴 원본 클립에 감점(최대 20점). 대부분 정적인 배경 영상 |
+| `BROLL_HISTORY_LIMIT` | `300` | 최근 사용한 클립 ID를 기억할 개수. `{data}/broll_usage.json`에 저장 |
+| `BROLL_CROSS_JOB_PENALTY` | `55` | 이전 job에서 이미 쓴 클립에 대한 감점. 하드 차단이 아니라 감점이므로 검색 결과가 빈약해도 렌더는 계속 진행됨 |
+| `BROLL_CONTENT_ASPECT` | `1080/1300` | 크롭 유지율 계산 기준 화면비 |
+| `BROLL_PORTRAIT_TARGET_RATIO` | `0.60` | 세로 클립 목표 비율 |
+| `BROLL_MAX_ORIENTATION_STREAK` | `2` | 같은 방향 클립이 연속될 수 있는 최대 횟수 |
+
 ### 자막
 
 | 변수 | 기본값 | 설명 |

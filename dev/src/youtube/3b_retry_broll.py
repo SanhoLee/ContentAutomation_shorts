@@ -3,19 +3,28 @@ import os
 import requests
 import subprocess
 
-from broll_policy import normalization_filter, select_video
+from broll_policy import (
+    load_recent_video_ids,
+    normalization_filter,
+    record_used_video_ids,
+    select_video,
+)
 
 WORK_DIR = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
 TEMP_DIR = os.path.join(WORK_DIR, "broll_parts")
 PEXELS_API_KEY = os.environ["PEXELS_API_KEY"]
 headers = {"Authorization": PEXELS_API_KEY}
 FADE_DURATION = 0.3
+recent_video_ids = load_recent_video_ids()
 
 
 def fetch_clip(query, save_path, used_video_ids, orientation_history, min_duration):
     res = requests.get("https://api.pexels.com/videos/search", headers=headers, params={"query": query, "per_page": 40}, timeout=30)
     res.raise_for_status()
-    selected = select_video(res.json().get("videos", []), min_duration, used_video_ids, orientation_history)
+    selected = select_video(
+        res.json().get("videos", []), min_duration, used_video_ids, orientation_history,
+        recent_video_ids=recent_video_ids,
+    )
     if not selected:
         return None
     video, target = selected["video"], selected["file"]
@@ -63,6 +72,7 @@ for result in failed:
 
 with open(os.path.join(WORK_DIR, "broll_status.json"), "w", encoding="utf-8") as f:
     json.dump(results, f, ensure_ascii=False, indent=2)
+record_used_video_ids([r.get("video_id") for r in results if r.get("video_id")])
 normalized_paths = [os.path.join(TEMP_DIR, f"part_{r['index']:02d}.mp4") for r in results if r["status"] != "failed"]
 concat_list_path = os.path.join(TEMP_DIR, "concat_list.txt")
 with open(concat_list_path, "w", encoding="utf-8") as f:

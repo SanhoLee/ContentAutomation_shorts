@@ -1,20 +1,44 @@
 import json
 import os
+import random
 import requests
 import subprocess
 
-from broll_policy import normalization_filter, select_video
+from broll_policy import (
+    load_recent_video_ids,
+    normalization_filter,
+    record_used_video_ids,
+    select_video,
+)
 
 WORK_DIR = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
 TEMP_DIR = os.path.join(WORK_DIR, "broll_parts")
 PEXELS_API_KEY = os.environ["PEXELS_API_KEY"]
 FADE_DURATION = 0.3
-FALLBACK_QUERY = "calm nature peaceful background"
+# A single fixed fallback made every failed scene across every video pull from
+# the same result page. Rotate over generic, motion-carrying queries instead.
+FALLBACK_QUERIES = (
+    "senior couple walking outdoors",
+    "woman cooking healthy kitchen",
+    "elderly people talking together",
+    "morning routine sunlight home",
+    "person stretching living room",
+    "walking city street daytime",
+    "hands preparing food table",
+    "family gathering meal home",
+)
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 headers = {"Authorization": PEXELS_API_KEY}
 used_video_ids = set()
 orientation_history = []
+recent_video_ids = load_recent_video_ids()
+fallback_pool = list(FALLBACK_QUERIES)
+random.shuffle(fallback_pool)
+
+
+def next_fallback_query(index):
+    return fallback_pool[index % len(fallback_pool)]
 
 
 def fetch_clip(query, save_path, min_duration):
@@ -25,7 +49,10 @@ def fetch_clip(query, save_path, min_duration):
         timeout=30,
     )
     res.raise_for_status()
-    selected = select_video(res.json().get("videos", []), min_duration, used_video_ids, orientation_history)
+    selected = select_video(
+        res.json().get("videos", []), min_duration, used_video_ids, orientation_history,
+        recent_video_ids=recent_video_ids,
+    )
     if not selected:
         return None
 
@@ -64,7 +91,7 @@ def process_scene(i, scene):
     out_path = os.path.join(TEMP_DIR, f"part_{i:02d}.mp4")
     duration = scene.get("render_duration", scene["duration"])
     query = scene["visual_query"]
-    for status, candidate_query in (("ok", query), ("fallback", FALLBACK_QUERY)):
+    for status, candidate_query in (("ok", query), ("fallback", next_fallback_query(i))):
         clip_info = fetch_clip(candidate_query, raw_path, duration)
         if clip_info:
             try:
@@ -86,6 +113,7 @@ for i, scene in enumerate(scenes):
 
 with open(os.path.join(WORK_DIR, "broll_status.json"), "w", encoding="utf-8") as f:
     json.dump(results, f, ensure_ascii=False, indent=2)
+record_used_video_ids([r.get("video_id") for r in results if r.get("video_id")])
 
 failed = [r for r in results if r["status"] == "failed"]
 print("\n===== 요약 =====")

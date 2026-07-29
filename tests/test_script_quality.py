@@ -63,7 +63,6 @@ def comparison_strategy(evidence_status="sufficient", targets=None):
 def complete_result():
     return {
         "title": "소주와 맥주 선택 기준",
-        "summary": "조건별로 덜 해로운 선택 기준을 설명합니다.",
         "description": "소주와 맥주의 차이를 차분히 설명합니다.",
         "final_answer": "소주와 맥주는 모두 줄이는 것이 우선이고, 혈당과 수면이 걱정되면 양과 빈도를 기준으로 선택해야 합니다.",
         "promise_fulfilled": True,

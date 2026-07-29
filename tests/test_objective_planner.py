@@ -1,4 +1,5 @@
 import os
+import random
 import sys
 import tempfile
 import unittest
@@ -306,6 +307,89 @@ class ObjectivePlannerTests(unittest.TestCase):
             confidence_threshold=0.25,
         )
         self.assertEqual(lowered_gate["decision"], "rejected")
+
+    def test_job_rng_is_reproducible_per_job_and_differs_across_jobs(self):
+        self.assertEqual(
+            objective_planner.job_rng("job_a").random(),
+            objective_planner.job_rng("job_a").random(),
+        )
+        self.assertNotEqual(
+            objective_planner.job_rng("job_a").random(),
+            objective_planner.job_rng("job_b").random(),
+        )
+
+    def _pool_topics(self, db_path, job_id):
+        conn = objective_planner.feedback.connect(db_path)
+        try:
+            return [
+                item["topic"] for item in objective_planner.build_candidate_pool(
+                    conn, objective_type="reach", rng=objective_planner.job_rng(job_id),
+                )
+            ]
+        finally:
+            conn.close()
+
+    def test_auto_discovery_pool_varies_by_job_but_repeats_for_the_same_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "feedback.db"
+            first = self._pool_topics(db_path, "goal_20260729_000001")
+            again = self._pool_topics(db_path, "goal_20260729_000001")
+            other = self._pool_topics(db_path, "goal_20260729_999999")
+
+        self.assertTrue(first)
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+
+    def _banded(self, topic, score, candidate_id="cand_01"):
+        return {
+            "candidate": {"candidate_id": candidate_id, "topic": topic},
+            "judgment": {"adjusted_score": score},
+        }
+
+    def test_band_selection_can_pick_a_runner_up_within_the_band(self):
+        eligible = [self._banded("주제 A", 50.0, "cand_01"), self._banded("주제 B", 47.0, "cand_02")]
+        picks = {
+            objective_planner.select_within_band(
+                eligible, random.Random(seed), band=6.0,
+                existing_titles=[], duplicate_threshold=0.25,
+            )[0]["candidate"]["candidate_id"]
+            for seed in range(20)
+        }
+        self.assertEqual(picks, {"cand_01", "cand_02"})
+
+    def test_zero_band_keeps_strict_top_one_selection(self):
+        eligible = [self._banded("주제 A", 50.0, "cand_01"), self._banded("주제 B", 47.0, "cand_02")]
+        for seed in range(10):
+            selected, audit = objective_planner.select_within_band(
+                eligible, random.Random(seed), band=0.0,
+                existing_titles=[], duplicate_threshold=0.25,
+            )
+            self.assertEqual(selected["candidate"]["candidate_id"], "cand_01")
+            self.assertEqual(audit["selection_band_size"], 1)
+
+    def test_band_selection_never_picks_a_near_duplicate_of_an_existing_title(self):
+        existing = "냉동 블루베리 안토시아닌, 신선한 것보다 좋다"
+        eligible = [
+            self._banded("전혀 다른 새 주제 후보", 50.0, "cand_01"),
+            self._banded(existing, 49.5, "cand_02"),
+        ]
+        for seed in range(20):
+            selected, audit = objective_planner.select_within_band(
+                eligible, random.Random(seed), band=6.0,
+                existing_titles=[existing], duplicate_threshold=0.25,
+            )
+            self.assertEqual(selected["candidate"]["candidate_id"], "cand_01")
+            self.assertEqual(audit["selection_duplicate_filtered"], 1)
+
+    def test_band_selection_falls_back_to_top_when_every_candidate_is_duplicate(self):
+        existing = "냉동 블루베리 안토시아닌, 신선한 것보다 좋다"
+        eligible = [self._banded(existing, 50.0, "cand_01")]
+        selected, audit = objective_planner.select_within_band(
+            eligible, random.Random(0), band=6.0,
+            existing_titles=[existing], duplicate_threshold=0.25,
+        )
+        self.assertEqual(selected["candidate"]["candidate_id"], "cand_01")
+        self.assertEqual(audit["selection_pool_size"], 1)
 
     def test_manual_planning_history_is_part_of_duplicate_history(self):
         with tempfile.TemporaryDirectory() as tmp:

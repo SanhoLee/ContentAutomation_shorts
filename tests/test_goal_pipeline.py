@@ -40,7 +40,7 @@ class GoalPipelineTests(unittest.TestCase):
         self.assertIn("공감 → 점검 → 안심 → 행동", prompt)
 
         result = {
-            "title": "잠이 끊기는 이유", "hook_type": "반전형", "summary": "요약",
+            "title": "잠이 끊기는 이유", "hook_type": "반전형",
             "hashtags": "#수면", "description": "설명", "final_answer": "수면 신호를 살펴보세요.",
             "promise_fulfilled": True, "evidence_limit": "개인차", "thumbnail_text": ["수면 신호"],
             "frame_header": {"title": "수면신호", "subtitle": "잠이 끊기는 이유"},

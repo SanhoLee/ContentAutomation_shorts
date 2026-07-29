@@ -212,6 +212,18 @@ adjusted_score = base_score - duplicate - critic_risk - stale_strategy + explora
 
 **TODO(표본이 늘어나면 재검토):** `decision_threshold`와 마찬가지로 표본이 50~100건 이상 쌓이면 `CLAUDE_CONFIDENCE_PERCENTILE` 상향을 재검토한다.
 
+### 재현 가능한 난수(주제 다양성)
+
+후보 생성과 최종 선정은 원래 완전 결정론적이었다. `DEFAULT_TOPICS`와 각 모드의 앵글 템플릿을 항상 index 0부터 순서대로 걷고, 최종 선정도 항상 `eligible[0]`(최고점 1건)이었다. 그래서 씨드 없는 자동 실행은 매번 같은 몇 개 주제군으로 수렴했다.
+
+세 지점에 난수를 넣되, **`job_id`로 시드한 RNG**(`job_rng()`)를 쓴다. `exploration_target()`이 이미 `job_id`를 해시하는 것과 같은 입력이라, job이 정해지면 후보 풀과 최종 선정이 항상 동일하게 재현된다. 즉 선정은 여전히 Python이 결정하며(Claude가 즉흥적으로 고르지 않음) 감사도 가능하다.
+
+1. `DEFAULT_TOPICS` 셔플 — 자동 탐색 시작점을 매 job마다 회전. 수동 씨드는 명시적 지시이므로 셔플하지 않는다.
+2. 앵글 템플릿 오프셋 — 모드별로 **build 1회당 고정된** 오프셋을 뽑아 회전시킨다. 호출마다 새로 뽑으면 index와 충돌해 후보가 굶는다.
+3. 최종 선정(`select_within_band`) — 최고점에서 `CLAUDE_SELECTION_BAND`(기본 6.0점) 이내는 통계적 동점으로 보고 그 안에서 무작위 선택. 표본 15건 수준에서 0.4점 차이를 진짜 우열로 취급하는 것은 과잉 정밀이다. `0`으로 두면 기존 top-1 동작으로 되돌아간다.
+
+**중복은 오히려 더 엄격해진다.** 풀 생성 시 중복 게이트를 이미 통과했더라도, 밴드 선택은 하위 후보를 끌어올릴 수 있으므로 `select_within_band`가 선정 직전에 기존 제목 대비 중복을 한 번 더 검사해 걸린 후보를 밴드에서 제외한다. 밴드가 전부 걸리면 최고점 후보로 폴백한다(운영 중단 방지). 관련 수치는 `topic_plan.json`의 `planning.selection_band` / `selection_band_size` / `selection_pool_size` / `selection_duplicate_filtered`에 기록된다.
+
 ## 연구·모델·비용
 
 기본 설정:
@@ -227,6 +239,7 @@ CLAUDE_AUDIT_MAX_TOKENS=1600
 CLAUDE_INTERPRETER_MAX_TOKENS=900
 CLAUDE_SELECTION_PERCENTILE=0.5
 CLAUDE_CONFIDENCE_PERCENTILE=0.5
+CLAUDE_SELECTION_BAND=6.0
 CLAUDE_JOB_BUDGET_USD=0.30
 CLAUDE_DAILY_BUDGET_USD=1.00
 CLAUDE_MAX_WEB_SEARCHES_PER_JOB=4

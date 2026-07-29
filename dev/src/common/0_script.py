@@ -1337,8 +1337,14 @@ main_keyword       : {main_keyword}
 4. TTS 발음 최적화(매우 중요):
    - %, ~, 화살표 등 모든 기호는 한글 문장으로 완벽히 풀어 쓰세요. (예: 30% -> 30퍼센트, 3~5배 -> 3에서 5배)
    - 숫자 뒤의 단위는 공백 없이 붙여 쓰세요. 영어 약어(LDL, DNA 등)는 그대로 유지합니다.
-5. visual_query: 50대 이상 시청자가 보았을 때 마음이 편안해지는 따뜻한 일상 장면을 영어 키워드 2~4개로 묘사하세요. (차가운 병원, MRI, 주사기 등 공포감을 주는 이미지 절대 금지)
-   - 예: "senior peaceful sleep morning light", "elderly couple walking park sunrise"
+5. visual_query: 스톡 영상 검색어입니다. 장면 내용을 그대로 번역하지 말고, 스톡 사이트에 실제로 영상이 많이 존재하는 **일반적인 검색어**로 쓰세요. 영어 키워드 3~4개.
+   - 구성 규칙: 일반 키워드 2~3개 + 이 영상 주제와 연결되는 키워드 1개(최대 2개). 주제 키워드를 3개 이상 넣으면 검색 결과가 거의 없어 매번 같은 영상만 나옵니다.
+   - 움직임이 있는 장면을 우선하세요. 정지된 풍경·잔잔한 배경 대신 사람이 실제로 움직이는 동작(걷기, 요리, 스트레칭, 대화, 물 따르기, 시장 걷기 등)을 넣으세요.
+   - 움직임 키워드 예: walking, cooking, stretching, talking, pouring, exercising, gardening, laughing, commuting
+   - 장면마다 서로 다른 동작·장소를 쓰세요. 같은 검색어나 거의 같은 조합을 두 장면 이상에서 반복하지 마세요.
+   - 차가운 병원, MRI, 주사기 등 공포감을 주는 이미지는 절대 금지입니다.
+   - 좋은 예: "senior couple walking outdoors morning", "woman cooking kitchen healthy", "elderly man stretching living room"
+   - 나쁜 예: "deep sleep brain memory decline neuron"(주제어만 나열 → 검색 결과 없음), "calm peaceful background"(움직임 없음)
 6. frame_header: 상단에 들어갈 2줄 훅. 영상 전체 훅 강도와 통일감을 갖도록 강하게 쓰세요.
    - title(대제목): 공백 포함 4~10자 권장. 무난한 명사형 나열 대신 임팩트 있는 단정형·경고형·지목형 어구를 우선하세요.
      예: "이거 하셨다면", "몰랐다면 위험", "매일 이러셨죠" (단, 근거 없는 질병 확정 표현은 금지)
@@ -1355,7 +1361,6 @@ main_keyword       : {main_keyword}
   "hook_type": "{hook_type}",
   "main_keyword": "{main_keyword}",
   "search_title_format": "{search_format}",
-  "summary": "요약 텍스트",
   "hashtags": "#태그1 #태그2 #태그3",
   "thumbnail_text": ["썸네일 문구 1", "썸네일 문구 2"],
   "frame_header": {{"title": "대제목", "subtitle": "소제목"}},
@@ -1522,7 +1527,7 @@ def trim_scenes(scenes):
 def script_text(result):
     scenes = result.get("scenes") or []
     scene_text = "\n".join(str(scene.get("text", "")) for scene in scenes if isinstance(scene, dict))
-    fields = [result.get("title", ""), result.get("summary", ""), result.get("description", ""), result.get("final_answer", ""), result.get("evidence_limit", "")]
+    fields = [result.get("title", ""), result.get("description", ""), result.get("final_answer", ""), result.get("evidence_limit", "")]
     return "\n".join(str(item) for item in fields if item) + "\n" + scene_text
 
 
@@ -1658,7 +1663,6 @@ def write_outputs(result, strategy, trend_context=None):
         "core_message":        strategy.get("core_message", ""),
         "title":               result.get("title", strategy.get("title", "")),
         "hook_type":           result.get("hook_type", strategy.get("hook_type", "")),
-        "summary":             result.get("summary", ""),
         "hashtags":            result.get("hashtags", ""),
         "thumbnail_text":      thumbnail_items,
         "frame_header":        frame_header,

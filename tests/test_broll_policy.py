@@ -54,12 +54,24 @@ class BrollPolicyTests(unittest.TestCase):
         self.assertIn("force_original_aspect_ratio=decrease", value)
         self.assertIn("boxblur", value)
 
-    def test_normalization_filter_speeds_up_playback_before_scaling(self):
-        value = policy.normalization_filter("cover", 5, speed=1.2)
-        self.assertTrue(value.startswith("setpts=PTS/1.2"))
-        # A speed of exactly 1.0 must not emit a no-op filter.
-        self.assertNotIn("setpts", policy.normalization_filter("cover", 5, speed=1.0))
-        self.assertTrue(policy.normalization_filter("blur-contain", 5, speed=1.2).startswith("setpts="))
+    def test_normalization_never_retimes_the_clip(self):
+        # Liveliness must come from the source footage, not from re-timing it.
+        for mode in ("cover", "blur-contain"):
+            self.assertNotIn("setpts", policy.normalization_filter(mode, 5))
+
+    def test_slow_motion_clip_loses_to_a_normal_speed_one(self):
+        normal = video(1, 1080, 1920)
+        slowmo = video(2, 1080, 1920)
+        slowmo["url"] = "https://www.pexels.com/video/slow-motion-of-a-woman-walking-12345/"
+        normal["url"] = "https://www.pexels.com/video/a-woman-walking-on-the-street-67890/"
+        selected = policy.select_video([slowmo, normal], 5, set(), [], random.Random(1))
+        self.assertEqual(selected["video"]["id"], 1)
+
+    def test_slow_motion_detection_reads_the_pexels_slug(self):
+        self.assertTrue(policy.is_slow_motion({"url": "https://www.pexels.com/video/slow-motion-run-1/"}))
+        self.assertTrue(policy.is_slow_motion({"url": "https://www.pexels.com/video/time-lapse-city-2/"}))
+        self.assertFalse(policy.is_slow_motion({"url": "https://www.pexels.com/video/woman-cooking-3/"}))
+        self.assertFalse(policy.is_slow_motion({}))
 
     def test_clip_used_by_a_previous_job_loses_to_a_fresh_one(self):
         videos = [video(1, 1080, 1920), video(2, 1080, 1920)]
@@ -73,15 +85,17 @@ class BrollPolicyTests(unittest.TestCase):
         selected = policy.select_video(videos, 5, set(), [], random.Random(1))
         self.assertEqual(selected["video"]["id"], 2)
 
-    def test_higher_fps_rendition_is_preferred_for_smooth_speedup(self):
+    def test_rendition_choice_ignores_fps_and_tracks_resolution(self):
+        # Pexels serves every rendition of a video at the same fps, so fps must
+        # not sway this pick; a 60fps low-res file is still the wrong file.
         candidate = {
             "id": 1, "duration": 10,
             "video_files": [
-                {"width": 1080, "height": 1920, "fps": 24, "link": "https://example/24.mp4"},
-                {"width": 1080, "height": 1920, "fps": 60, "link": "https://example/60.mp4"},
+                {"width": 1280, "height": 720, "fps": 24, "link": "https://example/hd.mp4"},
+                {"width": 426, "height": 240, "fps": 60, "link": "https://example/tiny.mp4"},
             ],
         }
-        self.assertEqual(policy.choose_video_file(candidate)["fps"], 60)
+        self.assertEqual(policy.choose_video_file(candidate)["link"], "https://example/hd.mp4")
 
     def test_history_round_trips_and_keeps_newest_first_within_limit(self):
         with tempfile.TemporaryDirectory() as tmp:

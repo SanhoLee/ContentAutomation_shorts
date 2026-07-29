@@ -1339,8 +1339,9 @@ main_keyword       : {main_keyword}
    - 숫자 뒤의 단위는 공백 없이 붙여 쓰세요. 영어 약어(LDL, DNA 등)는 그대로 유지합니다.
 5. visual_query: 스톡 영상 검색어입니다. 장면 내용을 그대로 번역하지 말고, 스톡 사이트에 실제로 영상이 많이 존재하는 **일반적인 검색어**로 쓰세요. 영어 키워드 3~4개.
    - 구성 규칙: 일반 키워드 2~3개 + 이 영상 주제와 연결되는 키워드 1개(최대 2개). 주제 키워드를 3개 이상 넣으면 검색 결과가 거의 없어 매번 같은 영상만 나옵니다.
-   - 움직임이 있는 장면을 우선하세요. 정지된 풍경·잔잔한 배경 대신 사람이 실제로 움직이는 동작(걷기, 요리, 스트레칭, 대화, 물 따르기, 시장 걷기 등)을 넣으세요.
+   - 반드시 사람이 실제 속도로 움직이는 장면을 고르세요. 정지된 풍경, 잔잔한 배경, 슬로우모션·타임랩스로 촬영된 영상은 화면이 늘어져 보입니다.
    - 움직임 키워드 예: walking, cooking, stretching, talking, pouring, exercising, gardening, laughing, commuting
+   - "slow motion", "timelapse", "cinematic", "aerial", "drone", "calm", "peaceful", "serene", "background" 같은 단어는 넣지 마세요. 이런 단어는 느리고 정적인 영상만 검색됩니다.
    - 장면마다 서로 다른 동작·장소를 쓰세요. 같은 검색어나 거의 같은 조합을 두 장면 이상에서 반복하지 마세요.
    - 차가운 병원, MRI, 주사기 등 공포감을 주는 이미지는 절대 금지입니다.
    - 좋은 예: "senior couple walking outdoors morning", "woman cooking kitchen healthy", "elderly man stretching living room"

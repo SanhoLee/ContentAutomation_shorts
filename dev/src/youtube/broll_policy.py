@@ -9,10 +9,10 @@ TARGET_ASPECT = float(os.environ.get("BROLL_CONTENT_ASPECT", str(1080 / 1300)))
 PORTRAIT_TARGET_RATIO = float(os.environ.get("BROLL_PORTRAIT_TARGET_RATIO", "0.60"))
 MAX_ORIENTATION_STREAK = int(os.environ.get("BROLL_MAX_ORIENTATION_STREAK", "2"))
 
-# Playback speed applied during normalization. Stock B-roll is shot to feel
-# calm, which reads as sluggish under fast Shorts narration; a mild speed-up
-# restores energy without looking like a comedy fast-forward.
-PLAYBACK_SPEED = float(os.environ.get("BROLL_PLAYBACK_SPEED", "1.18"))
+# Clips Pexels itself labels as slow motion. Nothing downstream can rescue
+# these: the footage is already time-stretched at the source, so speeding it
+# back up just looks artificial. Drop them and pick a normal-speed clip.
+SLOW_MOTION_MARKERS = ("slow-motion", "slow-mo", "slowmotion", "slomo", "timelapse", "time-lapse")
 # Source clips much longer than a Shorts scene are almost always slow ambient
 # footage (drifting clouds, static interiors). Shorter clips carry real motion.
 IDEAL_SOURCE_DURATION = float(os.environ.get("BROLL_IDEAL_SOURCE_DURATION", "12"))
@@ -21,6 +21,13 @@ LONG_SOURCE_PENALTY_START = float(os.environ.get("BROLL_LONG_SOURCE_SECONDS", "2
 # every video redraws from the same handful of top-ranked Pexels results.
 HISTORY_LIMIT = int(os.environ.get("BROLL_HISTORY_LIMIT", "300"))
 CROSS_JOB_REUSE_PENALTY = float(os.environ.get("BROLL_CROSS_JOB_PENALTY", "55"))
+SLOW_MOTION_PENALTY = float(os.environ.get("BROLL_SLOW_MOTION_PENALTY", "80"))
+
+
+def is_slow_motion(video):
+    """Pexels describes each clip in its page URL slug; tags come back empty."""
+    haystack = str(video.get("url") or "").lower()
+    return any(marker in haystack for marker in SLOW_MOTION_MARKERS)
 
 
 def _default_history_path():
@@ -89,9 +96,11 @@ def choose_video_file(video):
         quality = min(short_edge / 720.0, 1.0) * 20
         # Prefer useful HD files without downloading unnecessarily huge masters.
         pixel_distance = abs(math.log(max(width * height, 1) / (1280 * 720)))
-        # A 24fps master judders once sped up; 30/60fps renditions stay smooth.
-        smoothness = min(float(item.get("fps") or 0) / 30.0, 2.0) * 3
-        return quality - pixel_distance + smoothness
+        # Deliberately no fps term: Pexels serves every rendition of a video at
+        # the same fps, so it cannot separate renditions, and across videos a
+        # high fps mostly flags slow-motion source footage — the opposite of
+        # what we want. Motion is judged in `score_candidate` instead.
+        return quality - pixel_distance
 
     return max(files, key=file_score)
 
@@ -123,7 +132,8 @@ def score_candidate(
         score -= min((duration - LONG_SOURCE_PENALTY_START) * 0.8, 20)
     elif float(min_duration) <= duration <= IDEAL_SOURCE_DURATION:
         score += 10
-    score += min(float(file_info.get("fps") or 0) / 30.0, 2.0) * 6
+    if is_slow_motion(video):
+        score -= SLOW_MOTION_PENALTY
 
     portrait_ratio = _portrait_ratio(orientation_history)
     if kind == "portrait":
@@ -175,19 +185,20 @@ def select_video(
     }
 
 
-def normalization_filter(fit_mode, duration, fade_duration=0.3, speed=None):
+def normalization_filter(fit_mode, duration, fade_duration=0.3):
+    """Clips play at native speed on purpose.
+
+    Liveliness has to come from the footage itself (see `score_candidate` and
+    the visual_query prompt rules). Re-timing it here — speeding up slow clips
+    or slowing fast ones — reads as an effect rather than as natural movement.
+    """
     fade_out_start = max(float(duration) - fade_duration, 0)
     fades = f"fade=t=in:st=0:d={fade_duration},fade=t=out:st={fade_out_start}:d={fade_duration}"
-    # setpts runs first so the speed-up applies to source timing; the caller's
-    # `-t duration` still fixes output length (the input is stream-looped), and
-    # the fades stay anchored to output time.
-    speed = PLAYBACK_SPEED if speed is None else float(speed)
-    pace = f"setpts=PTS/{speed:.4f}," if speed and abs(speed - 1.0) > 1e-3 else ""
     if fit_mode == "blur-contain":
         return (
-            f"{pace}split=2[bga][fga];"
+            "split=2[bga][fga];"
             "[bga]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:1[bg];"
             "[fga]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30,{fades}"
         )
-    return f"{pace}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,{fades}"
+    return f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,{fades}"

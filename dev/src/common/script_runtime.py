@@ -73,6 +73,42 @@ def script_length_targets(target_duration_sec, script_density):
 
 
 @dataclass(frozen=True)
+class StageGuardSettings:
+    """Tolerances for the deterministic between-stage checks (stage_guard.py).
+
+    Kept in this module for the same reason every other runtime knob is:
+    scattered os.environ parsing has regressed before (see KNOWN_ISSUES.md).
+    Loaded separately from ScriptRuntimeSettings so a guard check does not
+    have to parse the entire Claude/research configuration to run.
+    """
+    target_duration_sec: int
+    # voice.wav length must land within these multiples of the target duration.
+    # Wide by design: the guard exists to catch TTS that produced silence or
+    # ran away, not to second-guess normal pacing variation.
+    tts_min_ratio: float
+    tts_max_ratio: float
+    # Caption timings may overrun the audio slightly (trailing cue padding);
+    # far beyond that means alignment drifted.
+    caption_max_overrun_sec: float
+    # Fraction of scenes allowed to have no B-roll clip before the stage is
+    # considered failed.  Some misses are normal and get a filler treatment.
+    broll_max_failed_ratio: float
+    # Rendered video length vs. voice length, as a tolerance in seconds.
+    render_duration_tolerance_sec: float
+
+
+def load_guard_settings():
+    return StageGuardSettings(
+        target_duration_sec=env_int("TARGET_DURATION_SEC", 60),
+        tts_min_ratio=env_float("GUARD_TTS_MIN_RATIO", 0.5),
+        tts_max_ratio=env_float("GUARD_TTS_MAX_RATIO", 1.8),
+        caption_max_overrun_sec=env_float("GUARD_CAPTION_MAX_OVERRUN_SEC", 3.0),
+        broll_max_failed_ratio=env_float("GUARD_BROLL_MAX_FAILED_RATIO", 0.3),
+        render_duration_tolerance_sec=env_float("GUARD_RENDER_TOLERANCE_SEC", 5.0),
+    )
+
+
+@dataclass(frozen=True)
 class ScriptRuntimeSettings:
     work_dir: str
     speech_pace: str

@@ -524,6 +524,17 @@ class SlackBotTests(unittest.TestCase):
             "await_script_approval", "await_tts_approval", "await_caption_approval",
             "await_broll_approval", "await_render_config",
         }
+        # This test is about which stages run, not about the stage checks --
+        # those have their own coverage in test_stage_guard.py, and the fake
+        # job directories here hold no artifacts for them to inspect.
+        real_check = slack_bot.pipeline_flow.stage_guard.check
+        slack_bot.pipeline_flow.stage_guard.check = lambda *a, **k: (True, "")
+        try:
+            self._assert_auto_finish_resumes(expected_commands, render_stages)
+        finally:
+            slack_bot.pipeline_flow.stage_guard.check = real_check
+
+    def _assert_auto_finish_resumes(self, expected_commands, render_stages):
         for module in (slack_bot, prod_slack_bot):
             for stage in module.WORKFLOW_STAGES:
                 commands, renders = [], []

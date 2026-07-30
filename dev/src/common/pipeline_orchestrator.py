@@ -14,68 +14,138 @@ them without needing a formal adapter class.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
+import job_state
+import pipeline_flow
 from script_runtime import speech_pace_profile
+# Single definition, shared by both bots and by the stage checks.
+from stage_guard import media_duration_seconds  # noqa: F401  (re-exported)
+
+# pipeline_flow gate -> the bot-facing stage token whose buttons handle it.
+# script_review deliberately reuses the existing script-approval stage so all
+# of its edit affordances (본문 수정 / 타이틀 수정) keep working unchanged.
+GATE_STAGES = {
+    "script_review": "await_script_approval",
+    "final_confirm": "await_final_confirm",
+}
+
+# Bot stage token -> the pipeline_flow stage that has finished by then.
+# "await_X_approval" means X produced its output and is waiting for a human,
+# so the flow's completed stage is X.  Lets an unattended run pick up from
+# wherever a gated run stopped.
+BOT_STAGE_TO_FLOW = {
+    "await_script_approval": "script",
+    "await_tts_approval": "tts",
+    "await_caption_approval": "caption",
+    "await_broll_approval": "broll",
+    "await_render_config": "broll",
+    "await_render_approval": "render",
+    "await_upload_meta_approval": "render",
+    "await_final_confirm": "render",
+}
+
+STAGE_PROGRESS_LABELS = {
+    "script": "스크립트 생성",
+    "tts": "TTS 음성 생성",
+    "caption": "자막 생성",
+    "broll": "B-roll 수집",
+    "render": "렌더링",
+    "upload": "YouTube 비공개 업로드",
+}
 
 
 def display_config_value(value):
     return str(value) if value not in (None, "") else "config"
 
 
+def preview_file(path, limit):
+    """First `limit` characters of a text artifact, for a chat preview."""
+    path = Path(path)
+    if not path.exists():
+        return "파일이 없습니다."
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if len(text) > limit:
+        return text[:limit] + "\n...(생략)"
+    return text
+
+
+def render_progress_ratio(progress_path, duration):
+    """How far ffmpeg has got, from the -progress file it writes, as 0..1."""
+    progress_path = Path(progress_path)
+    if not progress_path.exists() or not duration:
+        return None
+    try:
+        lines = progress_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    seconds = None
+    for line in lines:
+        if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
+            try:
+                seconds = int(line.split("=", 1)[1]) / 1_000_000
+            except ValueError:
+                pass
+        elif line.startswith("out_time="):
+            value = line.split("=", 1)[1]
+            try:
+                hours, minutes, rest = value.split(":")
+                seconds = int(hours) * 3600 + int(minutes) * 60 + float(rest)
+            except ValueError:
+                pass
+    if seconds is None:
+        return None
+    return max(0.0, min(seconds / duration, 1.0))
+
+
+# job key -> environment variable, for settings that pass through as text.
+# A table rather than forty near-identical `if` statements: adding a knob is
+# one line here, and it is obvious at a glance which keys are forwarded.
+_ENV_KEYS = {
+    "caption_font_size": "CAPTION_FONT_SIZE",
+    "caption_margin_v": "CAPTION_MARGIN_V",
+    "caption_margin_h": "CAPTION_MARGIN_H",
+    "caption_style": "CAPTION_STYLE",
+    "caption_offset_x": "CAPTION_OFFSET_X",
+    "caption_offset_y": "CAPTION_OFFSET_Y",
+    "frame_mode": "FRAME_MODE",
+    "broll_fit_mode": "BROLL_FIT_MODE",
+    "frame_top_preset": "FRAME_TOP_PRESET",
+    "frame_bottom_preset": "FRAME_BOTTOM_PRESET",
+    "frame_top_pct": "FRAME_TOP_PCT",
+    "frame_bottom_pct": "FRAME_BOTTOM_PCT",
+    "frame_bottom_channel_name": "FRAME_BOTTOM_CHANNEL_NAME",
+    "frame_header_text": "FRAME_HEADER_TEXT",
+    "tts_voice": "TTS_VOICE",
+    "youtube_feedback_strictness": "YOUTUBE_FEEDBACK_STRICTNESS",
+    "target_duration_sec": "TARGET_DURATION_SEC",
+    "claude_script_model": "CLAUDE_SCRIPT_MODEL",
+    "claude_research_model": "CLAUDE_RESEARCH_MODEL",
+    "claude_strategy_model": "CLAUDE_STRATEGY_MODEL",
+    "claude_query_model": "CLAUDE_QUERY_MODEL",
+}
+
+# Same idea, for the flags the shell scripts expect as "true"/"false".
+_ENV_BOOL_KEYS = {
+    "web_research": "ENABLE_WEB_RESEARCH",
+    "case_research": "ENABLE_CASE_RESEARCH",
+    "youtube_feedback_auto_sync": "YOUTUBE_FEEDBACK_AUTO_SYNC",
+}
+
+
 def build_extra_env(job):
     env = {}
-    if "caption_font_size" in job:
-        env["CAPTION_FONT_SIZE"] = str(job["caption_font_size"])
-    if "caption_margin_v" in job:
-        env["CAPTION_MARGIN_V"] = str(job["caption_margin_v"])
-    if "caption_margin_h" in job:
-        env["CAPTION_MARGIN_H"] = str(job["caption_margin_h"])
-    if "caption_style" in job:
-        env["CAPTION_STYLE"] = str(job["caption_style"])
-    if "caption_offset_x" in job:
-        env["CAPTION_OFFSET_X"] = str(job["caption_offset_x"])
-    if "caption_offset_y" in job:
-        env["CAPTION_OFFSET_Y"] = str(job["caption_offset_y"])
-    if "frame_mode" in job:
-        env["FRAME_MODE"] = str(job["frame_mode"])
-    if "broll_fit_mode" in job:
-        env["BROLL_FIT_MODE"] = str(job["broll_fit_mode"])
-    if "frame_top_preset" in job:
-        env["FRAME_TOP_PRESET"] = str(job["frame_top_preset"])
-    if "frame_bottom_preset" in job:
-        env["FRAME_BOTTOM_PRESET"] = str(job["frame_bottom_preset"])
-    if "frame_top_pct" in job:
-        env["FRAME_TOP_PCT"] = str(job["frame_top_pct"])
-    if "frame_bottom_pct" in job:
-        env["FRAME_BOTTOM_PCT"] = str(job["frame_bottom_pct"])
-    if "frame_bottom_channel_name" in job:
-        env["FRAME_BOTTOM_CHANNEL_NAME"] = str(job["frame_bottom_channel_name"])
-    if "frame_header_text" in job:
-        env["FRAME_HEADER_TEXT"] = str(job["frame_header_text"])
-    if "tts_voice" in job:
-        env["TTS_VOICE"] = str(job["tts_voice"])
-    if "web_research" in job:
-        env["ENABLE_WEB_RESEARCH"] = "true" if job.get("web_research") else "false"
-    if "case_research" in job:
-        env["ENABLE_CASE_RESEARCH"] = "true" if job.get("case_research") else "false"
-    if "youtube_feedback_strictness" in job:
-        env["YOUTUBE_FEEDBACK_STRICTNESS"] = str(job["youtube_feedback_strictness"])
-    if "youtube_feedback_auto_sync" in job:
-        env["YOUTUBE_FEEDBACK_AUTO_SYNC"] = "true" if job.get("youtube_feedback_auto_sync") else "false"
+    for job_key, env_key in _ENV_KEYS.items():
+        if job_key in job:
+            env[env_key] = str(job[job_key])
+    for job_key, env_key in _ENV_BOOL_KEYS.items():
+        if job_key in job:
+            env[env_key] = "true" if job.get(job_key) else "false"
+    # Pace expands into two variables via a profile, so it stays explicit.
     if "speech_pace" in job:
         pace, profile = speech_pace_profile(job["speech_pace"])
         env["SPEECH_PACE"] = pace
         env["ATEMPO"] = str(profile["atempo"])
-    if "target_duration_sec" in job:
-        env["TARGET_DURATION_SEC"] = str(job["target_duration_sec"])
-    if "claude_script_model" in job:
-        env["CLAUDE_SCRIPT_MODEL"] = str(job["claude_script_model"])
-    if "claude_research_model" in job:
-        env["CLAUDE_RESEARCH_MODEL"] = str(job["claude_research_model"])
-    if "claude_strategy_model" in job:
-        env["CLAUDE_STRATEGY_MODEL"] = str(job["claude_strategy_model"])
-    if "claude_query_model" in job:
-        env["CLAUDE_QUERY_MODEL"] = str(job["claude_query_model"])
     if job.get("claude_budget_override"):
         env["CLAUDE_BUDGET_OVERRIDE"] = "true"
     return env
@@ -163,6 +233,212 @@ def run_render_silent(ctx, chat_id, job, extra_env=None):
         stop_progress.set()
         if progress_thread:
             progress_thread.join(timeout=1)
+
+
+# ── 2게이트(review) 모드 ────────────────────────────────────────────────
+# The stage order, the between-stage checks and the retry policy all live in
+# pipeline_flow.  This layer only translates: job dict -> flow inputs, and
+# flow results -> chat messages.  Nothing about the pipeline is described
+# twice, and the same core drives run_pipeline.py for unattended runs.
+
+def _job_settings(job):
+    return {
+        "topic": job.get("topic"),
+        "topic_json": job.get("topic_json"),
+        "allow_no_pubmed": job.get("allow_no_pubmed"),
+    }
+
+
+def _review_runner(ctx, chat_id, job):
+    """Adapt the bot's run_command into the callable pipeline_flow expects."""
+    job_id = job["job_id"]
+    topic = job.get("topic")
+    settings = _job_settings(job)
+    extra_env = build_extra_env(job)
+
+    def run(stage_name, argv):
+        if stage_name == "render":
+            # Go through the render helper so the chat still gets 25/50/75%
+            # ticks; a 1080p render is long enough that silence reads as a hang.
+            # Prefer the bot's own wrapper, matching how every other primitive
+            # in this module is reached -- by attribute on ctx.
+            render = getattr(ctx, "_run_render_silent", None)
+            if render is not None:
+                render(chat_id, job, extra_env)
+            else:
+                run_render_silent(ctx, chat_id, job, extra_env)
+            return
+        full_argv = list(argv) + pipeline_flow.stage_extra_args(stage_name, settings)
+        ctx.run_command(full_argv, job_id, topic, extra_env=extra_env)
+
+    return run
+
+
+def _passthrough_exceptions(ctx):
+    """Exceptions that end the run outright instead of failing one stage.
+
+    A user cancellation or an exhausted Claude budget must not be retried --
+    retrying is exactly what the operator asked to stop.
+    """
+    return tuple(getattr(ctx, "PASSTHROUGH_EXCEPTIONS", ()))
+
+
+def _review_progress(ctx, chat_id, job=None, remaining=None):
+    """Relay stage transitions to the chat so an unattended stretch is visible.
+
+    When `remaining` is given, steps are numbered i/N the way the old
+    hand-written auto flows did, and the current step is mirrored into the job
+    so a status query mid-run says something useful.
+    """
+    total = len(remaining) if remaining else 0
+    order = list(remaining or [])
+
+    def on_event(kind, payload):
+        name = payload.get("stage", "")
+        label = STAGE_PROGRESS_LABELS.get(name, name)
+        if kind == "stage_start":
+            suffix = " (재시도)" if payload.get("retry") else ""
+            if total and name in order:
+                step = f"{order.index(name) + 1}/{total} {label}"
+                if job is not None:
+                    job["auto_progress"] = step
+                ctx.send_message(chat_id, f"{step} 중...{suffix}")
+            else:
+                ctx.send_message(chat_id, f"{label} 진행 중...{suffix}")
+        elif kind == "guard_failed":
+            ctx.send_message(chat_id, f"{label} 점검 실패: {payload.get('reason', '')}")
+
+    return on_event
+
+
+def stages_remaining_after(flow_stage):
+    """Flow stage names still to run once `flow_stage` has completed."""
+    if flow_stage is None:
+        return list(pipeline_flow.STAGE_NAMES)
+    index = pipeline_flow.STAGE_NAMES.index(flow_stage)
+    return list(pipeline_flow.STAGE_NAMES[index + 1:])
+
+
+def run_to_completion(ctx, chat_id, job, *, final_message=None, running_stage=None):
+    """Run everything left, unattended, from wherever the job currently is.
+
+    This is what /run_auto and "여기서부터 끝까지" both do.  Both bots used to
+    spell the stage sequence out by hand -- four copies that had to be kept in
+    step with the real pipeline.  The order now comes from pipeline_flow, and
+    the guards run here too, so an unattended finish gets the same checks the
+    two-gate flow gets.
+    """
+    job_id = job.get("job_id")
+    if not job_id:
+        ctx.send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return None
+
+    start_stage = job.get("stage")
+    flow_stage = BOT_STAGE_TO_FLOW.get(start_stage)
+    if start_stage is not None and start_stage not in BOT_STAGE_TO_FLOW:
+        ctx.send_message(chat_id, f"현재 단계에서는 끝까지 자동 처리를 시작할 수 없습니다: {start_stage}")
+        return None
+
+    work_dir = ctx.work_dir(job_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    job["mode"] = job_state.MODE_AUTO
+    job["approval_required"] = False
+    job.pop("last_error", None)
+    if running_stage:
+        job["stage"] = running_stage
+    job_state.update(
+        work_dir, mode=job_state.MODE_AUTO, stage=flow_stage,
+        awaiting=None, cleared_gate=None, settings=_job_settings(job),
+    )
+
+    remaining = stages_remaining_after(flow_stage)
+    try:
+        result = pipeline_flow.advance(
+            work_dir, ctx.BASE_DIR, _review_runner(ctx, chat_id, job),
+            mode=job_state.MODE_AUTO,
+            on_event=_review_progress(ctx, chat_id, job, remaining),
+            passthrough=_passthrough_exceptions(ctx),
+        )
+    except BaseException:
+        # Cancellation or a budget stop: put the job back where it started so
+        # the operator resumes from a known point, then let the bot's own
+        # handler present it.
+        job["stage"] = start_stage
+        job.pop("auto_progress", None)
+        raise
+
+    job.pop("auto_progress", None)
+    if result.status == pipeline_flow.STATUS_DONE:
+        job["stage"] = "done"
+        default_text = "업로드 완료. YouTube Studio에서 비공개 영상을 확인하세요."
+        ctx.send_message(chat_id, final_message(job, default_text) if final_message else default_text)
+        return result
+
+    # Unattended runs have no gate to fall back to, so a failure is an error.
+    # Raising keeps the bots' existing recovery prompts working unchanged.
+    job["stage"] = start_stage
+    job["last_error"] = result.reason
+    raise RuntimeError(f"{result.stage} 단계에서 중단했습니다: {result.reason}")
+
+
+def run_review_pipeline(ctx, chat_id, job, mode=job_state.MODE_REVIEW):
+    """Run the job forward until it needs a human, then hand off to the bot.
+
+    Returns the pipeline_flow.Result so callers can branch if they need to.
+    """
+    job_id = job["job_id"]
+    work_dir = ctx.work_dir(job_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    job["mode"] = mode
+    job_state.update(work_dir, mode=mode, settings=_job_settings(job))
+
+    result = pipeline_flow.advance(
+        work_dir, ctx.BASE_DIR, _review_runner(ctx, chat_id, job),
+        mode=mode, on_event=_review_progress(ctx, chat_id),
+        passthrough=_passthrough_exceptions(ctx),
+    )
+
+    if result.status == pipeline_flow.STATUS_GATE:
+        job["stage"] = GATE_STAGES.get(result.gate, result.gate)
+        ctx.send_gate(chat_id, job, result.gate)
+    elif result.status == pipeline_flow.STATUS_DONE:
+        job["stage"] = "done"
+        ctx.send_message(chat_id, "완료! YouTube Studio에서 비공개 영상을 확인하세요.")
+    else:
+        job["stage"] = "failed"
+        ctx.send_message(
+            chat_id,
+            f"{result.stage} 단계에서 중단했습니다.\n사유: {result.reason}\n\n"
+            f"수정 후 /resume 으로 이어서 진행하거나 /rewind {result.stage} 로 "
+            "해당 단계를 다시 실행하세요.",
+        )
+    return result
+
+
+def approve_review_gate(ctx, chat_id, job):
+    """Clear the current gate and keep going (the human pressed 승인)."""
+    work_dir = ctx.work_dir(job["job_id"])
+    pipeline_flow.approve(work_dir)
+    return run_review_pipeline(ctx, chat_id, job, mode=job.get("mode") or job_state.MODE_REVIEW)
+
+
+def switch_to_review(ctx, chat_id, job, from_stage="script"):
+    """Move a job already past `from_stage` onto the two-gate flow.
+
+    Lets the reviewer decide at the script gate -- once they have actually
+    read it -- whether the rest runs unattended or comes back for a final
+    look, instead of committing to a mode before the script exists.
+    """
+    work_dir = ctx.work_dir(job["job_id"])
+    job_state.update(
+        work_dir,
+        mode=job_state.MODE_REVIEW,
+        stage=from_stage,
+        awaiting=None,
+        cleared_gate="script_review",
+        settings=_job_settings(job),
+    )
+    return run_review_pipeline(ctx, chat_id, job)
 
 
 def run_next_stage(ctx, chat_id, job, *, final_message=None):

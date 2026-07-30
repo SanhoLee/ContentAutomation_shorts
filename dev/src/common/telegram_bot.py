@@ -29,7 +29,10 @@ from config_settings import (
     validate_setting_value,
 )
 from content_objectives import normalize_objective_type, objective_label
+import job_state
 import pipeline_orchestrator as _po
+import pipeline_flow
+import script_review
 from script_runtime import speech_pace_profile
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -125,6 +128,7 @@ def editable_stage_info(stage, job_id):
         "await_script_approval": (base / "script.txt", "script.txt"),
         "await_caption_approval": (base / "subs.srt", "subs.srt"),
         "await_upload_meta_approval": (base / "video_meta.json", "video_meta.json"),
+        "await_final_confirm": (base / "video_meta.json", "video_meta.json"),
     }
     return mapping.get(stage)
 
@@ -139,7 +143,22 @@ def approval_buttons(stage):
             button("본문 수정", f"edit_body:{stage}"),
             button("타이틀 수정", f"edit_title_menu:{stage}"),
         ])
-        rows.insert(1, [button("이후 자동 업로드", f"auto_upload:{stage}")])
+        # Two ways to spend the rest of the run: never look again, or look
+        # once more at the finished video.  Offered here because this is the
+        # first moment the reviewer knows what the script actually says.
+        rows.insert(1, [
+            button("검수 후 최종 컨펌", f"review_mode:{stage}"),
+            button("이후 자동 업로드", f"auto_upload:{stage}"),
+        ])
+    elif stage == "await_final_confirm":
+        # Rewinds go through pipeline_flow so the stage order and the retry
+        # budget stay defined in one place.
+        rows = [
+            [button("제목·설명 수정", f"edit:{stage}")],
+            [button("다시 렌더", f"rewind:{stage}:render"),
+             button("대본부터 다시", f"rewind:{stage}:script")],
+            [button("승인(업로드)", f"approve:{stage}"), button("전체 취소", "cancel_all")],
+        ]
     elif stage in ("await_caption_approval", "await_upload_meta_approval"):
         rows.insert(0, [button("수정", f"edit:{stage}")])
     if stage == "await_tts_approval":
@@ -375,13 +394,7 @@ def run_command(args, job_id, topic=None, extra_env=None):
 
 
 def preview_file(path, limit=MAX_TEXT_PREVIEW):
-    path = Path(path)
-    if not path.exists():
-        return "파일이 없습니다."
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if len(text) > limit:
-        return text[:limit] + "\n...(생략)"
-    return text
+    return _po.preview_file(path, limit)
 
 
 def send_pubmed_notice(chat_id, job_id):
@@ -401,15 +414,35 @@ def send_pubmed_notice(chat_id, job_id):
 
 
 def send_script(chat_id, job_id):
-    send_pubmed_notice(chat_id, job_id)
+    """The script-review gate: everything needed to judge the script, together.
+
+    Showing script.txt alone made this an uninformed approval -- the topic
+    rationale, the papers behind it and the validation result each lived
+    somewhere else.  In the two-gate flow nobody looks again until the
+    finished video, so this one message has to carry all of it.
+    """
     path = work_dir(job_id) / "script.txt"
+    bundle = script_review.build_bundle(work_dir(job_id))
+
+    flags = []
+    if script_review.evidence_is_weak(bundle):
+        flags.append("⚠ 논문 근거 없이 작성됨")
+    if script_review.validation_failed(bundle):
+        flags.append("⚠ 대본 검증 실패")
+    header = "스크립트 생성 완료. 확인 후 승인하거나 수정하세요."
+    if flags:
+        header += "\n" + "\n".join(flags)
+
+    body = script_review.render_text(bundle, script_limit=MAX_TEXT_PREVIEW // 2)
     send_approval_prompt(
-        chat_id,
-        "await_script_approval",
-        f"스크립트 생성 완료. 확인 후 승인하거나 수정하세요.\n\n{preview_file(path)}",
+        chat_id, "await_script_approval",
+        f"{header}\n\n{body}"[:MAX_TEXT_PREVIEW],
     )
     if path.exists():
         send_file_or_path(chat_id, path, "script.txt")
+    # The full status file stays attached so the reviewer can dig in.
+    if script_review.evidence_is_weak(bundle):
+        send_file_or_path(chat_id, pubmed_status_path(job_id), "pubmed_status.json")
 
 
 def send_tts(chat_id, job_id):
@@ -480,6 +513,50 @@ def send_rendered_video(chat_id, job_id):
         send_message(chat_id, f"렌더 결과를 찾지 못했습니다: {path}")
 
 
+def send_final_confirm(chat_id, job_id):
+    """The second and last human gate: finished video and its metadata at once.
+
+    The six-gate flow reviewed the video and its title/description as two
+    separate approvals.  Here they are one decision -- approve and it uploads
+    -- so the reviewer sees exactly what goes out in a single message.
+    """
+    video_path = output_file(job_id)
+    if video_path.exists():
+        send_file_or_path(chat_id, video_path, "최종 영상입니다.", as_video=True)
+    else:
+        send_message(chat_id, f"렌더 결과를 찾지 못했습니다: {video_path}")
+
+    meta_path = work_dir(job_id) / "video_meta.json"
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            meta = {}
+    text = (
+        "최종 확인 단계입니다. 승인하면 이대로 YouTube에 비공개 업로드합니다.\n\n"
+        f"제목: {meta.get('title', '')}\n\n"
+        f"해시태그: {meta.get('hashtags', '')}\n\n"
+        f"설명:\n{meta.get('description', '')}"
+    )
+    send_approval_prompt(chat_id, "await_final_confirm", text[:MAX_TEXT_PREVIEW])
+    if meta_path.exists():
+        send_file_or_path(chat_id, meta_path, "video_meta.json")
+
+
+def send_gate(chat_id, job, gate):
+    """Dispatch a pipeline_flow gate to the message that presents it."""
+    senders = {
+        "script_review": send_script,
+        "final_confirm": send_final_confirm,
+    }
+    sender = senders.get(gate)
+    if sender is None:
+        send_message(chat_id, f"알 수 없는 게이트입니다: {gate}")
+        return
+    sender(chat_id, job["job_id"])
+
+
 def send_upload_meta(chat_id, job_id):
     meta_path = work_dir(job_id) / "video_meta.json"
     if not meta_path.exists():
@@ -507,7 +584,7 @@ def parse_key_values(text):
 
 
 def display_config_value(value):
-    return str(value) if value not in (None, "") else "config"
+    return _po.display_config_value(value)
 
 
 def display_effective_model(job, job_key, value):
@@ -759,42 +836,11 @@ def handle_set(chat_id, job, text):
 
 
 def media_duration_seconds(path):
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        return max(float(result.stdout.strip()), 1.0)
-    except Exception:
-        return None
+    return _po.media_duration_seconds(path)
 
 
 def render_progress_ratio(progress_path, duration):
-    if not progress_path.exists() or not duration:
-        return None
-    try:
-        lines = progress_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return None
-    seconds = None
-    for line in lines:
-        if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
-            try:
-                seconds = int(line.split("=", 1)[1]) / 1_000_000
-            except ValueError:
-                pass
-        elif line.startswith("out_time="):
-            value = line.split("=", 1)[1]
-            try:
-                hours, minutes, rest = value.split(":")
-                seconds = int(hours) * 3600 + int(minutes) * 60 + float(rest)
-            except ValueError:
-                pass
-    if seconds is None:
-        return None
-    return max(0.0, min(seconds / duration, 1.0))
+    return _po.render_progress_ratio(progress_path, duration)
 
 
 def start_render_progress(chat_id, job_id, stop_event):
@@ -830,6 +876,56 @@ def _run_render_silent(chat_id, job, extra_env=None):
 def run_next_stage(chat_id, job):
     return _po.run_next_stage(sys.modules[__name__], chat_id, job)
 
+
+def run_review_pipeline(chat_id, job):
+    return _po.run_review_pipeline(sys.modules[__name__], chat_id, job)
+
+
+def approve_review_gate(chat_id, job):
+    return _po.approve_review_gate(sys.modules[__name__], chat_id, job)
+
+
+def switch_to_review(chat_id, job):
+    return _po.switch_to_review(sys.modules[__name__], chat_id, job)
+
+
+def rewind_review(chat_id, job, target_stage):
+    pipeline_flow.rewind_to(work_dir(job["job_id"]), target_stage)
+    send_message(chat_id, f"{target_stage} 단계부터 다시 실행합니다.")
+    return run_review_pipeline(chat_id, job)
+
+
+def handle_run_review(chat_id, job, text):
+    """Start a job in the two-gate flow: script review, then final confirm."""
+    topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+    if not topic:
+        send_message(chat_id,
+            "주제를 입력하세요.\n"
+            "예: /run_review 오메가3가 정말 뇌에 좋을까?\n\n"
+            "대본 검수와 최종 승인 두 번만 확인하면 나머지는 자동 진행합니다."
+        )
+        return
+
+    job_id = new_job_id("review")
+    settings = _preserve_settings(job)
+    busy = job.get("busy")
+    job.clear()
+    job.update({
+        "job_id": job_id, "topic": topic,
+        "approval_required": True, "mode": job_state.MODE_REVIEW,
+    })
+    job.update(settings)
+    if busy:
+        job["busy"] = busy
+
+    send_message(chat_id,
+        "2게이트 실행 시작 (대본 검수 → 최종 승인)\n"
+        "JOB_ID: " + job_id + "\n"
+        "주제: " + topic + "\n" +
+        _settings_summary(job)
+    )
+    return run_review_pipeline(chat_id, job)
+
 def run_remaining_to_upload(chat_id, job):
     job_id = job.get("job_id")
     topic = job.get("topic")
@@ -846,31 +942,8 @@ def run_remaining_to_upload(chat_id, job):
     job.pop("title_edit_stage", None)
     header = load_frame_header(job_id)
     sync_frame_header_to_job(job, header)
-    extra_env = _build_extra_env(job)
-    job["approval_required"] = False
-    job["stage"] = "running_after_script_auto"
     send_message(chat_id, "스크립트/타이틀 승인 완료. 이후 단계를 YouTube 업로드까지 자동 진행합니다.")
-
-    send_message(chat_id, "1/5 TTS 음성 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "youtube" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "1/5 TTS 완료")
-
-    send_message(chat_id, "2/5 자막 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "youtube" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "2/5 자막 완료")
-
-    send_message(chat_id, "3/5 B-roll 수집 중...")
-    run_command([str(BASE_DIR / "sh" / "youtube" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "3/5 B-roll 완료")
-
-    send_message(chat_id, "4/5 렌더링 중...")
-    _run_render_silent(chat_id, job, extra_env)
-    send_message(chat_id, "4/5 렌더링 완료")
-
-    send_message(chat_id, "5/5 YouTube 비공개 업로드 중...")
-    run_command([str(BASE_DIR / "sh" / "youtube" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
-    job["stage"] = "done"
-    send_message(chat_id, "완료! YouTube Studio에서 비공개 영상을 확인하세요.")
+    return _po.run_to_completion(sys.modules[__name__], chat_id, job)
 
 
 def run_script_generation(chat_id, job, args):
@@ -983,13 +1056,15 @@ def handle_run_auto(chat_id, job, text):
     job.clear()
     job.update({
         "job_id": job_id, "topic": topic,
-        "approval_required": False, "stage": "running_auto",
+        # stage stays None: nothing has run yet, so the flow starts at script.
+        "approval_required": False, "stage": None,
+        # An unattended run must not stall waiting for PubMed to cooperate.
+        "allow_no_pubmed": True,
     })
     job.update(settings)
     if busy:
         job["busy"] = busy
 
-    extra_env = _build_extra_env(job)
     send_message(chat_id,
         "자동 실행 시작\n"
         "JOB_ID: " + job_id + "\n"
@@ -997,34 +1072,7 @@ def handle_run_auto(chat_id, job, text):
         _settings_summary(job)
     )
 
-    send_message(chat_id, "1/5 스크립트 생성 중...")
-    run_command(
-        [str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--allow-no-pubmed", topic],
-        job_id, topic, extra_env=extra_env,
-    )
-    send_message(chat_id, "1/5 스크립트 완료")
-
-    send_message(chat_id, "2/5 TTS 음성 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "youtube" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "2/5 TTS 완료")
-
-    send_message(chat_id, "3/5 자막 생성 중...")
-    run_command([str(BASE_DIR / "sh" / "youtube" / "1_caption.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "3/5 자막 완료")
-
-    send_message(chat_id, "4/5 B-roll 수집 중...")
-    run_command([str(BASE_DIR / "sh" / "youtube" / "1_broll.sh")], job_id, topic, extra_env=extra_env)
-    send_message(chat_id, "4/5 B-roll 완료")
-
-    send_message(chat_id, "5/5 렌더링 중...")
-    _run_render_silent(chat_id, job, extra_env)
-    send_message(chat_id, "5/5 렌더링 완료")
-
-    send_message(chat_id, "업로드 중...")
-    run_command([str(BASE_DIR / "sh" / "youtube" / "3_upload.sh")], job_id, topic, extra_env=extra_env)
-
-    job["stage"] = "done"
-    send_message(chat_id, "완료! YouTube Studio에서 비공개 영상을 확인하세요.")
+    return _po.run_to_completion(sys.modules[__name__], chat_id, job)
 
 def handle_run(chat_id, job, text, trend=False):
     topic = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
@@ -1308,7 +1356,25 @@ def handle_callback(state, callback):
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
-            start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
+            if job.get("mode") == job_state.MODE_REVIEW:
+                start_background_task(state, chat_id, job, "승인 후 진행",
+                                      lambda: approve_review_gate(chat_id, job))
+            else:
+                start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
+        elif data.startswith("review_mode:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            start_background_task(state, chat_id, job, "검수 후 최종 컨펌",
+                                  lambda: switch_to_review(chat_id, job))
+        elif data.startswith("rewind:"):
+            _, expected_stage, target_stage = data.split(":", 2)
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            start_background_task(state, chat_id, job, f"{target_stage} 단계부터 재실행",
+                                  lambda: rewind_review(chat_id, job, target_stage))
         elif data == "cancel_all":
             job.clear()
             send_message(chat_id, "전체 작업을 취소했습니다.")
@@ -1475,6 +1541,7 @@ def handle_status(chat_id, job):
 def command_specs():
     return [
         ("run", "승인형 파이프라인 시작"),
+        ("run_review", "대본 검수 + 최종 승인 2회만 확인"),
         ("set", "카테고리별 설정 메뉴 열기"),
         ("set_all", "현재 전체 설정 한 번에 보기"),
         ("run_auto", "승인 없이 전체 파이프라인 실행"),
@@ -1519,6 +1586,7 @@ def help_text():
         "/set_all  <- 현재 전체 설정 보기",
         "/set font_size=62 web=off  <- 기존 빠른 입력도 지원",
         "/set reset  <- 저장한 override 전체 초기화",
+        "/run_review 오메가3가 정말 뇌에 좋을까?  <- 대본 검수 + 최종 승인 2회만",
         "/run_auto 오메가3가 정말 뇌에 좋을까?",
         "/run_goal subscriber_growth 수면",
         "/goal_status | /goal_report",
@@ -1573,6 +1641,8 @@ def handle_message(state, message):
             handle_goal_query(chat_id, job, "status")
         elif text.startswith("/goal_report"):
             handle_goal_query(chat_id, job, "report")
+        elif text.startswith("/run_review"):
+            start_background_task(state, chat_id, job, "2게이트 실행", lambda: handle_run_review(chat_id, job, text))
         elif text.startswith("/run_auto "):
             start_background_task(state, chat_id, job, "자동 실행", lambda: handle_run_auto(chat_id, job, text))
         elif text.startswith("/run "):

@@ -10,6 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "dev" / "src" / "common"))
 
+# Planning is otherwise offline; the evidence probe is the one part that calls
+# out to Europe PMC. Left on, this suite would issue a request per candidate.
+# The ladder itself is covered by tests/test_evidence_probe.py against stubs.
+os.environ["EVIDENCE_PROBE_ENABLED"] = "0"
+
 import objective_planner
 
 

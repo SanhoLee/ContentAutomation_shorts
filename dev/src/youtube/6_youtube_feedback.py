@@ -315,6 +315,19 @@ CREATE TABLE IF NOT EXISTS trend_observations (
     observed_date TEXT NOT NULL,
     PRIMARY KEY(topic, source, observed_date)
 );
+CREATE TABLE IF NOT EXISTS evidence_observations (
+    topic TEXT NOT NULL,
+    query TEXT NOT NULL,
+    resolved_query TEXT NOT NULL,
+    ladder_rung TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    recent_count INTEGER NOT NULL DEFAULT 0,
+    median_citations REAL NOT NULL DEFAULT 0,
+    observed_date TEXT NOT NULL,
+    PRIMARY KEY(topic, source, observed_date)
+);
 CREATE TABLE IF NOT EXISTS claude_usage (
     usage_id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT,

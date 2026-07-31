@@ -9,60 +9,49 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
 
+import trend_probe
 from content_objectives import normalize_objective_type, objective_label
 from objective_planner import (
     feedback, goal_report, goal_status, plan_objective_topic, run_due_strategy_review,
 )
 
 
-def _request_json(url: str, params: dict[str, str]) -> Any:
-    request = Request(f"{url}?{urlencode(params)}", headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(request, timeout=8) as response:
-        text = response.read().decode("utf-8", errors="replace").strip()
-    if text.startswith(")]}'"):
-        text = text.split("\n", 1)[1]
-    return json.loads(text)
-
-
 def collect_trend_signals(seed: str | None) -> list[dict[str, Any]]:
+    """Autocomplete demand for a seed, filtered to what this channel is about.
+
+    Delegates to trend_probe, which walks en → ja → ko and stops at the first
+    language that stays on topic. The old version asked Korean only, without
+    `oe=utf-8` (so results came back mojibake) and without any relevance check —
+    which is how "꿈돌이" and "꿈빛파티시엘" ended up in trend_observations.
+    """
     if not seed:
         return []
-    found: dict[str, set[str]] = {}
-    calls = (
-        ("google_suggest", "https://suggestqueries.google.com/complete/search",
-         {"client": "firefox", "hl": "ko", "gl": "KR", "q": seed}),
-        ("youtube_suggest", "https://suggestqueries.google.com/complete/search",
-         {"client": "firefox", "ds": "yt", "hl": "ko", "gl": "KR", "q": seed}),
-    )
-    for source, url, params in calls:
-        try:
-            payload = _request_json(url, params)
-            values = payload[1] if isinstance(payload, list) and len(payload) > 1 else []
-        except Exception as exc:
-            print(f"트렌드 소스 {source} 조회 실패(기존 데이터로 계속): {type(exc).__name__}", file=sys.stderr)
-            values = []
-        for value in values:
-            topic = " ".join(str(value).split()).strip()
-            if topic:
-                found.setdefault(topic, set()).add(source)
+    conn = None
     try:
-        payload = _request_json(
-            f"https://trends.google.com/trends/api/autocomplete/{quote(seed)}",
-            {"hl": "ko", "tz": "-540"},
-        )
-        for value in (payload.get("default") or {}).get("topics") or []:
-            topic = " ".join(str(value.get("title") or "").split()).strip()
-            if topic:
-                found.setdefault(topic, set()).add("google_trends_autocomplete")
+        conn = feedback.connect()
+        vocabulary = trend_probe.build_channel_vocabulary(conn)
     except Exception as exc:
-        print(f"트렌드 소스 google_trends 조회 실패(기존 데이터로 계속): {type(exc).__name__}", file=sys.stderr)
-    return [
-        {"keyword": topic, "sources": sorted(sources)}
-        for topic, sources in sorted(found.items(), key=lambda item: (-len(item[1]), item[0]))
-    ][:20]
+        print(f"채널 어휘 로드 실패(필터 없이 계속): {type(exc).__name__}", file=sys.stderr)
+        vocabulary = trend_probe.build_channel_vocabulary(None)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    result = trend_probe.probe(seed, vocabulary)
+    if not result.ok:
+        print(
+            f"트렌드 신호 없음: {result.note} "
+            f"(시도: {[a.get('language') for a in result.attempts]})",
+            file=sys.stderr,
+        )
+        return []
+    print(
+        f"트렌드 {len(result.keywords)}건 수집 (locale={result.language}, "
+        f"주제적합 {result.domain_match:.0%}, 상업성 {result.dropped_commercial}건 제외)"
+    )
+    source = f"suggest_{result.language}"
+    return [{"keyword": keyword, "sources": [source]} for keyword in result.keywords][:20]
 
 
 def maybe_sync(no_sync: bool) -> str:

@@ -1,14 +1,28 @@
 {
   "_meta": {
     "description": "PubMed category volume/recency snapshot for research_depth scoring. Refresh periodically via NCBI E-utilities (see docs/usage/research-category-refresh.md). Do not hand-edit total_count/recent_5y_count without re-running the query.",
-    "last_refreshed": "2026-07-26",
+    "last_refreshed": "2026-07-31",
     "source": "NCBI E-utilities esearch, db=pubmed"
   },
   "categories": [
     {
       "category_id": "chronic_disease",
       "label_ko": "만성질환(당뇨/고혈압)",
-      "keywords": ["혈압", "혈당", "당뇨", "고혈압", "심혈관", "diabetes", "hypertension"],
+      "keywords": [
+        "혈압",
+        "혈당",
+        "당뇨",
+        "고혈압",
+        "심혈관",
+        "diabetes",
+        "hypertension",
+        "콜레스테롤",
+        "지질",
+        "cholesterol",
+        "LDL",
+        "뇌혈관",
+        "cerebrovascular"
+      ],
       "query": "(diabetes OR hypertension) AND cognitive decline",
       "total_count": 11391,
       "recent_5y_count": 5919,
@@ -17,7 +31,16 @@
     {
       "category_id": "sleep_cognition",
       "label_ko": "수면과 인지기능",
-      "keywords": ["수면", "잠", "불면", "새벽", "sleep"],
+      "keywords": [
+        "수면",
+        "잠",
+        "불면",
+        "새벽",
+        "sleep",
+        "코골이",
+        "무호흡",
+        "apnea"
+      ],
       "query": "sleep AND cognitive decline",
       "total_count": 8002,
       "recent_5y_count": 4796,
@@ -26,7 +49,14 @@
     {
       "category_id": "mindfulness_meditation",
       "label_ko": "마음챙김/명상",
-      "keywords": ["명상", "마음챙김", "mindfulness", "meditation"],
+      "keywords": [
+        "명상",
+        "마음챙김",
+        "mindfulness",
+        "meditation",
+        "호흡",
+        "이완"
+      ],
       "query": "(mindfulness OR meditation) AND brain",
       "total_count": 6229,
       "recent_5y_count": 3131,
@@ -35,7 +65,17 @@
     {
       "category_id": "diet_nutrition",
       "label_ko": "식이/영양",
-      "keywords": ["음식", "식품", "식사", "간식", "음료", "영양", "diet"],
+      "keywords": [
+        "음식",
+        "식품",
+        "식사",
+        "간식",
+        "음료",
+        "영양",
+        "diet",
+        "식단",
+        "nutrition"
+      ],
       "query": "diet AND cognition AND older adults",
       "total_count": 6115,
       "recent_5y_count": 2407,
@@ -44,7 +84,14 @@
     {
       "category_id": "exercise_cognition",
       "label_ko": "운동과 인지노화",
-      "keywords": ["걷기", "근력", "운동", "낙상", "exercise"],
+      "keywords": [
+        "걷기",
+        "근력",
+        "운동",
+        "낙상",
+        "exercise",
+        "walking"
+      ],
       "query": "exercise AND cognitive aging",
       "total_count": 6083,
       "recent_5y_count": 3141,
@@ -53,7 +100,12 @@
     {
       "category_id": "stress_cortisol",
       "label_ko": "스트레스/코티솔",
-      "keywords": ["스트레스", "코티솔", "stress", "cortisol"],
+      "keywords": [
+        "스트레스",
+        "코티솔",
+        "stress",
+        "cortisol"
+      ],
       "query": "stress AND cortisol AND cognition",
       "total_count": 3157,
       "recent_5y_count": 1134,
@@ -62,7 +114,16 @@
     {
       "category_id": "social_isolation",
       "label_ko": "사회적 고립/외로움",
-      "keywords": ["외로움", "고립", "social isolation", "loneliness"],
+      "keywords": [
+        "외로움",
+        "고립",
+        "social isolation",
+        "loneliness",
+        "고독",
+        "고독감",
+        "혼자",
+        "사회활동"
+      ],
       "query": "social isolation AND cognitive decline",
       "total_count": 1174,
       "recent_5y_count": 816,
@@ -72,7 +133,13 @@
     {
       "category_id": "late_life_depression",
       "label_ko": "노년기 우울",
-      "keywords": ["우울", "depression"],
+      "keywords": [
+        "우울",
+        "depression",
+        "무기력",
+        "우울감",
+        "의욕"
+      ],
       "query": "late-life depression AND cognitive function",
       "total_count": 1082,
       "recent_5y_count": 445,
@@ -81,12 +148,44 @@
     {
       "category_id": "hearing_vision",
       "label_ko": "청력/시각과 치매 위험",
-      "keywords": ["청력", "시력", "hearing loss", "vision"],
+      "keywords": [
+        "청력",
+        "시력",
+        "hearing loss",
+        "vision",
+        "시각",
+        "안경",
+        "난청",
+        "visual",
+        "eyesight"
+      ],
       "query": "hearing loss AND dementia risk",
       "total_count": 720,
       "recent_5y_count": 526,
       "recent_ratio_pct": 73.1,
       "cooldown_days_override": 14
+    },
+    {
+      "category_id": "memory_cognition",
+      "label_ko": "기억력/인지기능 전반",
+      "keywords": [
+        "기억",
+        "기억력",
+        "건망증",
+        "인지",
+        "인지기능",
+        "뇌",
+        "뇌 건강",
+        "집중력",
+        "판단력",
+        "memory",
+        "cognition",
+        "cognitive"
+      ],
+      "query": "memory AND cognitive aging",
+      "total_count": 25916,
+      "recent_5y_count": 10723,
+      "recent_ratio_pct": 41.4
     }
   ]
 }

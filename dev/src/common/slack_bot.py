@@ -1757,8 +1757,10 @@ def handle_run_auto(chat_id, job, text):
         "job_id": job_id, "topic": topic,
         # stage stays None: nothing has run yet, so the flow starts at script.
         "approval_required": False, "stage": None,
-        # An unattended run must not stall waiting for PubMed to cooperate.
-        "allow_no_pubmed": True,
+        # evidence_probe now widens the query before giving up, so a miss here
+        # means the literature really is absent -- publishing anyway is how an
+        # unsourced video shipped. Set ALLOW_NO_PUBMED=1 to accept that risk.
+        "allow_no_pubmed": os.environ.get("ALLOW_NO_PUBMED", "").strip().lower() in ("1", "true", "yes"),
     })
     job.update(settings)
     if busy:

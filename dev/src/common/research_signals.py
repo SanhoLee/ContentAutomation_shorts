@@ -47,6 +47,10 @@ class CategorySignal:
     category_id: str
     label_ko: str
     keywords: tuple[str, ...]
+    # The vetted English PubMed query the volumes were measured with. Also the
+    # last rung of evidence_probe's ladder, which is why it must survive the
+    # load: it is what a topic falls back to instead of a Korean query.
+    query: str
     total_count: int
     recent_5y_count: int
     recent_ratio_pct: float
@@ -104,6 +108,7 @@ def load_category_signals(path: str | Path | None = None) -> dict[str, CategoryS
             category_id=category_id,
             label_ko=str(entry.get("label_ko") or category_id),
             keywords=tuple(str(k) for k in (entry.get("keywords") or ())),
+            query=str(entry.get("query") or ""),
             total_count=total_count,
             recent_5y_count=recent_count,
             recent_ratio_pct=recent_ratio,

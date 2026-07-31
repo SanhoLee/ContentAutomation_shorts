@@ -9,6 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 from urllib.parse import quote
 
+import evidence_probe
 from claude_cost import assert_budget, record_usage, web_search_total
 from script_runtime import load_runtime_settings
 
@@ -339,21 +340,36 @@ def load_trend_choice(choice):
 class PubMedSearchError(Exception):
     pass
 
-def assess_pubmed_query(topic):
+def assess_pubmed_query(topic, attempts=None):
+    """Explain a miss using what the ladder actually tried.
+
+    This used to only describe the problem — "핵심 키워드 2~4개로 줄여보세요" —
+    while nothing in the code ever narrowed and retried. evidence_probe now does
+    the narrowing, so this reports the outcome instead of prescribing work to a
+    human who was never going to see it in an unattended run.
+    """
+    if attempts:
+        tried = " → ".join(
+            f"{a.get('rung')}({a.get('hits', a.get('error', '?'))})" for a in attempts
+        )
+        return f"검색어를 넓혀가며 시도했지만 초록을 찾지 못했습니다: {tried}"
     compact = re.sub(r"\s+", "", topic)
     if len(compact) <= 2:
         return "주제가 너무 짧습니다."
-    if len(topic) >= 35 or len(topic.split()) >= 6:
-        return "주제가 너무 구체적입니다. 핵심 키워드 2~4개로 줄여보세요."
     if re.search(r"추천|가격|순위|고르는법|브랜드|후기|먹는법", topic):
         return "소비자형 키워드입니다. 효능/위험/기전 중심으로 바꿔보세요."
     return "PubMed에서 직접 맞는 초록을 찾지 못했습니다."
 
-def write_pubmed_status(topic, pmids, status, message, abstracts_preview="", pubmed_query=None, citations=None):
+def write_pubmed_status(topic, pmids, status, message, abstracts_preview="", pubmed_query=None,
+                        citations=None, ladder_rung=None, attempts=None):
     payload = {"topic": topic, "pubmed_query": pubmed_query or topic,
                "status": status, "pmids": pmids, "pmid_count": len(pmids),
                "message": message, "abstracts_preview": abstracts_preview[:1200],
-               "citations": citations or []}
+               "citations": citations or [],
+               # Which rung of the widening ladder produced this, so a reviewer
+               # can tell an exact match from a category-level fallback.
+               "ladder_rung": ladder_rung or "",
+               "ladder_attempts": list(attempts or [])}
     with open(PUBMED_STATUS_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
@@ -439,17 +455,47 @@ def fetch_pubmed_citations(pmids):
     return citations, block
 
 
+def _category_fallback_query(topic):
+    """The vetted English query for this topic's research category.
+
+    This is the ladder's last rung and the reason a failed translation never
+    has to fall back to Korean: research_categories.json already holds queries
+    like "hearing loss AND dementia risk", verified when the category volumes
+    were refreshed.
+    """
+    return evidence_probe.category_query_for(topic)
+
+
 def fetch_pubmed_abstracts(topic):
+    """Find abstracts, widening the query until something holds up.
+
+    The old version issued one esearch and gave up on zero hits, which is how
+    a job shipped with no evidence: `uncorrected refractive error dementia risk`
+    returned nothing while `refractive error dementia` — the same query minus two
+    modifiers — returns 30 papers.
+    """
     pubmed_query = translate_pubmed_query(topic)
-    search = request_json(
-        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-        params=_ncbi_params({"db": "pubmed", "term": pubmed_query, "retmax": PUBMED_RETMAX, "sort": "relevance", "retmode": "json"}),
+    found = evidence_probe.probe_pubmed(
+        topic,
+        pubmed_query,
+        category_query=_category_fallback_query(topic),
+        retmax=PUBMED_RETMAX,
+        api_key=NCBI_API_KEY,
+        fetch=lambda url, params: request_json(url, params=params),
     )
-    pmids = search.get("esearchresult", {}).get("idlist", [])
+    attempts = [dict(a) for a in found.attempts]
+    pmids = [p for p in (found.note or "").split(",") if p] if found.ok else []
+
+    if found.ladder_rung not in ("full", "none"):
+        print(f"PubMed 검색어 확장: {pubmed_query!r} -> {found.resolved_query!r} ({found.ladder_rung})")
+
     if not pmids:
-        message = assess_pubmed_query(pubmed_query)
-        write_pubmed_status(topic, pmids, "no_results", message, pubmed_query=pubmed_query)
+        message = assess_pubmed_query(pubmed_query, attempts)
+        write_pubmed_status(topic, pmids, "no_results", message,
+                            pubmed_query=found.resolved_query or pubmed_query,
+                            ladder_rung=found.ladder_rung, attempts=attempts)
         return "PubMed에서 직접 관련 초록을 찾지 못했습니다. 이 경우 논문 수치나 특정 연구 결과를 지어내지 말고, 신뢰 가능한 일반 의학 지식과 건강 커뮤니케이션 원칙을 바탕으로 조심스럽게 작성하세요. 근거가 불확실한 내용은 가능성이 있습니다, 도움될 수 있습니다처럼 표현하세요."
+    pubmed_query = found.resolved_query
 
     citations, citation_block = fetch_pubmed_citations(pmids)
 
@@ -460,7 +506,11 @@ def fetch_pubmed_abstracts(topic):
     text = limit_pubmed_abstracts(text)
     if citation_block:
         text = citation_block + "\n\n" + text
-    write_pubmed_status(topic, pmids, "ok", "PubMed 초록을 찾았습니다.", text, pubmed_query=pubmed_query, citations=citations)
+    message = "PubMed 초록을 찾았습니다."
+    if found.ladder_rung != "full":
+        message += f" (검색어를 {found.ladder_rung} 단계로 넓혀 찾았습니다)"
+    write_pubmed_status(topic, pmids, "ok", message, text, pubmed_query=pubmed_query,
+                        citations=citations, ladder_rung=found.ladder_rung, attempts=attempts)
     return text
 
 

@@ -22,6 +22,14 @@ from content_objectives import (
     normalize_objective_type,
     objective_label,
 )
+import evidence_probe
+from evidence_probe import (
+    EvidenceResult,
+    cached_observation,
+    category_query_for,
+    evidence_metrics,
+    record_observation,
+)
 from research_signals import (
     load_category_signals,
     load_usage_log,
@@ -404,6 +412,49 @@ def _transfer_pattern_metrics(normalized: Mapping[str, Any], reliability: float 
     }
 
 
+def _probe_topic_evidence(conn: sqlite3.Connection, topic: str, family: str,
+                          search_queries: Mapping[str, str] | None = None):
+    """Ask Europe PMC whether this specific topic has literature behind it.
+
+    Cached per day, so a re-planned job does not re-probe the same candidates.
+    Europe PMC answers hitCount, citations and years in a single request, which
+    keeps a full pool at roughly one second.
+
+    A probe failure returns a zero-evidence result rather than raising: planning
+    must survive a network blip, and `EVIDENCE_MIN_HITS` below decides what to do
+    with a candidate that has nothing behind it.
+    """
+    # Off by env for tests and offline runs: the probe is the only part of
+    # planning that touches the network, and a suite that hits Europe PMC once
+    # per candidate turns a 4-second run into two minutes.
+    if os.environ.get("EVIDENCE_PROBE_ENABLED", "1").strip().lower() in ("0", "false", "no"):
+        return EvidenceResult(topic=topic, resolved_query="", ladder_rung="disabled",
+                              status=evidence_probe.STATUS_NO_RESULTS)
+    cached = cached_observation(conn, topic)
+    if cached is not None:
+        return cached
+    english_query = (search_queries or {}).get(topic) or _english_probe_query(topic, family)
+    try:
+        result = evidence_probe.probe(topic, english_query, category_query_for(family))
+    except Exception:
+        return EvidenceResult(topic=topic, resolved_query=english_query,
+                              ladder_rung="error", status=evidence_probe.STATUS_NO_RESULTS)
+    record_observation(conn, result)
+    return result
+
+
+def _english_probe_query(topic: str, family: str) -> str:
+    """An English query for the probe without spending a Claude call.
+
+    Candidate topics are Korean, and translating eight of them per job would add
+    eight Claude requests to planning. Instead we take whatever Latin tokens the
+    topic already carries; when that yields nothing usable, `probe` falls through
+    to the category's vetted query. Korean is never sent either way.
+    """
+    latin = " ".join(re.findall(r"[A-Za-z][A-Za-z0-9-]+", topic or ""))
+    return latin if len(latin) >= 3 else ""
+
+
 def build_candidate_pool(
     conn: sqlite3.Connection,
     *,
@@ -421,6 +472,7 @@ def build_candidate_pool(
     manual_seed = bool(str(seed_topic or "").strip())
     interpretation = interpretation or {}
     interpreted_topics = interpretation.get("topics") or {}
+    interpreted_queries = interpretation.get("search_queries") or {}
     resolved_family = interpretation.get("resolved_family")
     evidence_relevance = interpretation.get("evidence_relevance") or {}
     containment_cutoff = (
@@ -569,10 +621,15 @@ def build_candidate_pool(
                 research_depth_metric(family, research_signals, research_usage)
                 if research_signals else (0.5, {"matched": False, "reason": "no_category_data"})
             )
+            # Topic-level evidence, unlike research_depth which resolves at
+            # category granularity — the reason a glasses/dementia topic with
+            # zero papers of its own still scored well off hearing_vision's 720.
+            research_evidence = _probe_topic_evidence(conn, topic, family, interpreted_queries)
             metrics.update({
                 "trend_signal": min(1.0, 0.30 + 0.18 * source_count + 0.04 * min(repeat_days, 5)) if trend_slot else 0.5,
                 "novelty": max(0.0, 1.0 - closest),
                 "research_depth": research_depth,
+                **evidence_metrics(research_evidence),
             })
             candidates.append({
                 "candidate_id": f"cand_{len(candidates) + 1:02d}",
@@ -591,6 +648,13 @@ def build_candidate_pool(
                 "channel_sample_count": evidence_profile["sample_count"],
                 "channel_reliability": round(float(evidence_profile["reliability"]), 6),
                 "channel_maturity": evidence_profile["stage"],
+                "research_evidence": {
+                    "status": research_evidence.status,
+                    "query": research_evidence.resolved_query,
+                    "ladder_rung": research_evidence.ladder_rung,
+                    "hit_count": research_evidence.hit_count,
+                    "median_citations": research_evidence.median_citations,
+                },
                 "duplicate_similarity": closest,
                 "duplicate_containment": duplicate["containment"],
                 "duplicate_threshold": duplicate_threshold,
@@ -598,7 +662,28 @@ def build_candidate_pool(
                 "confounders": confounders,
             })
             break
-    return candidates
+    return _drop_zero_evidence(candidates)
+
+
+def _drop_zero_evidence(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove candidates no literature backs, but never empty the pool.
+
+    A topic that survives the whole widening ladder with nothing behind it is
+    what shipped the unsourced glasses video. Dropping it here means the planner
+    never gets the chance to pick it.
+
+    If *every* candidate probes empty — a network outage, or a genuinely novel
+    family — the pool is returned untouched. Planning has to keep moving
+    (CLAUDE.md), and with all evidence metrics at zero the ranking is unchanged
+    anyway; the script stage still guards the final output.
+    """
+    backed = [c for c in candidates
+              if (c.get("research_evidence") or {}).get("status") == evidence_probe.STATUS_OK]
+    if not backed or len(backed) == len(candidates):
+        return candidates
+    dropped = len(candidates) - len(backed)
+    print(f"근거 없는 후보 {dropped}개 제외 (남은 후보 {len(backed)}개)")
+    return backed
 
 
 def valid_evidence_refs(candidates: Sequence[Mapping[str, Any]]) -> set[str]:
@@ -653,7 +738,12 @@ def _seed_interpreter_prompt(
    - exploit {SEED_TOPIC_TARGETS['exploit']}개: 씨드 핵심을 정면으로 다루는 주제
    - adjacent {SEED_TOPIC_TARGETS['adjacent']}개: 씨드에서 자연스럽게 확장되는 인접 주제
    - wildcard {SEED_TOPIC_TARGETS['wildcard']}개: 의외의 관점이나 실험적인 주제
-3. evidence_relevance: 위 채널 영상 중 이 씨드와 내용상 실제로 관련된 것은 topical,
+3. search_queries: 위 topics의 각 주제를 영어 논문 검색어로 옮기세요.
+   topics와 같은 mode·같은 순서·같은 개수로 채우세요.
+   - 핵심 의학 키워드 2~4개만 쓰세요. 질병명, 위험 요인, 기전 용어를 우선합니다.
+   - 한국어를 쓰지 마세요. 불리언 연산자나 설명도 넣지 마세요.
+   - 예: "안경을 안 쓰면 치매가 오나요" -> "visual impairment dementia"
+4. evidence_relevance: 위 채널 영상 중 이 씨드와 내용상 실제로 관련된 것은 topical,
    내용은 무관하지만 형식·훅 패턴만 참고할 수 있는 것은 pattern_only로 표시하세요.
 
 제목 작성 규칙:
@@ -678,6 +768,7 @@ JSON만 출력하세요.
 
 {{"resolved_family": "", "family_source": "", "family_reason": "",
   "topics": {{"exploit": [], "adjacent": [], "wildcard": []}},
+  "search_queries": {{"exploit": [], "adjacent": [], "wildcard": []}},
   "evidence_relevance": [{{"ref": "", "relevance": ""}}]}}"""
 
 
@@ -739,6 +830,22 @@ def validate_seed_interpretation(
             f"Seed interpreter가 유효한 topic을 반환하지 않았습니다: {reasons or '빈 응답'}"
         )
 
+    # English query per topic, so evidence_probe can check a specific topic
+    # instead of its whole category — and without a second Claude call, since
+    # the interpreter is already being asked. Korean or empty values are simply
+    # dropped: the probe then falls back to the category query.
+    raw_queries = output.get("search_queries")
+    search_queries: dict[str, str] = {}
+    if isinstance(raw_queries, Mapping):
+        for mode, values in raw_queries.items():
+            if not isinstance(values, list):
+                continue
+            for topic, query in zip(raw_topics.get(mode) or (), values):
+                topic = " ".join(str(topic or "").split()).strip()
+                query = " ".join(str(query or "").split()).strip()
+                if topic and query and not re.search(r"[가-힣]", query):
+                    search_queries[topic] = query
+
     allowed_refs = None if valid_refs is None else set(valid_refs)
     relevance: dict[str, str] = {}
     for raw in output.get("evidence_relevance") or ():
@@ -756,6 +863,7 @@ def validate_seed_interpretation(
         "family_source": family_source,
         "family_reason": str(output.get("family_reason") or "")[:200],
         "topics": topics,
+        "search_queries": search_queries,
         "evidence_relevance": relevance,
         "skipped_topics": skipped,
     }

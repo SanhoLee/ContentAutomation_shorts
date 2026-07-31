@@ -9,6 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "dev" / "src" / "common"
 sys.path.insert(0, str(SRC))
+# dev/config.sh puts common/, youtube/ and instagram/ all on PYTHONPATH so
+# the pipeline modules can import each other; tests must do the same.
+sys.path.insert(0, str(ROOT / "dev" / "src" / "youtube"))
 
 import stage_guard
 from script_runtime import StageGuardSettings
@@ -111,6 +114,33 @@ class CheckCaptionTests(StageGuardTestCase):
         ok, reason = stage_guard.check_caption(self.work_dir, SETTINGS)
         self.assertFalse(ok)
         self.assertIn("scenes_timed.json", reason)
+
+    def test_numbers_surviving_into_the_captions_pass(self):
+        self.prepare(
+            [{"start": 0.0, "end": 30.0}],
+            srt="1\n00:00:01,000 --> 00:00:03,000\n고혈압 위험은\n1.32배였습니다\n",
+        )
+        (self.work_dir / "caption_script.txt").write_text(
+            "고혈압 위험은 1.32배였습니다.", encoding="utf-8"
+        )
+        self.assertTrue(stage_guard.check_caption(self.work_dir, SETTINGS)[0])
+
+    def test_mangled_decimal_fails(self):
+        # A decimal turning into two numbers means the cited figure is now wrong.
+        self.prepare(
+            [{"start": 0.0, "end": 30.0}],
+            srt="1\n00:00:01,000 --> 00:00:03,000\n고혈압 위험은\n1 32배였습니다\n",
+        )
+        (self.work_dir / "caption_script.txt").write_text(
+            "고혈압 위험은 1.32배였습니다.", encoding="utf-8"
+        )
+        ok, reason = stage_guard.check_caption(self.work_dir, SETTINGS)
+        self.assertFalse(ok)
+        self.assertIn("숫자", reason)
+
+    def test_number_check_is_skipped_without_the_source_script(self):
+        self.prepare([{"start": 0.0, "end": 30.0}])
+        self.assertTrue(stage_guard.check_caption(self.work_dir, SETTINGS)[0])
 
     def test_small_overrun_is_tolerated(self):
         self.prepare([{"start": 0.0, "end": 62.0}], voice_seconds=60)

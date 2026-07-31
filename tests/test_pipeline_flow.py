@@ -7,6 +7,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "dev" / "src" / "common"
 sys.path.insert(0, str(SRC))
+# dev/config.sh puts common/, youtube/ and instagram/ all on PYTHONPATH so
+# the pipeline modules can import each other; tests must do the same.
+sys.path.insert(0, str(ROOT / "dev" / "src" / "youtube"))
 
 import job_state
 import pipeline_flow

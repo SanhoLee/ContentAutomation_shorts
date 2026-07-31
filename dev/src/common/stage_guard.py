@@ -23,6 +23,7 @@ import subprocess
 import wave
 from pathlib import Path
 
+from korean_grammar import verify_numbers_preserved
 from script_runtime import load_guard_settings
 
 
@@ -88,6 +89,17 @@ def check_tts(work_dir, settings=None):
     return True, f"음성 {duration:.1f}초"
 
 
+def _srt_cue_text(srt_text):
+    """Just the caption lines, without the cue numbers and timing lines."""
+    lines = []
+    for line in srt_text.splitlines():
+        line = line.strip()
+        if not line or "-->" in line or line.isdigit():
+            continue
+        lines.append(line)
+    return " ".join(lines)
+
+
 def check_caption(work_dir, settings=None):
     """subs.srt has cues and scene timings do not run past the audio."""
     settings = settings or load_guard_settings()
@@ -101,6 +113,20 @@ def check_caption(work_dir, settings=None):
         return False, f"subs.srt를 읽지 못했습니다: {exc}"
     if "-->" not in text:
         return False, "subs.srt에 자막 큐가 없습니다."
+
+    # 숫자가 자막에서 어긋나면 근거 수치가 틀린 영상이 나간다. 소수점이 공백이
+    # 되거나 단위가 잘리는 종류의 사고를 렌더 전에 잡는다.
+    source = work_dir / "caption_script.txt"
+    if source.is_file():
+        try:
+            script_text = source.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            script_text = ""
+        if script_text and not verify_numbers_preserved(script_text, _srt_cue_text(text)):
+            return False, (
+                "자막의 숫자 표기가 대본과 다릅니다. "
+                "소수점이나 단위가 잘렸을 수 있습니다."
+            )
 
     scenes = _read_json(work_dir / "scenes_timed.json")
     if not isinstance(scenes, list) or not scenes:

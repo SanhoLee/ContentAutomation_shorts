@@ -19,13 +19,17 @@
 """
 
 import difflib
+import functools
 import json
 import os
 import re
 
+import korean_grammar as kg
+
 WORK_DIR   = os.environ.get("WORK_DIR", os.path.expanduser("~/brain50/data/work"))
 MAX_CHARS  = int(os.environ.get("CAPTION_MAX_CHARS", "24"))
 MIN_CHARS  = int(os.environ.get("CAPTION_MIN_CHARS", "8"))
+MAX_WORDS  = int(os.environ.get("CAPTION_MAX_WORDS", "10"))
 LINE_MAX_UNITS = float(os.environ.get("CAPTION_LINE_MAX_UNITS", "13"))
 MIN_CAPTION_DURATION = float(os.environ.get("CAPTION_MIN_DURATION_SEC", "0.8"))
 MODEL_SIZE = os.environ.get("WHISPER_MODEL", "small")
@@ -36,10 +40,13 @@ CAPTION_OFFSET_SEC = float(os.environ.get("CAPTION_OFFSET_SEC", "-0.15"))
 # 한국어 문맥 기반 자막 분할
 # ─────────────────────────────────────────────
 
-_SENTENCE_END = re.compile(r"[.!?][\"'”’)]*$|(?:합니다|됩니다|집니다|드립니다|줍니다|갑니다|옵니다|이에요|예요|어요|아요|거든요|네요|군요|잖아요|죠|요)[\"'”’)]*$")
-_CLAUSE_BREAK = re.compile(r"(?:지만|는데|라서|면서|그리고|그래서|그런데|하지만|또한)[,]?$|[,;:]$")
-_SHORT_LEADS = {"이", "그", "저", "안", "못"}
+_TERMINAL_PUNCT = re.compile(r"[.!?][\"'”’)]*$")
+_JOSA_TAIL = re.compile(r"(?:이|가|은|는|을|를|의|에|도)[,]?$")
 _TIME_SUFFIXES = ("주", "개월", "일", "시간", "분", "초", "년")
+
+# 어미 등급별 분할 보너스 (korean_grammar.split_priority 3/2/1/0에 대응).
+# 종결어미 뒤가 가장 좋고, 연결어미, 전성어미 순으로 약해진다.
+_BREAK_BONUS = (0.0, 3.0, 6.0, 10.0)
 
 
 def _syllables(text: str) -> float:
@@ -65,20 +72,49 @@ def _display_units(text: str) -> float:
 
 
 def _is_sentence_end(text: str) -> bool:
-    return bool(_SENTENCE_END.search(text.strip()))
+    text = text.strip()
+    return bool(_TERMINAL_PUNCT.search(text)) or kg.is_sentence_final(text)
 
 
-def _protected_boundary(left: str, right: str) -> bool:
-    """의미가 강하게 결합된 두 어절 사이에서는 자막을 끊지 않는다."""
-    left_clean = left.strip("'\"“”‘’.,!?()")
-    right_clean = right.strip("'\"“”‘’.,!?()")
-    if left_clean in _SHORT_LEADS:
-        return True
+BLOCK_NONE, BLOCK_SOFT, BLOCK_HARD = 0, 1, 2
+
+
+def _boundary_block(left: str, right: str) -> int:
+    """두 어절 사이를 끊는 것이 얼마나 나쁜지 등급으로 돌려준다.
+
+    HARD 는 의미가 깨지는 자리라 끊지 않는다. SOFT 는 어색할 뿐이라
+    대안이 없으면 양보한다 — soft 목록은 짧은 어간을 prefix로 훑기 때문에
+    과매칭이 전제되어 있고, 금지로 다루면 멀쩡한 경계까지 막힌다
+    (korean_grammar 모듈 설명 참고).
+    """
+    left_clean = kg.strip_edges(left)
+    right_clean = kg.strip_edges(right)
+
+    # hard — "억제할 ‖ 수 있다는", "이런 ‖ 적 있으셨나요"를 막는다.
+    if kg.starts_with_dependent_noun(right_clean):
+        return BLOCK_HARD
     if left_clean.endswith(("이라고", "라고")) and right_clean.startswith("해서"):
-        return True
+        return BLOCK_HARD
     if right_clean in {"안", "안에", "이내", "동안"} and left_clean.endswith(_TIME_SUFFIXES):
-        return True
-    return False
+        return BLOCK_HARD
+
+    # 진짜 어미 경계는 아래 soft 규칙보다 항상 낫다.
+    if kg.ends_with_ending(left_clean):
+        return BLOCK_NONE
+    if kg.is_auxiliary_verb(right_clean):   # "눌러 ‖ 버립니다"
+        return BLOCK_SOFT
+    if kg.is_no_split_after(left_clean):    # "그리고 ‖ ...", "정말 ‖ ..."
+        return BLOCK_SOFT
+    return BLOCK_NONE
+
+
+def _block_level(tokens: list[str], index: int) -> int:
+    """tokens[index-1]과 tokens[index] 사이 경계의 등급."""
+    if index <= 0 or index >= len(tokens):
+        return BLOCK_NONE
+    if kg.breaks_compound_term(tokens, index):
+        return BLOCK_HARD
+    return _boundary_block(tokens[index - 1], tokens[index])
 
 
 def _split_sentence_tokens(tokens: list[str]) -> list[list[str]]:
@@ -96,17 +132,29 @@ def _split_sentence_tokens(tokens: list[str]) -> list[list[str]]:
             width = _display_units(text)
             if width > limit and j > i + 1:
                 break
-            if j < n and _protected_boundary(tokens[j - 1], tokens[j]):
+            block = _block_level(tokens, j)
+            if block == BLOCK_HARD:
                 continue
             shortfall = max(0.0, MIN_CHARS - _syllables(text))
             target = limit * 0.78
             cost = (width - target) ** 2 + shortfall ** 2 * 5
+            if block == BLOCK_SOFT:
+                cost += 120
+            # 어절 수는 폭과 별개의 상한이다. 짧은 어절이 몰리면 폭은 여유가
+            # 있어도 한눈에 안 들어오므로 초과분만 벌점을 준다.
+            if len(tokens[i:j]) > MAX_WORDS:
+                cost += (len(tokens[i:j]) - MAX_WORDS) ** 2 * 25
             if len(tokens[i:j]) == 1 and j < n:
                 cost += 18
-            if j < n and re.search(r"(?:이|가|은|는|을|를|의|에|도)[,]?$", tokens[j - 1]):
+            # 폭이 limit 안이어도 두 줄로 균형이 안 잡히는 묶음이 있다. 실제
+            # 줄바꿈 결과를 보고 넘치는 만큼 벌점을 줘야 DP가 그걸 피해간다.
+            spill = _wrap_overflow(tuple(tokens[i:j]))
+            if spill:
+                cost += spill ** 2 * 8
+            if j < n and _JOSA_TAIL.search(tokens[j - 1]):
                 cost += 24
-            if j < n and _CLAUSE_BREAK.search(tokens[j - 1]):
-                cost -= 5
+            if j < n:
+                cost -= _BREAK_BONUS[kg.split_priority(tokens[j - 1])]
             total = cost + dp[j][0]
             if total < dp[i][0]:
                 dp[i] = (total, [tokens[i:j], *dp[j][1]])
@@ -120,20 +168,39 @@ def _wrap_caption(tokens: list[str]) -> str:
     text = " ".join(tokens)
     if _display_units(text) <= LINE_MAX_UNITS:
         return text
+    # 어색한 자리(soft)라도 끊는 편이 화면 밖으로 넘치는 것보다 낫다. 한 줄
+    # 분량만큼의 가짜 초과폭을 얹어 자연스러운 자리가 있으면 그쪽이 이기게 한다.
     choices = []
     for idx in range(1, len(tokens)):
-        if _protected_boundary(tokens[idx - 1], tokens[idx]):
+        block = _block_level(tokens, idx)
+        if block == BLOCK_HARD:
             continue
         left = " ".join(tokens[:idx])
         right = " ".join(tokens[idx:])
         lw, rw = _display_units(left), _display_units(right)
         overflow = max(0.0, lw - LINE_MAX_UNITS) + max(0.0, rw - LINE_MAX_UNITS)
+        # 어색함은 폭과 다른 단위라 같은 항에 더할 수 없다. 화면을 넘기지 않는
+        # 것이 먼저고, 그 다음이 끊는 자리, 마지막이 두 줄의 균형이다.
+        awkward = 2.0 if block == BLOCK_SOFT else 0.0
+        if _JOSA_TAIL.search(tokens[idx - 1]):
+            awkward += 1.0
         short_line = max(0.0, MIN_CHARS - lw) ** 2 + max(0.0, MIN_CHARS - rw) ** 2
-        choices.append((overflow, short_line, abs(lw - rw), left, right))
+        # 줄바꿈도 어미 뒤가 가장 읽기 좋다. 동률일 때만 갈리도록 약하게 준다.
+        ending = -_BREAK_BONUS[kg.split_priority(tokens[idx - 1])] * 0.1
+        choices.append((overflow, awkward, short_line, ending + abs(lw - rw), left, right))
     if not choices:
         return text
-    _, _, _, left, right = min(choices)
+    *_, left, right = min(choices)
     return left + "\n" + right
+
+
+@functools.lru_cache(maxsize=4096)
+def _wrap_overflow(tokens: tuple[str, ...]) -> float:
+    """줄바꿈까지 끝낸 뒤에도 한 줄이 화면폭을 넘는 정도. DP에서 매 후보마다
+    부르므로 캐시한다."""
+    wrapped = _wrap_caption(list(tokens))
+    widest = max(_display_units(part) for part in wrapped.split("\n"))
+    return max(0.0, widest - LINE_MAX_UNITS)
 
 
 def split_script_to_lines(script_text: str) -> list[str]:

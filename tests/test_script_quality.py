@@ -23,6 +23,8 @@ DEV_SRC = REPO_ROOT / "dev" / "src"
 os.environ.setdefault("WORK_DIR", tempfile.mkdtemp(prefix="script_quality_import_"))
 sys.path.insert(0, str(DEV_SRC / "common"))
 
+import script_runtime
+
 spec = importlib.util.spec_from_file_location("script0", DEV_SRC / "common" / "0_script.py")
 script0 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(script0)
@@ -328,6 +330,35 @@ class ScriptQualityTests(unittest.TestCase):
         finally:
             script0.total_chars = old_total
             script0.min_scenes_estimate = old_min
+
+    def test_missing_hook_open_loop_is_warning_not_error(self):
+        # An unattended run must not stop because the model skipped the open loop.
+        result = complete_result()
+        result["hook_open_loop"] = ""
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertTrue(report["ok"])
+        self.assertIn("missing_hook_open_loop", warning_codes(report))
+
+    def test_title_hashtag_is_flagged_and_stripped(self):
+        result = complete_result()
+        result["title"] = "제목 #뇌건강 #50대"
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertTrue(report["ok"])
+        self.assertIn("hooky_title_hashtag", warning_codes(report))
+        with tempfile.TemporaryDirectory() as tmp:
+            old_work_dir = script0.WORK_DIR
+            try:
+                script0.WORK_DIR = tmp
+                with contextlib.redirect_stdout(io.StringIO()):
+                    script0.write_outputs(result, comparison_strategy())
+                meta = json.loads(Path(tmp, "video_meta.json").read_text(encoding="utf-8"))
+                self.assertEqual(meta["title"], "제목")
+            finally:
+                script0.WORK_DIR = old_work_dir
+
+    def test_length_targets_at_55_seconds(self):
+        # dev runs the legacy pace path: ATEMPO 1.05 * CHARS_PER_SEC 4.5.
+        self.assertEqual(script_runtime.script_length_targets(55, 4.725), (259, 297, 8))
 
     def test_validation_failure_prevents_output_files_without_claude_call(self):
         with tempfile.TemporaryDirectory() as tmp:

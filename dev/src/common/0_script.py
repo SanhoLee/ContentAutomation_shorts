@@ -1044,6 +1044,8 @@ title        : 영상 본문과 훅을 자연스럽게 대표하는 한국어 �
                - main_keyword는 가능하면 앞쪽에 넣되, 억지스럽거나 기계적인 제목 금지
                - 실제 영상에서 밝혀지는 긴장/반전/해결 약속이 제목에 드러나야 함
                - 과장·공포 조장 대신 "궁금해서 누르게 되는" 생활형 문장으로 작성
+               - 제목에 # 해시태그를 넣지 말 것
+               - 답을 제목에서 확정해 말하지 말 것. 무엇을 다루는지만 알리고 결론은 본문에서 밝힐 것
 search_title_format: 제목 성격 (질문형/비교형/체크리스트형/생활습관형/반전형/공감형 중 하나)
 core_message : 시청자가 이 영상에서 가져갈 딱 한 문장 (30자 이내)
 thumbnail_text: 썸네일용 짧은 문구 후보 1~2개 (배열, 각 8~14자, 약간 자극적이되 사실 기반)
@@ -1364,9 +1366,11 @@ main_keyword       : {main_keyword}
 - 단, 다음은 절대 금지합니다: 근거 없이 특정 질병을 확정 진단하는 표현("~하면 치매 걸립니다", "~하면 죽습니다" 등
   인과를 100% 확정하는 문장), 실제 존재하지 않는 통계 창작, 특정 병원·약품·시술 비방.
   → 자극은 "궁금증과 경각심을 최대치로 끌어올리는 것"까지이며, "근거 없는 공포 조장"은 다른 문제입니다.
-- 훅으로 시선을 붙잡은 직후(Scene 2)에는 바로 다정한 공감으로 톤을 전환하세요:
-  "혹시 이런 적 있으셨나요?"처럼 자연스럽게 이어받아, 강한 훅이 위협이 아니라
-  "나를 위해 챙겨주는 이야기"로 느껴지도록 착지시키세요. 이 전환이 어색하면 전체 영상이 낚시성으로 느껴집니다.
+- Scene 1은 답을 주지 않은 채로 끝내세요. 결론과 핵심 메시지를 Scene 1에 넣지 말고
+  "그런데 진짜 이유는 따로 있습니다", "여기서 대부분이 반대로 알고 계십니다"처럼 미완결 어구로 마감하세요.
+- Scene 2는 공감 구간이 아니라 긴장을 유지하는 구간입니다. 훅에서 던진 것을 더 구체적인 장면·상황으로 좁히세요.
+  "혹시 이런 적 있으셨나요?" 같은 일반적인 공감 질문으로 Scene 2를 시작하지 마세요.
+- 다정한 공감 착지는 Scene 3 이후에 두세요.
 
 [2단계: 다정한 눈높이 설명]
 - 어려운 의학 수치나 연구 결과를 지식 자랑하듯 설명하지 마세요. 일상적인 비유(예: 오래 켜둔 전구, 가을철 마른 나무 등)를 들어 쉽게 풀어주세요.
@@ -1376,6 +1380,7 @@ main_keyword       : {main_keyword}
 - 겁을 주거나 위협하며 끝내지 마세요. 오늘 당장, 당장 힘들이지 않고 시작할 수 있는 '구체적이고 작은 행동 팁 1가지'(시간, 양, 횟수 명시)를 선물하듯 제안하세요.
 - 마지막에는 핵심 메시지인 "{core_message}"를 건네며 안도감을 주는 멘트를 넣으세요.
 - 다음 주제인 "{cta_next}"를 예고하며 인사를 건네며 마무리하세요.
+- Scene 8~9 중 한 곳에 "아침형이세요, 저녁형이세요?"처럼 두 글자로 답이 끝나는 양자택일 댓글 질문을 1개 넣으세요. 개방형 질문은 쓰지 마세요.
 
 ─── 📝 작성 및 포맷 규칙 ───
 1. 분량 및 씬: scenes의 text에 포함된 한글 음절만 세어 총 {prompt_min_chars}~{prompt_max_chars}자로 작성하세요. 공백, 숫자, 영문, 문장부호는 글자 수에서 제외합니다. 절대 상한은 {hard_max_chars}자이며 이를 넘기지 마세요.
@@ -1417,6 +1422,7 @@ main_keyword       : {main_keyword}
   "frame_header": {{"title": "대제목", "subtitle": "소제목"}},
   "description": "설명란 인트로 텍스트\\n\\n썸네일 문구 후보: {thumbnail_hint}",
   "final_answer": "제목과 시청자 질문에 대한 한 문장 최종 답",
+  "hook_open_loop": "Scene 1 끝에서 아직 답하지 않고 남긴 질문 한 문장",
   "promise_fulfilled": true,
   "evidence_limit": "근거가 부족하거나 비교가 불가한 지점",
   "scenes": [
@@ -1627,6 +1633,10 @@ def validate_script(result, strategy):
         errors.append(quality_issue("missing_scenes", "scenes가 비어 있습니다."))
     if not final_answer:
         errors.append(quality_issue("missing_final_answer", "final_answer가 비어 있습니다."))
+    if not str(result.get("hook_open_loop") or "").strip():
+        warnings.append(quality_issue("missing_hook_open_loop", "Scene 1을 미해결로 끝냈는지 확인할 오픈루프 문장이 없습니다.", "warning"))
+    if "#" in str(result.get("title") or ""):
+        warnings.append(quality_issue("hooky_title_hashtag", "제목에 해시태그가 들어 있습니다.", "warning"))
     if result.get("promise_fulfilled") is not True:
         warnings.append(quality_issue("promise_not_fulfilled", "제목과 질문의 약속 충족 여부를 확인해 주세요.", "warning"))
     if scenes and char_count < total_chars * 0.55:
@@ -1712,7 +1722,7 @@ def write_outputs(result, strategy, trend_context=None):
         "search_title_format": strategy.get("search_title_format", ""),
         "search_intent":       strategy.get("search_intent", ""),
         "core_message":        strategy.get("core_message", ""),
-        "title":               result.get("title", strategy.get("title", "")),
+        "title":               re.sub(r"\s*#\S+", "", str(result.get("title", strategy.get("title", "")))).strip(),
         "hook_type":           result.get("hook_type", strategy.get("hook_type", "")),
         "hashtags":            result.get("hashtags", ""),
         "thumbnail_text":      thumbnail_items,

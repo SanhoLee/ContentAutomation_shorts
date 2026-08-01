@@ -465,6 +465,15 @@ def chunks(values: Sequence[str], size: int = 50) -> Iterable[Sequence[str]]:
         yield values[index:index + size]
 
 
+def _save_token(token: Path, creds) -> None:
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text(creds.to_json(), encoding="utf-8")
+    try:
+        os.chmod(token, 0o600)
+    except OSError:
+        pass
+
+
 def load_credentials():
     """\ubcc4\ub3c4 \uc77d\uae30 \ud1a0\ud070\uc744 \ub85c\ub4dc/\uac31\uc2e0\ud55c\ub2e4. \ube44\ubc00 \uac12\uc740 \ucd9c\ub825\ud558\uc9c0 \uc54a\ub294\ub2e4."""
     try:
@@ -500,12 +509,7 @@ def load_credentials():
             )
         flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), SCOPES)
         creds = flow.run_local_server(port=0)
-    token.parent.mkdir(parents=True, exist_ok=True)
-    token.write_text(creds.to_json(), encoding="utf-8")
-    try:
-        os.chmod(token, 0o600)
-    except OSError:
-        pass
+    _save_token(token, creds)
     return creds
 
 
@@ -1601,6 +1605,12 @@ def calculate_performance_scores(conn: sqlite3.Connection, period_start: str, pe
 
 
 def classify_api_error(exc: Exception) -> str:
+    try:
+        from google.auth.exceptions import RefreshError
+    except ImportError:
+        RefreshError = ()  # isinstance(x, ())는 항상 False
+    if isinstance(exc, RefreshError):
+        return "인증/권한 실패"
     status = _http_status(exc)
     text = str(exc).lower()
     if status in (401, 403) and any(word in text for word in ("quota", "dailylimit", "ratelimit")):
@@ -2161,6 +2171,14 @@ def successful_sync_age_hours(conn: sqlite3.Connection, now: datetime | None = N
     return max(0.0, (current - finished).total_seconds() / 3600.0)
 
 
+def latest_sync_error(conn: sqlite3.Connection) -> str | None:
+    """가장 최근 실패한 sync_runs의 error_message. 실패 이력이 없으면 None."""
+    row = conn.execute(
+        "SELECT error_message FROM sync_runs WHERE status='failed' ORDER BY run_id DESC LIMIT 1"
+    ).fetchone()
+    return row["error_message"] if row else None
+
+
 def feedback_cache_status(
     conn: sqlite3.Connection,
     *,
@@ -2268,6 +2286,58 @@ def cmd_guide(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_auth(_args: argparse.Namespace) -> int:
+    """저장된 토큰 로드/갱신만 시도한다. API 쿼터를 쓰는 실제 sync 없이 인증 상태만 진단한다."""
+    try:
+        load_credentials()
+    except Exception as exc:
+        category = classify_api_error(exc)
+        print(f"인증 확인 실패: {category}: {type(exc).__name__}", file=sys.stderr)
+        return 1
+    print("인증 확인 성공: 토큰이 유효하며 필요 시 갱신되었습니다.")
+    return 0
+
+
+def cmd_reauth(args: argparse.Namespace) -> int:
+    """저장된 토큰을 무시하고 새 OAuth 동의를 강제로 받는다.
+
+    헤드리스 서버에서는 브라우저를 직접 띄울 수 없으므로, SSH 로컬 포트포워딩
+    (예: ssh -L <port>:localhost:<port> user@host)으로 접속한 뒤 이 명령을 실행하고,
+    출력되는 인증 URL을 로컬 브라우저(터널 경유)로 열어 동의를 완료한다.
+    """
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError as exc:
+        raise RuntimeError(
+            "Google API 패키지가 없습니다. google-api-python-client, "
+            "google-auth-oauthlib, google-auth-httplib2를 설치하세요."
+        ) from exc
+
+    token = _env_path("YOUTUBE_FEEDBACK_TOKEN")
+    if token is None:
+        print("YOUTUBE_FEEDBACK_TOKEN에 토큰 저장 경로를 지정하세요.", file=sys.stderr)
+        return 1
+    client_secret = _env_path("YOUTUBE_FEEDBACK_CLIENT_SECRET_FILE")
+    if client_secret is None:
+        legacy_client_secret = _env_path("YOUTUBE_CLIENT_SECRET")
+        if legacy_client_secret is not None and legacy_client_secret.is_file():
+            client_secret = legacy_client_secret
+    if client_secret is None or not client_secret.is_file():
+        print(
+            "YOUTUBE_FEEDBACK_CLIENT_SECRET_FILE에 데스크톱 OAuth client_secret.json "
+            "경로를 지정하세요.",
+            file=sys.stderr,
+        )
+        return 1
+
+    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret), SCOPES)
+    print(f"브라우저에서 인증 URL을 여세요 (SSH 터널 사용 시 로컬 브라우저에서 접속, 포트 {args.port}).")
+    creds = flow.run_local_server(port=args.port, open_browser=False)
+    _save_token(token, creds)
+    print(f"재인증 완료. 토큰 저장: {token}")
+    return 0
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="YouTube API \ud53c\ub4dc\ubc31 MVP")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2281,6 +2351,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     guide_parser.add_argument("topic", help="\ubd84\uc11d\ud560 \uc0c8 \uc8fc\uc81c")
     guide_parser.add_argument("--strictness", default="balanced", choices=tuple(STRICTNESS_PROFILES))
     guide_parser.add_argument("--no-sync", action="store_true", help="API \ub3d9\uae30\ud654 \uc5c6\uc774 \uae30\uc874 DB \uc0ac\uc6a9")
+    subparsers.add_parser("check-auth", help="\uc800\uc7a5\ub41c \ud1a0\ud070 \ub85c\ub4dc/\uac31\uc2e0\ub9cc \uc2dc\ub3c4 (API \ucffc\ud130 \ubbf8\uc0ac\uc6a9)")
+    reauth_parser = subparsers.add_parser(
+        "reauth", help="OAuth \uc7ac\uc778\uc99d\uc744 \uac15\uc81c\ub85c \uc218\ud589 (\ud5e4\ub4dc\ub9ac\uc2a4 \uc11c\ubc84\ub294 SSH \ub85c\uceec \ud3ec\ud2b8\ud3ec\uc6cc\ub529 \ud544\uc694)"
+    )
+    reauth_parser.add_argument("--port", type=int, default=8765, help="run_local_server\uac00 \uc0ac\uc6a9\ud560 \ub85c\uceec \ud3ec\ud2b8")
     return parser.parse_args(argv)
 
 
@@ -2295,6 +2370,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "report": cmd_report,
         "check-topic": cmd_check_topic,
         "guide": cmd_guide,
+        "check-auth": cmd_check_auth,
+        "reauth": cmd_reauth,
     }
     return commands[args.command](args)
 

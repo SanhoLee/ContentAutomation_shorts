@@ -84,6 +84,13 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if sync_status in {"stale-cache", "missing"} and not args.allow_stale:
         objective_type = normalize_objective_type(args.objective)
         reason = "정상 YouTube 동기화 데이터가 7일 이내가 아니어서 Claude 호출 전에 중단했습니다."
+        conn = feedback.connect()
+        try:
+            sync_error = feedback.latest_sync_error(conn)
+        finally:
+            conn.close()
+        if sync_error:
+            reason += f" 최근 동기화 실패 원인: {sync_error}"
         plan = {
             "topic": args.seed or "",
             "main_keyword": args.seed or "",
@@ -118,6 +125,17 @@ def cmd_plan(args: argparse.Namespace) -> int:
         output_path=args.output, trend_candidates=trends, allow_ai=not args.no_ai,
     )
     plan["objective"]["sync_status"] = sync_status
+    if sync_status == "refresh-failed-cache":
+        conn = feedback.connect()
+        try:
+            sync_error = feedback.latest_sync_error(conn)
+        finally:
+            conn.close()
+        if sync_error:
+            existing_reason = plan["objective"].get("reason") or ""
+            plan["objective"]["reason"] = (
+                f"{existing_reason} (성과 데이터 동기화 실패: {sync_error}; 이전 캐시로 계속 진행)"
+            ).strip()
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

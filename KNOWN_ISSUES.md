@@ -132,6 +132,16 @@ Status: as-designed for now, revisit if it should feed the planner.
 
 Added 2026-07-29 (`dev/src/youtube/classify_uploads_by_category.py`) to classify already-uploaded videos into `research_categories.json` categories via the YouTube API. It is run manually; it does not currently feed `objective_planner.py` or any scheduled job. If category-drift analysis becomes routine, this is a candidate for the "scheduled loop" direction in `CLAUDE.md`'s North star, not an isolated cron job.
 
+### 16. `classify_api_error` misclassified `RefreshError`, masking OAuth re-auth need for days (fixed 2026-08-01)
+
+Status: fixed in code (classification + reason surfacing); recurrence still possible if OAuth consent screen stays in "Testing" publishing status (operational, not code).
+
+`load_credentials()` in `6_youtube_feedback.py` calls `creds.refresh(Request())`, which raises `google.auth.exceptions.RefreshError` when the refresh token is revoked/expired. `classify_api_error()` read `exc.resp.status`, which `RefreshError` doesn't have, so it always fell through to the generic `"API/동기화 실패"` bucket instead of `"인증/권한 실패"`. Symptom: `sync_runs.error_message` read `API/동기화 실패: RefreshError` (now `인증/권한 실패: RefreshError` after the fix) across 16 consecutive `sync_runs` (run_id 23-38, starting 2026-07-26), and goal-based planning jobs (`0_topic_plan.py`) silently landed in `decision=manual_review`, `candidate_count=0` once the cache passed the 7-day `stale_hours` guard — the Slack/Telegram message read like "no candidates for this seed" with no mention of the real cause. An earlier related job on 2026-07-27 hit `sync_status=refresh-failed-cache` (job continued on stale cache, per the production-continuity principle) with the same lack of visibility.
+
+Fix: `classify_api_error` now checks `isinstance(exc, RefreshError)` explicitly; `0_topic_plan.py`'s `cmd_plan()` now enriches `objective.reason` with `feedback.latest_sync_error()` in both the blocking (`stale-cache`/`missing`) and non-blocking (`refresh-failed-cache`) branches, so both existing Slack/Telegram messages (which already print `reason`) surface the real cause without any bot-file changes. Two new diagnostic/ops subcommands were added to `6_youtube_feedback.py`: `check-auth` (attempts only credential load/refresh, no API quota use) and `reauth` (forces a fresh interactive OAuth grant via `run_local_server`, usable headlessly on Lightsail through SSH local port forwarding). See `docs/usage/youtube-feedback.md` section 9 for the full re-auth runbook.
+
+Likely root cause of the original expiry: the Google Cloud OAuth consent screen is in "Testing" publishing status, which caps refresh tokens at 7 days — this must be verified/fixed in Google Cloud Console (Publish App → In production); the code cannot detect or change this. There is still no proactive/scheduled sync health-check (no cron/systemd timer) — sync only runs reactively when a plan/content command triggers it; this is a deliberate scope decision for now (see item 15's "scheduled loop" note).
+
 ## Bugs To Watch For In Next Testing Session
 
 - Duplicate welcome/bye messages during rapid systemd restart.

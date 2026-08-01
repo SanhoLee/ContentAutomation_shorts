@@ -297,6 +297,45 @@ python -c "import sqlite3; c=sqlite3.connect('dev/data/youtube_feedback.db'); [p
 
 토큰과 `client_secret.json` 내용은 출력하거나 Git에 커밋하지 마세요.
 
+### 인증/권한 실패로 반복 실패할 때 (재인증 런북)
+
+증상: `sync_runs.error_message`가 `인증/권한 실패: RefreshError`로 반복 기록되고, 목표 기반 기획이
+`decision=manual_review`, `candidate_count=0`으로 조용히 멈춘다. 먼저 아래로 원인을 확인한다(전체 `sync`
+없이, API 쿼터를 쓰지 않는다).
+
+```bash
+python dev/src/youtube/6_youtube_feedback.py check-auth
+```
+
+1. **Google Cloud Console에서 OAuth 동의 화면 게시 상태 확인** (근본 원인일 가능성이 높다)
+   - 해당 프로젝트 → APIs & Services → OAuth consent screen → Publishing status
+   - "Testing"이면 리프레시 토큰이 발급 후 7일이면 만료된다. "PUBLISH APP"으로 "In production"으로
+     전환한다. 검증되지 않은 앱 경고가 뜰 수 있지만, 본인 계정만 쓰는 개인 채널이면
+     "Advanced → Go to (unsafe)"로 계속 진행할 수 있다. 이 상태 전환은 이 저장소 코드로 감지하거나
+     자동화할 수 없다 — 콘솔에서 직접 확인/조치해야 하는 운영 작업이다.
+
+2. **`client_secret.json`을 서버에 준비한다** (재인증 시에만 필요)
+   - Console → Credentials에서 사용 중인 OAuth 클라이언트(데스크톱 앱 유형)의 JSON을 다운로드한다.
+   - 서버에 업로드하고 `dev/secrets.sh`에 `export YOUTUBE_FEEDBACK_CLIENT_SECRET_FILE='...'`을 추가한다
+     (`.gitignore`가 이미 `client_secret*.json`을 제외하므로 커밋 걱정은 없다).
+
+3. **SSH 로컬 포트포워딩으로 헤드리스 서버에서 바로 재인증한다**
+   - 로컬 머신에서: `ssh -L 8765:localhost:8765 ubuntu@<lightsail-host>`
+   - 서버 세션에서:
+     ```bash
+     python dev/src/youtube/6_youtube_feedback.py reauth --port 8765
+     ```
+   - 콘솔에 출력되는 인증 URL을 로컬 브라우저(터널을 통해)로 열어 로그인/동의를 완료하면, 새 토큰이
+     `$YOUTUBE_FEEDBACK_TOKEN` 경로에 자동 저장된다.
+
+4. **재동기화 확인**
+   ```bash
+   python dev/src/youtube/6_youtube_feedback.py check-auth
+   python dev/src/youtube/6_youtube_feedback.py sync
+   python -c "import sqlite3; c=sqlite3.connect('dev/data/youtube_feedback.db'); [print(r) for r in c.execute('SELECT run_id,finished_at,status,error_message FROM sync_runs ORDER BY run_id DESC LIMIT 3')]"
+   ```
+   `status='success'`가 나오면 완료다. 이후 Slack/Telegram으로 트리거된 목표 기반 기획도 정상 진행된다.
+
 ## 10. 최종 체크리스트
 
 - [ ] Data API와 Analytics API를 모두 활성화했다.

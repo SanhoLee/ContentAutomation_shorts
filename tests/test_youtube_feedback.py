@@ -276,6 +276,37 @@ class YouTubeFeedbackTests(unittest.TestCase):
         self.assertIn("claude_usage", tables)
         conn.close()
 
+    def test_classify_api_error_detects_refresh_error_without_resp(self):
+        from google.auth.exceptions import RefreshError
+
+        category = youtube_feedback.classify_api_error(RefreshError("invalid_grant"))
+        self.assertEqual(category, "인증/권한 실패")
+
+    def test_classify_api_error_falls_back_to_generic_bucket(self):
+        category = youtube_feedback.classify_api_error(RuntimeError("boom"))
+        self.assertEqual(category, "API/동기화 실패")
+
+    def test_latest_sync_error_returns_most_recent_failure(self):
+        conn = youtube_feedback.connect(self.db)
+        with conn:
+            conn.execute(
+                "INSERT INTO sync_runs(started_at, finished_at, status, error_message) VALUES(?,?,?,?)",
+                ("2026-07-26T00:00:00Z", "2026-07-26T00:00:01Z", "failed", "API/동기화 실패: RefreshError"),
+            )
+            conn.execute(
+                "INSERT INTO sync_runs(started_at, finished_at, status, error_message) VALUES(?,?,?,?)",
+                ("2026-07-27T00:00:00Z", "2026-07-27T00:00:01Z", "failed", "인증/권한 실패: RefreshError"),
+            )
+        self.assertEqual(
+            youtube_feedback.latest_sync_error(conn), "인증/권한 실패: RefreshError"
+        )
+        conn.close()
+
+    def test_latest_sync_error_is_none_without_failures(self):
+        conn = youtube_feedback.connect(self.db)
+        self.assertIsNone(youtube_feedback.latest_sync_error(conn))
+        conn.close()
+
     def test_snapshot_windows_and_video_linkage_remain_separate(self):
         conn = youtube_feedback.connect(self.db)
         with conn:

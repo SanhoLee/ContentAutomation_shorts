@@ -1,16 +1,16 @@
 # YouTube 피드백 기능 사용법
 
-이 문서는 `dev/src/6_youtube_feedback.py`를 처음 쓰는 사람을 위한 쉬운 안내서입니다.
+이 문서는 `dev/src/youtube/6_youtube_feedback.py`를 처음 쓰는 사람을 위한 쉬운 안내서입니다.
 
 ## 1. 무엇을 하는 기능인가요?
 
 YouTube API의 실제 채널 성과를 수집하고, 채널 내부 상대분포로 정규화해 Stage 1 전략과 Stage 2 대본에 자동 반영합니다.
 
 ```bash
-python dev/src/6_youtube_feedback.py sync
-python dev/src/6_youtube_feedback.py report
-python dev/src/6_youtube_feedback.py check-topic "수면 부족과 기억력 저하"
-python dev/src/6_youtube_feedback.py guide "수면 부족과 기억력 저하"
+python dev/src/youtube/6_youtube_feedback.py sync
+python dev/src/youtube/6_youtube_feedback.py report
+python dev/src/youtube/6_youtube_feedback.py check-topic "수면 부족과 기억력 저하"
+python dev/src/youtube/6_youtube_feedback.py guide "수면 부족과 기억력 저하"
 ```
 
 - `sync`: YouTube에서 실제 데이터를 읽어 DB에 저장합니다.
@@ -79,7 +79,7 @@ $env:YOUTUBE_FEEDBACK_DB = "$PWD\dev\data\youtube_feedback.db"
 ## 4. 실제 데이터 받기
 
 ```bash
-python dev/src/6_youtube_feedback.py sync
+python dev/src/youtube/6_youtube_feedback.py sync
 ```
 
 처음 실행하면 브라우저가 열립니다. 실제 YouTube 채널을 관리하는 Google 계정으로 로그인하고 읽기 권한에 동의합니다.
@@ -217,7 +217,7 @@ Analytics의 `views`와 Data API의 누적 `view_count`는 조회 기간이 다�
 동기화 후 보고서를 만듭니다.
 
 ```bash
-python dev/src/6_youtube_feedback.py report --strictness balanced
+python dev/src/youtube/6_youtube_feedback.py report --strictness balanced
 ```
 
 생성 파일:
@@ -230,7 +230,7 @@ dev/data/youtube_strategy.json
 새 주제를 검사합니다.
 
 ```bash
-python dev/src/6_youtube_feedback.py check-topic "수면 부족과 기억력 저하" --strictness balanced
+python dev/src/youtube/6_youtube_feedback.py check-topic "수면 부족과 기억력 저하" --strictness balanced
 ```
 
 - `허용`: 많이 겹치지 않음

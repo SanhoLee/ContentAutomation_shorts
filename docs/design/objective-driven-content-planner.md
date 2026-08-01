@@ -83,7 +83,7 @@ cd /home/ubuntu/brain50/dev
 
 ```bash
 source ./config.sh
-python3 src/0_topic_plan.py plan \
+python3 src/common/0_topic_plan.py plan \
   --objective subscriber_growth \
   --seed "수면" \
   --output "$WORK_DIR/topic_plan.json"
@@ -92,7 +92,7 @@ python3 src/0_topic_plan.py plan \
 API 없이 deterministic dry-run:
 
 ```bash
-python3 src/0_topic_plan.py plan \
+python3 src/common/0_topic_plan.py plan \
   --objective retention \
   --seed "기억력" \
   --no-ai --no-sync --no-trends \
@@ -103,9 +103,9 @@ python3 src/0_topic_plan.py plan \
 상태·보고·주기 감사:
 
 ```bash
-python3 src/0_topic_plan.py status
-python3 src/0_topic_plan.py report --output "$WORK_DIR/goal_report.json"
-python3 src/0_topic_plan.py refresh --objective subscriber_growth
+python3 src/common/0_topic_plan.py status
+python3 src/common/0_topic_plan.py report --output "$WORK_DIR/goal_report.json"
+python3 src/common/0_topic_plan.py refresh --objective subscriber_growth
 ```
 
 `--require-runnable`을 사용해도 `manual_review`/`rejected`만으로는 중단하지 않는다. 결정론적 fallback은 항상 후보를 하나 만들어내므로, confidence가 낮거나 Planner/Critic 호출이 실패해도 그 후보로 제작을 계속 진행한다(품질 판단은 이후 성과 데이터로 반영). exit code 2로 중단하는 유일한 경우는 씨드로 만들 수 있는 후보가 하나도 없을 때(`planning.candidate_count == 0`)뿐이다. `run_goal.sh`은 이 옵션을 사용하므로 오래된 YouTube 동기화 데이터(`--allow-stale` 미지정 시)나 후보가 전혀 없는 경우에만 자동 진행을 멈춘다.
@@ -247,11 +247,42 @@ RESEARCH_MODE=adaptive
 WEB_RESEARCH_MAX_USES=2
 CASE_RESEARCH_MAX_USES=2
 YOUTUBE_FEEDBACK_SYNC_TTL_HOURS=6
+ALLOW_NO_PUBMED=0
 ```
 
 `adaptive` 연구는 최종 선정된 주제만 조사한다. PubMed 결과가 충분하면 일반 web research를 생략할 수 있고, `사례추적형`은 case research, `연구발견형`은 일반 web research를 실행한다.
 
 모든 Claude 응답은 멀티턴의 각 turn까지 `claude_usage.jsonl`과 SQLite에 동시에 기록한다. 예상 비용은 Haiku/Sonnet 입력·출력, cache write/read, web search 요청을 합산한다. 이는 로컬 추정치이며 최종 청구는 Anthropic Console을 기준으로 확인한다.
+
+## 근거 확인 — evidence_probe / trend_probe (2026-07-31)
+
+두 가지 조용한 실패를 막기 위한 결정론적 확인 계층이다. Claude 호출을 추가하지 않는다.
+
+**`evidence_probe.py`** — PubMed 쿼리가 0건이어도 그 자리에서 포기하지 않고 좁아지는
+사다리(full → narrowed → core → category의 검증된 쿼리)를 걷는다. 두 불변식: 한글을
+직접 보내지 않는다, Claude를 추가로 호출하지 않는다(사다리는 순수 문자열 가공이고
+마지막 단은 `research_categories.json`을 재사용). 실측 데이터 기반 두 가드로 신뢰할 수
+없는 rung을 거른다: 과도한 폭(정상 쿼리는 Europe PMC 기준 최대 128,796건인데
+"LDL"처럼 붕괴된 쿼리는 365,469건), 그리고 PubMed `querytranslation` 기반 쿼리 생존
+확인. 이전에는 번역 실패 시 원문 한글이 그대로 전달되어 PubMed가 라틴 문자만 남기고
+한글을 버렸다("uncorrected refractive error dementia risk" → 0건에서 포기, 반면
+"ldl"[All Fields] 134,890건이 무관한 문서를 근거로 둔갑시킨 사례 존재).
+
+**`trend_probe.py`** — 시청자는 자기 언어로 검색하므로 en → ja → ko 순서로 시도하고
+통과하는 첫 언어에서 멈춘다(보통 요청 1회). 채널 어휘(keywords 테이블 +
+`research_categories.json`에서 런타임에 만든 약 1,500개 용어)로 drift 게이트를 적용해
+"꿈" 같은 모호한 씨드(10% 일치)는 버리고 "치매 예방"·"기억력"(100% 일치)만 통과시킨다.
+
+기획 점수는 topic-level evidence를 `research_depth`(카테고리 단위)와 나란히 반영한다.
+영어 쿼리는 이미 호출 중인 Seed Interpreter의 출력을 재사용하므로 추가 비용이 없다.
+근거가 없는 후보는 탈락하지만, **모든 후보가 비어 있으면** 파이프라인은 계속 진행한다
+(무인 실행 중단 방지). `allow_no_pubmed`는 더 이상 자동 실행 경로에서 하드코딩된
+`True`가 아니며, `ALLOW_NO_PUBMED=1`로 명시해야 PubMed 사다리가 완전히 실패해도
+계속 진행한다.
+
+관측 지점: `pubmed_status.json`의 `ladder_rung`(`full`/`narrowed`/`core`/`category`)이
+어느 단에서 성공했는지 기록한다. `category` 비중이 높으면 원본 쿼리 품질을 재검토할
+신호다.
 
 ## 업로드 및 리프레시
 
@@ -276,7 +307,9 @@ python3 -m unittest \
   tests.test_objective_planner \
   tests.test_goal_pipeline \
   tests.test_youtube_feedback \
-  tests.test_script_runtime -v
+  tests.test_script_runtime \
+  tests.test_evidence_probe \
+  tests.test_trend_probe -v
 
 python3 -m compileall -q dev/src
 bash -n dev/run_goal.sh dev/sh/0_topic_plan.sh dev/sh/0_script.sh dev/sh/3_upload.sh

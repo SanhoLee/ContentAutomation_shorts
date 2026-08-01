@@ -149,15 +149,29 @@ python3 dev/src/common/run_pipeline.py --job-id J status
 ```
 brain50/
 ├── dev/                        # 개발 환경
-│   ├── src/                    # Python 핵심 스크립트
-│   │   ├── 0_script.py         # 대본 생성 (2단계 Claude)
-│   │   ├── 1_tts.py            # TTS 음성 생성
-│   │   ├── 2_caption.py        # 자막 생성 (스크립트 기반)
-│   │   ├── 3_broll.py          # B-roll 수집 (Pexels)
-│   │   ├── 4_upload.py         # YouTube 업로드
-│   │   ├── 6_youtube_feedback.py # YouTube API 성과 피드백
-│   │   └── telegram_bot.py     # Telegram 승인 봇
-│   ├── sh/                     # Shell wrapper
+│   ├── src/
+│   │   ├── common/              # 콘텐츠 유형에 무관한 로직
+│   │   │   ├── 0_script.py      # 대본 생성 (2단계 Claude)
+│   │   │   ├── 0_topic_plan.py  # 목표 기반 자동 주제 기획 (objective_planner)
+│   │   │   ├── objective_planner.py
+│   │   │   ├── evidence_probe.py  # PubMed 근거 확인 쿼리 사다리
+│   │   │   ├── trend_probe.py     # 다국어 트렌드 신호 + drift 필터
+│   │   │   ├── pipeline_flow.py   # 단계 순서 정의 (STAGES)
+│   │   │   ├── pipeline_orchestrator.py
+│   │   │   ├── run_pipeline.py    # 봇 없이 CLI로 잡 진행
+│   │   │   ├── stage_guard.py     # 단계별 결정론적 자동 점검
+│   │   │   ├── script_runtime.py  # Stage 0 런타임 설정 중앙화
+│   │   │   ├── telegram_bot.py
+│   │   │   └── slack_bot.py
+│   │   ├── youtube/              # YouTube 전용 렌더 파이프라인
+│   │   │   ├── 1_tts.py
+│   │   │   ├── 2_caption.py
+│   │   │   ├── 3_broll.py
+│   │   │   ├── 4_upload.py
+│   │   │   ├── 6_youtube_feedback.py
+│   │   │   └── classify_uploads_by_category.py  # 업로드 영상을 research_categories로 분류
+│   │   └── instagram/            # Instagram 카드 콘텐츠 (스켈레톤)
+│   ├── sh/                     # Shell wrapper (common/youtube 하위 구조 동일)
 │   └── data/
 │       ├── youtube_feedback.db # YouTube API 성과 SQLite DB
 │       └── work/{JOB_ID}/      # 실행별 작업 폴더
@@ -274,9 +288,9 @@ PubMed 번역에 사용한 영어 쿼리를 재활용해 우선 출처에서 최
 YouTube Data API와 Analytics API에서 최근 90일 성과를 가져와 다음 대본의 Stage 1·2에 자동 반영합니다.
 
 ```bash
-python dev/src/6_youtube_feedback.py sync
-python dev/src/6_youtube_feedback.py report --strictness balanced
-python dev/src/6_youtube_feedback.py guide "치매 초기증상" --strictness balanced
+python dev/src/youtube/6_youtube_feedback.py sync
+python dev/src/youtube/6_youtube_feedback.py report --strictness balanced
+python dev/src/youtube/6_youtube_feedback.py guide "치매 초기증상" --strictness balanced
 ```
 
 Shorts 피드 초반 몰입 대리지표·평균 시청률·구독 전환율·공유율·좋아요율·댓글률을 채널 내부 백분위로 정규화합니다. 지속률과 구독 전환율의 채널 적응 기준으로 Q1 치트키/Q2 소재 우수/Q3 몰입 우수/Q4 재검토 전략을 만들고 Stage 1·2에 전달합니다. 표본이 적을수록 초기 기준과 중앙값 쪽으로 보정하며, 영상이 쌓일수록 실제 채널 분포가 기준값을 자동 갱신합니다.
@@ -326,13 +340,13 @@ Scene 1: 첫 문장에 main_keyword 반드시 포함
 cd ~/brain50/dev
 
 # 직접 주제 입력
-python src/0_script.py "치매 초기증상과 건망증 차이"
+python src/common/0_script.py "치매 초기증상과 건망증 차이"
 
 # web_search 비활성화 (빠른 테스트)
-python src/0_script.py "수면 부족과 기억력 저하" --no-web-research
+python src/common/0_script.py "수면 부족과 기억력 저하" --no-web-research
 
 # Stage 1 건너뜀 (strategy.json 재사용)
-python src/0_script.py "주제" --skip-strategy
+python src/common/0_script.py "주제" --skip-strategy
 ```
 
 ### 구조화된 주제 JSON 입력
@@ -354,8 +368,20 @@ python src/0_script.py "주제" --skip-strategy
 ```
 
 ```bash
-python src/0_script.py --topic-json topic.json
+python src/common/0_script.py --topic-json topic.json
 ```
+
+### 목표 기반 자동 주제 기획 (goal-driven planner)
+
+사람이 주제를 고르지 않고, 채널 성과 목표(구독자 성장/리텐션 등)에서 후보 주제를
+Python이 결정론적으로 점수 매겨 선택합니다. 무인 실행 루프의 주제 선정 단계입니다.
+
+```bash
+./run_goal.sh subscriber_growth "수면"
+```
+
+동작 계약과 근거 확인(evidence_probe/trend_probe) 상세는
+[docs/design/objective-driven-content-planner.md](docs/design/objective-driven-content-planner.md) 참고.
 
 ### 트렌드 기반 주제 선택
 
@@ -373,12 +399,12 @@ python src/0_script.py --trend-choice 1
 ### 단계별 순차 실행
 
 ```bash
-python src/0_script.py "치매 초기증상"  # 대본 생성
-python src/1_tts.py                     # TTS 음성
-python src/2_caption.py                 # 자막
-python src/3_broll.py                   # B-roll
+python src/common/0_script.py "치매 초기증상"  # 대본 생성
+python src/youtube/1_tts.py                     # TTS 음성
+python src/youtube/2_caption.py                 # 자막
+python src/youtube/3_broll.py                   # B-roll
 # render (ffmpeg)
-python src/4_upload.py                  # YouTube 업로드
+python src/youtube/4_upload.py                  # YouTube 업로드
 ```
 
 ---
@@ -553,5 +579,8 @@ python 0_script.py "다음 주제"
 | [docs/usage/slack-bot.md](docs/usage/slack-bot.md) | Slack 봇 설치·권한·운영 |
 | [docs/usage/environment.md](docs/usage/environment.md) | 환경 설정 |
 | [docs/usage/with-job-id.md](docs/usage/with-job-id.md) | JOB_ID 활용법 |
+| [docs/usage/youtube-feedback.md](docs/usage/youtube-feedback.md) | YouTube 실데이터 피드백 사용법 |
+| [docs/design/objective-driven-content-planner.md](docs/design/objective-driven-content-planner.md) | 목표 기반 자동 주제 기획 엔진 운영 계약 |
 | [HANDOFF.md](HANDOFF.md) | 개발 히스토리 |
 | [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) | 프로젝트 컨텍스트 |
+| [KNOWN_ISSUES.md](KNOWN_ISSUES.md) | 리스크 레지스터 |

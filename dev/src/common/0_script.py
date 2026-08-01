@@ -1498,6 +1498,12 @@ def parse_claude_json(response, raw_filename="raw_response.txt"):
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
+        try:
+            # Claude가 JSON 뒤에 부연 설명을 덧붙이는 경우, 앞쪽의 유효한 JSON 객체만 추출
+            obj, _ = json.JSONDecoder().raw_decode(raw)
+            return obj
+        except json.JSONDecodeError:
+            pass
         print("===== Claude Raw ====="); print(raw); print("======================")
         raise Exception(f"JSON 파싱 실패: {e}")
 

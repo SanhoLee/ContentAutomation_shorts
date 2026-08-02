@@ -624,12 +624,16 @@ class SlackBotTests(unittest.TestCase):
 class MaybePostXThreadTests(unittest.TestCase):
     """Auto-posting after upload must never mask the pipeline's own result.
 
-    post_thread() signals by raising, and owns resume/double-post safety
-    itself, so this hook only has to translate outcomes into messages.
+    review/auto already run the x_post pipeline stage inside
+    pipeline_flow.advance() before the job reaches "done", so this hook must
+    check what's already on disk before calling post_thread() again --
+    otherwise the "already posted" raise that guards against double-posting
+    reads as an auto-post *failure* on every ordinary successful run.
     """
 
-    def _patch(self, post_result=None, post_error=None):
+    def _patch(self, existing=None, post_result=None, post_error=None):
         calls = []
+        old_load = slack_bot.x_thread_adapter.load_x_thread
         old_post = slack_bot.x_poster.post_thread
         old_send_message = slack_bot.send_message
 
@@ -640,62 +644,103 @@ class MaybePostXThreadTests(unittest.TestCase):
             return post_result
 
         messages = []
+        slack_bot.x_thread_adapter.load_x_thread = lambda job_dir: existing
         slack_bot.x_poster.post_thread = fake_post
         slack_bot.send_message = lambda channel_id, text: messages.append(text)
-        return calls, messages, old_post, old_send_message
+        return calls, messages, old_load, old_post, old_send_message
 
-    def _restore(self, old_post, old_send_message):
+    def _restore(self, old_load, old_post, old_send_message):
+        slack_bot.x_thread_adapter.load_x_thread = old_load
         slack_bot.x_poster.post_thread = old_post
         slack_bot.send_message = old_send_message
 
     def test_skips_when_job_not_done(self):
-        calls, messages, old_post, old_send = self._patch()
+        calls, messages, old_load, old_post, old_send = self._patch()
         try:
             slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "await_render_approval"})
         finally:
-            self._restore(old_post, old_send)
+            self._restore(old_load, old_post, old_send)
         self.assertEqual(calls, [])
         self.assertEqual(messages, [])
 
     def test_skips_when_no_job_id(self):
-        calls, messages, old_post, old_send = self._patch()
+        calls, messages, old_load, old_post, old_send = self._patch()
         try:
             slack_bot._maybe_post_x_thread("C1", {"stage": "done"})
         finally:
-            self._restore(old_post, old_send)
+            self._restore(old_load, old_post, old_send)
         self.assertEqual(calls, [])
         self.assertEqual(messages, [])
 
-    def test_success_reports_thread_url_and_tweet_count(self):
-        result = {"tweet_ids": ["1", "2", "3"], "thread_url": "https://x.com/i/web/status/1"}
-        calls, messages, old_post, old_send = self._patch(post_result=result)
+    def test_skips_silently_when_no_thread_was_built(self):
+        """No x_thread.json (Claude budget guard, no evidence, etc.) is not a
+        failure -- the x_thread stage is downstream-only and always exits 0."""
+        calls, messages, old_load, old_post, old_send = self._patch(existing=None)
         try:
             slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
         finally:
-            self._restore(old_post, old_send)
+            self._restore(old_load, old_post, old_send)
+        self.assertEqual(calls, [])
+        self.assertEqual(messages, [])
+
+    def test_already_posted_by_pipeline_stage_reports_success_without_reposting(self):
+        """This is the review/auto path: the pipeline's own x_post stage
+        already posted the thread before the job reached "done". Calling
+        post_thread() again would raise "already posted" -- that must not
+        turn a successful run into a reported failure."""
+        existing = {
+            "posted": True,
+            "tweet_ids": ["1", "2", "3"],
+            "thread_url": "https://x.com/i/web/status/1",
+        }
+        calls, messages, old_load, old_post, old_send = self._patch(existing=existing)
+        try:
+            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore(old_load, old_post, old_send)
+        self.assertEqual(calls, [])
+        self.assertIn("게시 완료", messages[-1])
+        self.assertIn("https://x.com/i/web/status/1", messages[-1])
+        self.assertIn("3개", messages[-1])
+
+    def test_success_reports_thread_url_and_tweet_count(self):
+        """This is the legacy full-gate path (run_next_stage): x_post never
+        ran as a pipeline stage, so a built-but-unposted thread is actually
+        posted here."""
+        existing = {"tweets": [{"text": "a"}]}
+        result = {"tweet_ids": ["1", "2", "3"], "thread_url": "https://x.com/i/web/status/1"}
+        calls, messages, old_load, old_post, old_send = self._patch(existing=existing, post_result=result)
+        try:
+            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore(old_load, old_post, old_send)
         self.assertEqual(len(calls), 1)
         self.assertIn("게시 완료", messages[-1])
         self.assertIn("https://x.com/i/web/status/1", messages[-1])
         self.assertIn("3개", messages[-1])
 
     def test_failure_is_reported_not_raised_and_points_at_x_post(self):
-        calls, messages, old_post, old_send = self._patch(
-            post_error=RuntimeError("2/4개 게시 후 실패: 429"),
+        existing = {"tweets": [{"text": "a"}]}
+        calls, messages, old_load, old_post, old_send = self._patch(
+            existing=existing, post_error=RuntimeError("2/4개 게시 후 실패: 429"),
         )
         try:
             slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
         finally:
-            self._restore(old_post, old_send)
+            self._restore(old_load, old_post, old_send)
         self.assertIn("자동 게시 실패", messages[-1])
         self.assertIn("429", messages[-1])
         self.assertIn("/x_post", messages[-1])
 
     def test_unexpected_exception_does_not_escape(self):
-        calls, messages, old_post, old_send = self._patch(post_error=ValueError("boom"))
+        existing = {"tweets": [{"text": "a"}]}
+        calls, messages, old_load, old_post, old_send = self._patch(
+            existing=existing, post_error=ValueError("boom"),
+        )
         try:
             slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
         finally:
-            self._restore(old_post, old_send)
+            self._restore(old_load, old_post, old_send)
         self.assertIn("boom", messages[-1])
 
 

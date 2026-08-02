@@ -1572,27 +1572,46 @@ def _run_render_silent(chat_id, job, extra_env=None):
 
 
 def _maybe_post_x_thread(chat_id, job):
-    """After a job reaches "done" (YouTube upload succeeded), post its X
-    thread without waiting for another human step.
+    """After a job reaches "done" (YouTube upload succeeded), report its X
+    thread -- posting it now if the pipeline's own x_post stage hasn't
+    already done so.
 
-    A posting failure never surfaces past this function. The upload already
-    succeeded, which is the part that matters; X is a downstream bonus, so
-    its failures are reported rather than raised and cannot mask the
-    pipeline's completion message.
+    Called from every "done"-reaching path (the two-gate flow, full auto,
+    and the legacy step-by-step flow), but only run_next_stage's legacy path
+    ever needs this to actually post: review/auto already ran the x_post
+    stage inside pipeline_flow.advance(). Checking `posted` first, instead
+    of calling post_thread() unconditionally, is what keeps that overlap
+    from reading as a failure -- post_thread() raises on an already-posted
+    thread, and that raise is not "X failed", it's "X already succeeded
+    elsewhere."
 
-    Recovery is left to post_thread() rather than reimplemented here: it
-    persists progress after every tweet, resumes from the first unposted
-    one, and refuses to repost a finished thread. So the operator's retry
-    after a failure is just /x_post, with no risk of double-posting what is
-    already live.
+    No x_thread.json at all (Claude budget guard, no PubMed evidence, etc.)
+    is not a failure either -- the x_thread stage is downstream-only and
+    always exits 0, so silently having nothing to post is expected.
+
+    A genuine posting failure never surfaces past this function. The upload
+    already succeeded, which is the part that matters; X is a downstream
+    bonus, so its failures are reported rather than raised and cannot mask
+    the pipeline's completion message.
     """
     if job.get("stage") != "done":
         return
     job_id = job.get("job_id")
     if not job_id:
         return
+    job_dir = work_dir(job_id)
+    existing = x_thread_adapter.load_x_thread(job_dir)
+    if existing is None:
+        return
+    if existing.get("posted"):
+        send_message(
+            chat_id,
+            f"X 스레드 게시 완료: {existing.get('thread_url')} "
+            f"({len(existing.get('tweet_ids') or [])}개 트윗)",
+        )
+        return
     try:
-        payload = x_poster.post_thread(work_dir(job_id))
+        payload = x_poster.post_thread(job_dir)
     except Exception as exc:
         send_message(chat_id, f"X 스레드 자동 게시 실패: {exc}\n확인 후 /x_post 로 이어서 게시할 수 있습니다.")
         return

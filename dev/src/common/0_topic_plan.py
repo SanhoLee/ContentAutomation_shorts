@@ -90,6 +90,9 @@ def apply_from_eligible(args: argparse.Namespace) -> None:
     picked = topic_candidate_pipeline.pick_top_eligible()
     if picked:
         args.seed = picked["title_hint"]
+        # Narrows the story_type pool for this job; the mix quota still decides
+        # within it (design spec §4.2).
+        args.suggested_story_types = list(picked.get("suggested_story_types") or [])
         print(f"eligible 큐에서 선택: {picked['title_hint']} (score={picked['score']}, topic_id={picked['topic_id']})")
     else:
         print("eligible 큐가 비어 있습니다. topic_candidate_pipeline.py --refresh를 먼저 실행하세요.", file=sys.stderr)
@@ -140,6 +143,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     plan = plan_objective_topic(
         args.objective, seed_topic=args.seed, job_id=args.job_id,
         output_path=args.output, trend_candidates=trends, allow_ai=not args.no_ai,
+        suggested_story_types=getattr(args, "suggested_story_types", None),
     )
     plan["objective"]["sync_status"] = sync_status
     if sync_status == "refresh-failed-cache":

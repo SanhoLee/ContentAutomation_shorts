@@ -147,6 +147,27 @@ class WriteQueuesAndConsumeTests(unittest.TestCase):
             rejected_payload = json.loads(written["rejected"][0].read_text(encoding="utf-8"))
             self.assertEqual(rejected_payload["reject_reason"], "ban_keyword")
 
+    def test_eligible_payload_carries_a_story_type_hint_but_no_decision(self):
+        candidates = [
+            {"title_hint": "치매 초기증상 흔한 오해와 진짜 신호", "seed": "치매", "duplicate": False},
+        ]
+        eligible, rejected = pipeline.score_and_rank(candidates, vocabulary=VOCAB, recent_titles=[], rules=RULES)
+        with tempfile.TemporaryDirectory() as tmp:
+            written = pipeline.write_queues(eligible, rejected, {}, base_dir=tmp, eligible_top_k=5)
+            payload = json.loads(written["eligible"][0].read_text(encoding="utf-8"))
+            # The genre is only spent when objective_planner consumes the
+            # candidate, so the queue records a hint and leaves story_type null.
+            self.assertEqual(payload["suggested_story_types"], ["myth_bust"])
+            self.assertIsNone(payload["story_type"])
+
+    def test_a_title_with_no_genre_wording_gets_an_empty_hint(self):
+        candidates = [{"title_hint": "치매 예방 수면 운동 연구 정리 방법", "seed": "치매", "duplicate": False}]
+        eligible, rejected = pipeline.score_and_rank(candidates, vocabulary=VOCAB, recent_titles=[], rules=RULES)
+        with tempfile.TemporaryDirectory() as tmp:
+            written = pipeline.write_queues(eligible, rejected, {}, base_dir=tmp, eligible_top_k=5)
+            payload = json.loads(written["eligible"][0].read_text(encoding="utf-8"))
+            self.assertEqual(payload["suggested_story_types"], [])
+
     def test_eligible_top_k_limits_written_files(self):
         candidates = [
             {"title_hint": f"치매 예방 연구 결과 {i} 회차", "seed": "치매", "duplicate": False}

@@ -24,6 +24,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+import story_types
 import topic_score
 import topic_seed_pool
 import trend_probe
@@ -234,6 +235,11 @@ def _build_topic_payload(record: dict[str, Any], topic_id: str, created_at: str,
         "domain_match": record.get("domain_match", 0.0),
         "matched_terms": record.get("matched_terms", []),
         "raw_signals": {"seed_origin": record.get("seed_origin", "")},
+        # A hint for the story_type picker, not a decision: story_type stays
+        # null until objective_planner consumes this candidate and spends a
+        # slot of the configured mix on it (design spec §2.4).
+        "suggested_story_types": story_types.suggest_from_text(record["title_hint"]),
+        "story_type": None,
         "created_at": created_at,
         "status": status,
         "consumed": False,

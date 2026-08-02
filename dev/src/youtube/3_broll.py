@@ -8,6 +8,7 @@ from broll_policy import (
     load_recent_video_ids,
     normalization_filter,
     record_used_video_ids,
+    scene_queries,
     select_video,
 )
 
@@ -90,8 +91,9 @@ def process_scene(i, scene):
     raw_path = os.path.join(TEMP_DIR, f"raw_{i:02d}.mp4")
     out_path = os.path.join(TEMP_DIR, f"part_{i:02d}.mp4")
     duration = scene.get("render_duration", scene["duration"])
-    query = scene["visual_query"]
-    for status, candidate_query in (("ok", query), ("fallback", next_fallback_query(i))):
+    queries = scene_queries(scene) or [scene["visual_query"]]
+    attempts = [("ok", query) for query in queries] + [("fallback", next_fallback_query(i))]
+    for status, candidate_query in attempts:
         clip_info = fetch_clip(candidate_query, raw_path, duration)
         if clip_info:
             try:
@@ -99,7 +101,7 @@ def process_scene(i, scene):
                 return {"index": i, "status": status, "query_used": candidate_query, **clip_info}
             except subprocess.CalledProcessError:
                 pass
-    return {"index": i, "status": "failed", "query_used": query}
+    return {"index": i, "status": "failed", "query_used": queries[0]}
 
 
 with open(os.path.join(WORK_DIR, "scenes_timed.json"), "r", encoding="utf-8") as f:

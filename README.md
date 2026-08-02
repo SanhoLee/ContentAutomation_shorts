@@ -184,7 +184,9 @@ brain50/
 │   │   ├── creative_dna.md          # 채널 톤·문체 (Phase 2)
 │   │   ├── topic_score_rules.json   # 주제 후보 점수 가중치·임계값 (Phase 1)
 │   │   ├── topic_pipeline.json      # 시드 풀 상한·eligible_top_k (Phase 1)
-│   │   └── schedules.yaml           # 플랫폼별 시간대·일일 한도 (Phase 5)
+│   │   ├── schedules.yaml           # 플랫폼별 시간대·일일 한도 (Phase 5)
+│   │   ├── story_type_mix.json      # 4장르 목표 비중·lookback (Story Types)
+│   │   └── story_templates/         # _common.md + 타입별 Stage 2 골격 4종
 │   └── data/
 │       ├── youtube_feedback.db # YouTube API 성과 SQLite DB
 │       ├── topics/{raw,eligible,rejected}/  # 자동 생성 주제 후보 큐 (Phase 1)
@@ -334,6 +336,21 @@ Stage 2 Sonnet은 감정 여정과 문장 품질에만 집중합니다.
 정의하고, Stage 1/2 프롬프트 맨 앞에 매 호출 동일하게 삽입됩니다. **코드를
 건드리지 않고 이 파일만 고쳐도 대본 톤이 바뀝니다.** `USE_CREATIVE_DNA=off`로
 끄면 이 기능이 없던 이전 프롬프트와 동일하게 동작합니다(A/B·롤백용).
+
+### 스토리 타입 4장르 (Story Types)
+
+모든 영상이 하나의 서사 틀을 쓰던 것을 4장르로 나눕니다 —
+원리·체험형(35%) / 오해 교정형(30%) / 습관·기전형(25%) / 사례·여정형(10%).
+자동 기획 경로에서는 최근 잡의 실제 분포를 보고 **비중에 가장 부족한 타입**을
+Python이 결정론적으로 고르고(Claude는 관여하지 않음), Stage 1이 그 타입을
+`strategy.json`에 고정하며, Stage 2는 타입별 role 시퀀스와 장면별
+`visual.brief`로 대본을 씁니다. 봇으로 직접 넣은 수동 주제는 비중을 강제하지
+않고 Stage 1이 문장을 보고 추론합니다.
+
+비중·템플릿은 `dev/config/story_type_mix.json`과
+`dev/config/story_templates/`에서 코드 수정 없이 바꿀 수 있고,
+`USE_STORY_TYPES=0`이면 도입 이전 프롬프트와 완전히 동일해집니다.
+자세한 계약은 [docs/design/story-types.md](docs/design/story-types.md) 참고.
 
 ### 검색 최적화 강제 규칙
 
@@ -672,6 +689,7 @@ python 0_script.py "다음 주제"
 | [docs/usage/with-job-id.md](docs/usage/with-job-id.md) | JOB_ID 활용법 |
 | [docs/usage/youtube-feedback.md](docs/usage/youtube-feedback.md) | YouTube 실데이터 피드백 사용법 |
 | [docs/design/objective-driven-content-planner.md](docs/design/objective-driven-content-planner.md) | 목표 기반 자동 주제 기획 엔진 운영 계약 |
+| [docs/design/story-types.md](docs/design/story-types.md) | 스토리 타입 4장르·비중·자동/수동 동작 |
 | [HANDOFF.md](HANDOFF.md) | 개발 히스토리 |
 | [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) | 프로젝트 컨텍스트 |
 | [KNOWN_ISSUES.md](KNOWN_ISSUES.md) | 리스크 레지스터 |

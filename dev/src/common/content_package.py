@@ -41,7 +41,11 @@ def _read_json(path: Path, default: Any) -> Any:
 
 def _scene_role(index: int, total: int) -> str:
     """Position heuristic, no extra Claude call: first scene is the hook,
-    last is the CTA, everything between alternates principle/example."""
+    last is the CTA, everything between alternates principle/example.
+
+    Only used for jobs whose scenes carry no `role` of their own — i.e. runs
+    with USE_STORY_TYPES off, or scripts written before story types existed.
+    """
     if total <= 1 or index == 0:
         return "hook"
     if index == total - 1:
@@ -49,16 +53,35 @@ def _scene_role(index: int, total: int) -> str:
     return "principle" if index % 2 == 1 else "example"
 
 
+def _scene_visual(scene: dict[str, Any]) -> dict[str, Any] | None:
+    visual = scene.get("visual")
+    if not isinstance(visual, dict):
+        return None
+    must_show = visual.get("must_show")
+    return {
+        "type": str(visual.get("type") or ""),
+        "brief": str(visual.get("brief") or ""),
+        "must_show": [str(item) for item in must_show] if isinstance(must_show, list) else [],
+    }
+
+
 def _build_scenes(raw_scenes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     total = len(raw_scenes)
     scenes = []
     for i, scene in enumerate(raw_scenes):
-        scenes.append({
+        # story_type runs write their own role from the genre's sequence; keep
+        # it rather than overwriting it with the position guess.
+        role = str(scene.get("role") or "").strip() or _scene_role(i, total)
+        entry = {
             "index": i + 1,
-            "role": _scene_role(i, total),
+            "role": role,
             "text": str(scene.get("text", "")),
             "visual_query": str(scene.get("visual_query", "")),
-        })
+        }
+        visual = _scene_visual(scene)
+        if visual is not None:
+            entry["visual"] = visual
+        scenes.append(entry)
     return scenes
 
 
@@ -124,6 +147,15 @@ def build_content_package(
             "hook_type": video_meta.get("hook_type", ""),
             "title": video_meta.get("title", ""),
         },
+        # Empty string, not absent, when story types are off: adapters can then
+        # read package["story_type"] unconditionally.
+        "story_type": str(video_meta.get("story_type") or strategy.get("story_type") or ""),
+        "format_type": str(
+            video_meta.get("format_type")
+            or strategy.get("format_type")
+            or (strategy.get("content_design") or {}).get("format_type")
+            or ""
+        ),
         "hook": scenes[0]["text"] if scenes else "",
         "core_message": video_meta.get("core_message", ""),
         "key_points": _build_key_points(scenes),

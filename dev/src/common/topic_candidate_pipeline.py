@@ -52,6 +52,19 @@ MIN_CANDIDATE_LEN = 4
 MAX_CANDIDATE_LEN = 40
 NEAR_DUPLICATE_SIMILARITY = 0.9
 
+# A human's pick, recorded next to the queues it points into.
+SELECTED_FILENAME = "selected.json"
+STATUS_SELECTED = "selected"
+DEFAULT_TOP_N = 3
+
+SCORE_LABELS = {
+    "niche_relevance": "채널 적합",
+    "search_intent_fit": "검색 의도",
+    "evidence_potential": "근거 가능성",
+    "novelty_vs_history": "신선도",
+    "safety_tone": "안전 표현",
+}
+
 _FEEDBACK_SPEC = importlib.util.spec_from_file_location(
     "brain50_topic_feedback", COMMON_DIR.parent / "youtube" / "6_youtube_feedback.py"
 )
@@ -386,6 +399,71 @@ def list_eligible(base_dir: str | Path | None = None, include_consumed: bool = F
     return items
 
 
+def top_candidates(n: int = 3, base_dir: str | Path | None = None) -> list[dict[str, Any]]:
+    """The n highest-scoring candidates a human has not picked yet.
+
+    Narrower than `list_eligible()` by one rule: an already-selected candidate
+    drops out of the recommendation list, so pressing "refresh" after a pick
+    surfaces the next one down instead of re-offering the same topic.
+    """
+    items = [c for c in list_eligible(base_dir=base_dir, include_consumed=False)
+             if c.get("status") != STATUS_SELECTED]
+    return items[:max(0, n)]
+
+
+def select_topic(topic_id: str, base_dir: str | Path | None = None) -> dict[str, Any] | None:
+    """Record a human's pick. Returns the selected payload, or None if the
+    topic_id is unknown.
+
+    `consumed` is deliberately left alone: "selected" means a person chose this
+    topic, "consumed" means the pipeline actually spent it. Keeping them apart
+    leaves `pick_top_eligible()`'s existing meaning intact and gives the
+    eventual pipeline hookup something unambiguous to read.
+
+    Unknown ids return None rather than raising -- a stale Slack button from a
+    queue that has since been refreshed must not crash the bot.
+    """
+    base = Path(base_dir) if base_dir else DATA_TOPICS_DIR
+    path = base / "eligible" / f"{topic_id}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    payload["status"] = STATUS_SELECTED
+    payload["selected_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    selected_path = base / SELECTED_FILENAME
+    selected_path.parent.mkdir(parents=True, exist_ok=True)
+    selected_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def current_selection(base_dir: str | Path | None = None) -> dict[str, Any] | None:
+    """The pick recorded by the most recent select_topic(), if any."""
+    base = Path(base_dir) if base_dir else DATA_TOPICS_DIR
+    try:
+        return json.loads((base / SELECTED_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def render_candidate_lines(candidates: list[dict[str, Any]]) -> list[str]:
+    """One numbered Korean line per candidate, shared by the CLI and the Slack
+    card so both explain a recommendation the same way."""
+    lines: list[str] = []
+    for rank, candidate in enumerate(candidates, start=1):
+        breakdown = candidate.get("score_breakdown") or {}
+        strongest = sorted(breakdown.items(), key=lambda kv: kv[1], reverse=True)[:2]
+        reasons = ", ".join(SCORE_LABELS.get(key, key) for key, value in strongest if value > 0)
+        parts = [f"점수 {candidate.get('score', 0)}", f"시드 {candidate.get('seed', '-')}"]
+        if reasons:
+            parts.append(reasons)
+        lines.append(f"{rank}. {candidate.get('title_hint', '')}  ({' · '.join(parts)})")
+    return lines
+
+
 def pick_top_eligible(base_dir: str | Path | None = None, mark_consumed: bool = True) -> dict[str, Any] | None:
     """Highest-scoring unconsumed eligible candidate, or None if the queue is empty.
 
@@ -438,6 +516,55 @@ def cmd_list_eligible(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_top(args: argparse.Namespace) -> int:
+    """Recommend, don't decide -- printing the shortlist is the whole job here.
+    Selecting is a separate, explicit command."""
+    candidates = top_candidates(args.top, base_dir=args.base_dir)
+    selected = current_selection(base_dir=args.base_dir)
+    if selected:
+        print(f"현재 선택: {selected.get('title_hint')} (topic_id={selected.get('topic_id')})\n")
+    if not candidates:
+        print("추천할 후보가 없습니다. --refresh를 먼저 실행하세요.")
+        return 0
+    for line in render_candidate_lines(candidates):
+        print(line)
+    print(f"\n선택: --select-rank 1 (또는 --select {candidates[0]['topic_id']})")
+    return 0
+
+
+def _report_selection(selected: dict[str, Any]) -> int:
+    print(f"선택: {selected.get('title_hint')}")
+    print(f"topic_id: {selected.get('topic_id')}")
+    print(f"점수: {selected.get('score')} · 시드: {selected.get('seed')}")
+    print("선택 기록 완료. 파이프라인 연결은 아직 수동입니다.")
+    return 0
+
+
+def cmd_select(args: argparse.Namespace) -> int:
+    topic_id = args.select
+    if args.select_rank is not None:
+        candidates = top_candidates(max(args.select_rank, DEFAULT_TOP_N), base_dir=args.base_dir)
+        if not 1 <= args.select_rank <= len(candidates):
+            print(f"{args.select_rank}번 후보가 없습니다. --top으로 목록을 먼저 확인하세요.", file=sys.stderr)
+            return 1
+        topic_id = candidates[args.select_rank - 1]["topic_id"]
+
+    selected = select_topic(topic_id, base_dir=args.base_dir)
+    if selected is None:
+        print(f"해당 후보를 찾지 못했습니다: {topic_id}", file=sys.stderr)
+        return 1
+    return _report_selection(selected)
+
+
+def cmd_selected(args: argparse.Namespace) -> int:
+    selected = current_selection(base_dir=args.base_dir)
+    if selected is None:
+        print("선택된 주제가 없습니다. --top으로 후보를 확인한 뒤 --select-rank로 선택하세요.")
+        return 0
+    print(f"선택 시각: {selected.get('selected_at', '-')}")
+    return _report_selection(selected)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="시드 없이 채널 최적화 주제 후보 생성 (Phase 1)")
     parser.add_argument("--base-dir", default=None, help="data/topics 상위 디렉터리 (테스트/오버라이드용)")
@@ -445,6 +572,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--refresh", action="store_true", help="시드 풀 → probe → 점수 → eligible/rejected 큐 갱신")
     mode.add_argument("--dry-run", action="store_true", help="기록 없이 상위 후보만 출력")
     mode.add_argument("--list-eligible", action="store_true", help="현재 eligible 큐 목록 출력")
+    mode.add_argument("--top", type=int, nargs="?", const=DEFAULT_TOP_N, default=None,
+                      metavar="N", help=f"상위 N개 추천 출력 (기본 {DEFAULT_TOP_N})")
+    mode.add_argument("--select", metavar="TOPIC_ID", help="topic_id로 주제 선택 기록")
+    mode.add_argument("--select-rank", type=int, metavar="N", help="--top 목록의 N번을 선택 기록")
+    mode.add_argument("--selected", action="store_true", help="현재 선택된 주제 조회")
     parser.add_argument("--limit", type=int, default=20, help="--dry-run 출력 개수")
     return parser.parse_args(argv)
 
@@ -455,6 +587,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_refresh(args)
     if args.dry_run:
         return cmd_dry_run(args)
+    if args.top is not None:
+        return cmd_top(args)
+    if args.select or args.select_rank is not None:
+        return cmd_select(args)
+    if args.selected:
+        return cmd_selected(args)
     return cmd_list_eligible(args)
 
 

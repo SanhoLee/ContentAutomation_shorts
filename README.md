@@ -489,9 +489,43 @@ Shorts 대본이 완성되면 자동으로 `data/work/{JOB_ID}/content_package.j
 # content_package.json은 0_script.py 실행 시 자동 생성됩니다. 수동 재생성:
 python3 -c "import content_package as cp; cp.build_content_package('dev/data/work/J0001')"
 
-# X(Twitter) 스레드 초안 생성 (규칙 기반, Claude 호출 없음)
+# X(Twitter) 스레드 초안만 생성 (규칙 기반, Claude 호출 없음, 게시는 안 함)
 python3 dev/src/common/adapters/x_thread_adapter.py --job-id J0001 --print
 ```
+
+### X(Twitter) 업로드 후 자동 게시 (슬랙 연동)
+
+`x_thread` 파이프라인 단계가 초안을 만들어 두면, 슬랙 봇으로 실행한 job이
+업로드까지 완료(`stage == done`)되는 시점에 `x_poster.post_thread()`가 그
+초안을 자동으로 게시하고 결과를 슬랙으로 알립니다
+(`slack_bot._maybe_post_x_thread`). 텔레그램 경로와 `/x_post` 수동 명령은
+그대로 남아 있습니다.
+
+- **트윗 구성**: 훅(+사진) → 핵심 포인트 → CTA(+해시태그) → 출처(PubMed 링크,
+  없으면 근거 힌트 텍스트). 출처가 전혀 없으면 출처 트윗은 생략됩니다.
+  출처 트윗은 humanize 재작성 대상이 아니며 해시태그도 붙지 않습니다.
+- **사진**: `dev/src/instagram/card_render.py`를 재사용해 훅 문장을 16:9
+  카드로 렌더링하고 **첫 트윗에만** 첨부합니다. Pillow가 없거나 렌더링/업로드가
+  실패하면 사진 없이 텍스트만 게시합니다. 이어서 게시(resume)할 때는 첫 트윗이
+  이미 올라가 있으므로 사진을 다시 올리지 않습니다.
+- **글자수**: `TWEET_MAX_CHARS=139` (X는 CJK 1자를 2자로 계산하므로 280자
+  한도가 한글 기준 약 140자). 출처 트윗의 링크는 t.co 축약 정책(링크당 23자
+  고정)을 감안해 몇 줄까지 넣을지 계산합니다.
+- **실패 처리**: 스레드 중간 실패는 재시도하지 않고(중복 게시 방지) 그때까지의
+  진행 상황을 `x_thread.json`에 기록합니다. `/x_post`로 다시 실행하면 아직
+  올라가지 않은 트윗부터 이어서 게시하며, 이미 완료된 스레드는 재게시를
+  거부합니다. 자동 게시 실패는 슬랙으로 알리기만 하고 job은 성공으로 둡니다 —
+  YouTube 업로드는 이미 끝났기 때문입니다.
+
+인증은 `x_auth.py`의 OAuth 2.0 경로를 씁니다(`X_CLIENT_ID`/`X_CLIENT_SECRET`
++ 회전하는 refresh token 파일). 사진 첨부에는 `media.write` 스코프가 필요합니다.
+
+```bash
+# 실제 게시 없이 현재 상태만 확인
+python3 dev/src/common/adapters/x_poster.py --job-id J0001 --dry-run
+```
+
+사진 렌더링 의존성: `pip install -r requirements-x.txt` (`Pillow`).
 
 Instagram·워드프레스 어댑터는 아직 없습니다 — `content_package.json`의
 `platforms.instagram_carousel` / `platforms.wordpress`가 `ready: false`로
@@ -548,6 +582,8 @@ python 0_script.py "다음 주제"
 | `SLACK_APP_TOKEN` | Slack Socket Mode App Token (`xapp-...`) |
 | `SLACK_CHANNEL_ID` | Slack 봇 허용 채널 ID (권장) |
 | `SLACK_ALLOWED_USER_ID` | Slack 봇 허용 사용자 ID (선택) |
+| `X_CLIENT_ID` / `X_CLIENT_SECRET` | X(Twitter) OAuth 2.0 앱 크리덴셜 (스레드 게시용) |
+| `X_TOKEN_FILE` | X access/refresh 토큰 저장 경로 (기본 `dev/data/x_token.json`) |
 
 ### Claude 모델
 
@@ -687,6 +723,7 @@ python 0_script.py "다음 주제"
 | [docs/usage/slack-bot.md](docs/usage/slack-bot.md) | Slack 봇 설치·권한·운영 |
 | [docs/usage/environment.md](docs/usage/environment.md) | 환경 설정 |
 | [docs/usage/with-job-id.md](docs/usage/with-job-id.md) | JOB_ID 활용법 |
+| [docs/usage/topic-scheduling.md](docs/usage/topic-scheduling.md) | 트렌드 조사 스케줄링 + 주제 선택 |
 | [docs/usage/youtube-feedback.md](docs/usage/youtube-feedback.md) | YouTube 실데이터 피드백 사용법 |
 | [docs/design/objective-driven-content-planner.md](docs/design/objective-driven-content-planner.md) | 목표 기반 자동 주제 기획 엔진 운영 계약 |
 | [docs/design/story-types.md](docs/design/story-types.md) | 스토리 타입 4장르·비중·자동/수동 동작 |

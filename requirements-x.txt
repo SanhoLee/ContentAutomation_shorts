@@ -1,0 +1,3 @@
+# Lead-photo card rendering for dev/src/common/adapters/x_photo_card.py.
+# Optional: without Pillow the thread still builds and posts, just text-only.
+Pillow>=10,<11

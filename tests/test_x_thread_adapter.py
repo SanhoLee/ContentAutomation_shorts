@@ -230,5 +230,150 @@ class BuildXThreadTests(unittest.TestCase):
             self.assertEqual(payload["method"], "rule_v1")
 
 
+class SourcesTweetTests(unittest.TestCase):
+    """The sources tweet is citations, not copy: it must stay out of the
+    humanize rewrite and never be the tweet carrying the hashtags."""
+
+    def test_no_citations_or_evidence_yields_no_sources_tweet(self):
+        baseline = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=[])
+        self.assertEqual(len(tweets), len(baseline))
+
+    def test_pubmed_citations_produce_a_final_sources_tweet(self):
+        citations = [{"pmid": "12345678", "journal": "Neurology", "year": "2022"}]
+        baseline = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        tweets = xta.build_tweets(
+            PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=citations,
+        )
+        self.assertEqual(len(tweets), len(baseline) + 1)
+        self.assertIn(xta.SOURCES_LABEL, tweets[-1]["text"])
+        self.assertIn("https://pubmed.ncbi.nlm.nih.gov/12345678/", tweets[-1]["text"])
+
+    def test_evidence_source_hint_used_when_no_pmids(self):
+        package = dict(PACKAGE)
+        package["evidence"] = [{"claim": "수면과 기억력", "source_hint": "2019년 국내 코호트 연구"}]
+        tweets = xta.build_tweets(package, ban_keywords=[], humanize=False, pubmed_citations=[])
+        self.assertIn("2019년 국내 코호트 연구", tweets[-1]["text"])
+
+    def test_pmids_take_priority_over_evidence_hint(self):
+        package = dict(PACKAGE)
+        package["evidence"] = [{"claim": "x", "source_hint": "근거 힌트 텍스트"}]
+        citations = [{"pmid": "1", "journal": "J", "year": "2021"}]
+        tweets = xta.build_tweets(
+            package, ban_keywords=[], humanize=False, pubmed_citations=citations,
+        )
+        self.assertIn("pubmed.ncbi.nlm.nih.gov", tweets[-1]["text"])
+        self.assertNotIn("근거 힌트 텍스트", tweets[-1]["text"])
+
+    def test_sources_tweet_capped_at_max_source_links(self):
+        citations = [{"pmid": str(i), "journal": "Journal", "year": "2020"} for i in range(10)]
+        tweets = xta.build_tweets(
+            PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=citations,
+        )
+        self.assertLessEqual(
+            tweets[-1]["text"].count("pubmed.ncbi.nlm.nih.gov"), xta.MAX_SOURCE_LINKS,
+        )
+
+    def test_hashtags_stay_on_the_cta_tweet_not_the_sources_tweet(self):
+        citations = [{"pmid": "1", "journal": "J", "year": "2021"}]
+        tweets = xta.build_tweets(
+            PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=citations,
+        )
+        self.assertIn("#", tweets[-2]["text"])
+        self.assertNotIn("#", tweets[-1]["text"])
+
+    def test_sources_tweet_respects_the_char_budget(self):
+        # Budgeted the way X actually counts: t.co rewrites every link to a
+        # fixed width, so raw len() overstates a link-heavy tweet and is not
+        # the number that decides acceptance. Long journal names still get
+        # dropped once the link-aware total exceeds the budget.
+        citations = [
+            {"pmid": f"12345678901{i}", "journal": "A Very Long Journal Name Indeed", "year": "2022"}
+            for i in range(xta.MAX_SOURCE_LINKS)
+        ]
+        tweets = xta.build_tweets(
+            PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=citations,
+        )
+        text = tweets[-1]["text"]
+        counted = sum(xta._link_aware_length(line) + 1 for line in text.split("\n")) - 1
+        self.assertLessEqual(counted, xta.TWEET_MAX_CHARS)
+        self.assertLess(text.count("pubmed"), xta.MAX_SOURCE_LINKS)
+
+    def test_ban_keyword_drops_the_source_line(self):
+        citations = [{"pmid": "1", "journal": "완치 저널", "year": "2020"}]
+        baseline = xta.build_tweets(PACKAGE, ban_keywords=["완치"], humanize=False)
+        tweets = xta.build_tweets(
+            PACKAGE, ban_keywords=["완치"], humanize=False, pubmed_citations=citations,
+        )
+        # No usable source line survives, so no sources tweet is appended.
+        self.assertEqual(len(tweets), len(baseline))
+
+    def test_sources_tweet_is_not_sent_through_humanize(self):
+        citations = [{"pmid": "1", "journal": "J", "year": "2021"}]
+        with mock.patch.object(xta, "_humanize_texts_with_claude") as rewrite:
+            rewrite.return_value = ["다시 쓴 문장입니다."]
+            tweets = xta.build_tweets(PACKAGE, ban_keywords=[], pubmed_citations=citations)
+        self.assertIn(xta.SOURCES_LABEL, tweets[-1]["text"])
+        for call_texts in rewrite.call_args_list:
+            self.assertNotIn(xta.SOURCES_LABEL, " ".join(call_texts.args[0]))
+
+
+class ThreadPhotoTests(unittest.TestCase):
+    def _write_job(self, job_dir):
+        (job_dir / "video_meta.json").write_text(json.dumps({
+            "topic": "치매 예방", "main_keyword": "치매 예방", "hook_type": "반전형",
+            "title": "치매 예방 습관", "core_message": "작은 습관부터 시작하세요",
+            "hashtags": "#치매예방 #뇌건강",
+        }, ensure_ascii=False), encoding="utf-8")
+        (job_dir / "scenes.json").write_text(json.dumps([
+            {"text": "훅 문장입니다.", "visual_query": "a"},
+            {"text": "CTA 문장입니다.", "visual_query": "d"},
+        ], ensure_ascii=False), encoding="utf-8")
+        (job_dir / "strategy.json").write_text(
+            json.dumps({"cta_next": "수면과 기억력"}, ensure_ascii=False), encoding="utf-8",
+        )
+
+    def test_payload_records_the_rendered_photo_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            self._write_job(job_dir)
+            cp.build_content_package(job_dir)
+            with mock.patch.object(
+                xta.x_photo_card, "build_thread_photo", return_value=job_dir / "x_thread_photo.png",
+            ):
+                payload = xta.build_x_thread(job_dir, humanize=False)
+            self.assertTrue(payload["photo_path"].endswith("x_thread_photo.png"))
+
+    def test_photo_path_is_none_when_rendering_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            self._write_job(job_dir)
+            cp.build_content_package(job_dir)
+            with mock.patch.object(xta.x_photo_card, "build_thread_photo", return_value=None):
+                payload = xta.build_x_thread(job_dir, humanize=False)
+            self.assertIsNone(payload["photo_path"])
+
+    def test_pubmed_status_citations_feed_the_sources_tweet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            self._write_job(job_dir)
+            (job_dir / "pubmed_status.json").write_text(json.dumps({
+                "citations": [{"pmid": "999", "journal": "J", "year": "2023"}],
+            }, ensure_ascii=False), encoding="utf-8")
+            cp.build_content_package(job_dir)
+            with mock.patch.object(xta.x_photo_card, "build_thread_photo", return_value=None):
+                payload = xta.build_x_thread(job_dir, humanize=False)
+            self.assertIn("pubmed.ncbi.nlm.nih.gov/999", payload["tweets"][-1]["text"])
+
+    def test_missing_pubmed_status_file_does_not_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            self._write_job(job_dir)
+            cp.build_content_package(job_dir)
+            with mock.patch.object(xta.x_photo_card, "build_thread_photo", return_value=None):
+                payload = xta.build_x_thread(job_dir, humanize=False)
+            self.assertIsNotNone(payload)
+
+
 if __name__ == "__main__":
     unittest.main()

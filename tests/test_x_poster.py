@@ -113,5 +113,124 @@ class PostThreadTests(unittest.TestCase):
             self.assertEqual(first_call_body["reply"]["in_reply_to_tweet_id"], "id1")
 
 
+class ThreadPhotoTests(unittest.TestCase):
+    """The card rides on the lead tweet only, and is never worth the thread."""
+
+    def setUp(self):
+        self._token_patch = mock.patch("x_auth.get_valid_access_token", return_value="test-bearer")
+        self._token_patch.start()
+
+    def tearDown(self):
+        self._token_patch.stop()
+
+    @staticmethod
+    def _tweet_responses(ids):
+        responses = []
+        for tweet_id in ids:
+            res = mock.Mock()
+            res.raise_for_status = mock.Mock()
+            res.json.return_value = {"data": {"id": tweet_id}}
+            responses.append(res)
+        return responses
+
+    @staticmethod
+    def _photo(job_dir):
+        path = job_dir / "x_thread_photo.png"
+        path.write_bytes(b"fake-png")
+        return path
+
+    def test_media_id_is_attached_to_the_first_tweet_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            photo = self._photo(job_dir)
+            _write_thread(job_dir, ["first", "second"], photo_path=str(photo))
+
+            responses = self._tweet_responses(["id1", "id2"])
+            with mock.patch.object(xp, "_upload_media", return_value="media-9") as upload:
+                with mock.patch("requests.post", side_effect=responses) as post:
+                    xp.post_thread(job_dir)
+
+            self.assertEqual(upload.call_count, 1)
+            bodies = [call.kwargs["json"] for call in post.call_args_list]
+            self.assertEqual(bodies[0]["media"]["media_ids"], ["media-9"])
+            self.assertNotIn("media", bodies[1])
+
+    def test_upload_failure_still_posts_the_thread_text_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            photo = self._photo(job_dir)
+            _write_thread(job_dir, ["first", "second"], photo_path=str(photo))
+
+            responses = self._tweet_responses(["id1", "id2"])
+            with mock.patch.object(xp, "_upload_media", side_effect=RuntimeError("403 forbidden")):
+                with mock.patch("requests.post", side_effect=responses) as post:
+                    payload = xp.post_thread(job_dir)
+
+            self.assertTrue(payload["posted"])
+            self.assertNotIn("media", post.call_args_list[0].kwargs["json"])
+
+    def test_no_photo_path_means_no_upload_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            _write_thread(job_dir, ["first"])
+            with mock.patch.object(xp, "_upload_media", side_effect=AssertionError("no upload")):
+                with mock.patch("requests.post", side_effect=self._tweet_responses(["id1"])):
+                    xp.post_thread(job_dir)
+
+    def test_missing_photo_file_is_skipped_rather_than_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            _write_thread(job_dir, ["first"], photo_path=str(job_dir / "gone.png"))
+            with mock.patch.object(xp, "_upload_media", side_effect=AssertionError("no upload")):
+                with mock.patch("requests.post", side_effect=self._tweet_responses(["id1"])):
+                    payload = xp.post_thread(job_dir)
+            self.assertTrue(payload["posted"])
+
+    def test_resume_does_not_re_upload_the_card(self):
+        # On resume the lead tweet is already live; uploading again would
+        # attach the card to a mid-thread reply instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            photo = self._photo(job_dir)
+            _write_thread(job_dir, ["first", "second"], photo_path=str(photo), tweet_ids=["id1"])
+
+            with mock.patch.object(xp, "_upload_media", side_effect=AssertionError("no upload")):
+                with mock.patch("requests.post", side_effect=self._tweet_responses(["id2"])) as post:
+                    payload = xp.post_thread(job_dir)
+
+            self.assertEqual(payload["tweet_ids"], ["id1", "id2"])
+            self.assertNotIn("media", post.call_args_list[0].kwargs["json"])
+
+
+class UploadMediaTests(unittest.TestCase):
+    def _response(self, body):
+        res = mock.Mock()
+        res.raise_for_status = mock.Mock()
+        res.json.return_value = body
+        return res
+
+    def test_reads_media_id_from_v2_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "card.png"
+            path.write_bytes(b"png")
+            with mock.patch("requests.post", return_value=self._response({"data": {"id": "77"}})):
+                self.assertEqual(xp._upload_media(path, access_token="t"), "77")
+
+    def test_accepts_the_legacy_media_id_string_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "card.png"
+            path.write_bytes(b"png")
+            with mock.patch("requests.post", return_value=self._response({"media_id_string": "88"})):
+                self.assertEqual(xp._upload_media(path, access_token="t"), "88")
+
+    def test_unrecognized_response_raises_rather_than_keyerror(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "card.png"
+            path.write_bytes(b"png")
+            with mock.patch("requests.post", return_value=self._response({"unexpected": 1})):
+                with self.assertRaises(RuntimeError):
+                    xp._upload_media(path, access_token="t")
+
+
 if __name__ == "__main__":
     unittest.main()

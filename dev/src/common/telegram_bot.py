@@ -55,6 +55,7 @@ DEFAULT_CAPTION_MARGIN_V = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_V", "
 DEFAULT_CAPTION_STYLE = os.environ.get("TELEGRAM_DEFAULT_CAPTION_STYLE", os.environ.get("CAPTION_STYLE", "default"))
 DEFAULT_CAPTION_MARGIN_H = os.environ.get("TELEGRAM_DEFAULT_CAPTION_MARGIN_H", "10")
 DEFAULT_WEB_RESEARCH = os.environ.get("TELEGRAM_DEFAULT_WEB_RESEARCH", "true").lower() not in ("off", "0", "false", "no")
+SOURCES_DM_HEADER = "X 스레드 출처입니다. 필요하면 아래 내용을 그대로 복사해서 쓰세요."
 
 if not TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN is required")
@@ -1574,12 +1575,42 @@ def handle_x_thread(chat_id, job):
     )
 
 
+def _maybe_send_x_sources(chat_id, job_dir):
+    """Send the thread's sources block once, as its own copy-pasteable
+    message. Sources are no longer a trailing tweet (links cost reach on X),
+    so this is the only place they surface. A Telegram chat with the
+    operator is already a private DM, so the same message that Slack sends
+    to a DM channel goes straight to the chat here.
+
+    Never raises: a failed sources message must not fail a job whose thread
+    is already live.
+    """
+    payload = x_thread_adapter.load_x_thread(job_dir)
+    if not payload or payload.get("sources_dm_sent"):
+        return False
+    sources_text = str(payload.get("sources_text") or "").strip()
+    if not sources_text:
+        return False
+    try:
+        send_message(chat_id, f"{SOURCES_DM_HEADER}\n\n{sources_text}")
+    except Exception as exc:
+        print(f"X 스레드 출처 전송 실패: {exc}", file=sys.stderr)
+        return False
+    payload["sources_dm_sent"] = True
+    try:
+        x_thread_adapter.save_x_thread(job_dir, payload)
+    except OSError as exc:
+        print(f"출처 전송 기록 저장 실패: {exc}", file=sys.stderr)
+    return True
+
+
 def handle_x_post(chat_id, job):
     if not job.get("job_id"):
         send_message(chat_id, "진행 중인 작업이 없습니다.")
         return
+    job_dir = work_dir(job["job_id"])
     try:
-        payload = x_poster.post_thread(work_dir(job["job_id"]))
+        payload = x_poster.post_thread(job_dir)
     except RuntimeError as exc:
         send_message(chat_id, f"X 게시 실패: {exc}")
         return
@@ -1587,6 +1618,7 @@ def handle_x_post(chat_id, job):
         chat_id,
         f"X 게시 완료: {payload.get('thread_url')} ({len(payload.get('tweet_ids') or [])}개 트윗)",
     )
+    _maybe_send_x_sources(chat_id, job_dir)
 
 
 def command_specs():

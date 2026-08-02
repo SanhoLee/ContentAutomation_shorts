@@ -15,6 +15,7 @@ import x_thread_adapter as xta
 
 PACKAGE = {
     "job_id": "J001",
+    "source": {"topic": "치매 예방", "title": "치매를 부르는 습관"},
     "hook": "치매, 원인이 여러분이 생각하는 그게 아닙니다.",
     "key_points": [
         {"text": "수면 부족이 기억력 저하와 관련있다는 연구 결과가 있습니다."},
@@ -25,6 +26,13 @@ PACKAGE = {
 }
 
 
+def _body(tweets):
+    """Lead tweet text with the X title line stripped off, so a test can
+    assert on the packed body without caring what the title says."""
+    text = tweets[0]["text"]
+    return text.split(xta.TITLE_SEPARATOR, 1)[-1] if xta.TITLE_SEPARATOR in text else text
+
+
 class BuildTweetsTests(unittest.TestCase):
     """humanize=False everywhere here: these test the rule-based path in
     isolation, and must stay deterministic/network-free even if a
@@ -32,13 +40,12 @@ class BuildTweetsTests(unittest.TestCase):
 
     def test_packs_short_sentences_into_fewer_tweets(self):
         # hook + 2 key_points + closing are all short enough that the first
-        # three pack into one tweet under TWEET_MAX_CHARS(139); only the
-        # closing (which also carries hashtags) needs its own tweet.
+        # three pack into one tweet under TWEET_MAX_CHARS(139) minus the
+        # title's reserved width; only the closing needs its own tweet.
         tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
         self.assertEqual(len(tweets), 2)
         self.assertIn("치매", tweets[0]["text"])
         self.assertIn("수면 부족", tweets[0]["text"])
-        self.assertIn("산책", tweets[0]["text"])
         self.assertIn("오늘부터", tweets[-1]["text"])
 
     def test_long_sentence_starts_its_own_tweet_instead_of_packing(self):
@@ -49,13 +56,6 @@ class BuildTweetsTests(unittest.TestCase):
         tweets = xta.build_tweets(package, ban_keywords=[], humanize=False)
         self.assertGreaterEqual(len(tweets), 2)
         self.assertNotIn("아주 아주", tweets[0]["text"])
-
-    def test_hashtags_only_on_last_tweet_capped_at_two(self):
-        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
-        for tweet in tweets[:-1]:
-            self.assertNotIn("#", tweet["text"])
-        hashtags_in_last = [word for word in tweets[-1]["text"].split() if word.startswith("#")]
-        self.assertLessEqual(len(hashtags_in_last), 2)
 
     def test_number_prefix_option(self):
         tweets = xta.build_tweets(PACKAGE, number_prefix=True, ban_keywords=[], humanize=False)
@@ -74,6 +74,15 @@ class BuildTweetsTests(unittest.TestCase):
         for tweet in tweets:
             self.assertLessEqual(len(tweet["text"]), xta.TWEET_MAX_CHARS)
 
+    def test_lead_tweet_with_title_still_fits_with_number_prefix(self):
+        # Worst case for the lead tweet: it carries both the numeric prefix
+        # and the title on top of its packed body.
+        package = dict(PACKAGE)
+        package["source"] = {"topic": "치매 예방", "title": "긴 제목입니다 " * 12}
+        tweets = xta.build_tweets(package, number_prefix=True, ban_keywords=[], humanize=False)
+        for tweet in tweets:
+            self.assertLessEqual(len(tweet["text"]), xta.TWEET_MAX_CHARS)
+
     def test_truncation_has_no_ellipsis(self):
         text = "첫 문장입니다. " * 30
         truncated = xta._truncate_at_boundary(text, 50)
@@ -89,6 +98,103 @@ class BuildTweetsTests(unittest.TestCase):
     def test_empty_package_yields_no_tweets(self):
         tweets = xta.build_tweets({}, ban_keywords=[], humanize=False)
         self.assertEqual(tweets, [])
+
+    def test_title_alone_never_produces_a_tweet(self):
+        # A package with a title but no usable body must stay empty rather
+        # than post a title-only tweet.
+        tweets = xta.build_tweets(
+            {"source": {"title": "제목만 있습니다"}}, ban_keywords=[], humanize=False,
+        )
+        self.assertEqual(tweets, [])
+
+
+class LeadTitleTests(unittest.TestCase):
+    """The lead tweet carries an X-optimized title above the first packed
+    group. It may differ from the Shorts title, but must never push the
+    lead tweet over the char limit or appear on a later tweet."""
+
+    def test_lead_tweet_starts_with_the_title_line(self):
+        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        self.assertTrue(tweets[0]["text"].startswith("치매를 부르는 습관"))
+        self.assertIn(xta.TITLE_SEPARATOR, tweets[0]["text"])
+
+    def test_first_message_content_still_rides_in_the_lead_tweet(self):
+        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        self.assertIn("치매, 원인이", _body(tweets))
+
+    def test_title_only_appears_on_the_lead_tweet(self):
+        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        for tweet in tweets[1:]:
+            self.assertNotIn("치매를 부르는 습관", tweet["text"])
+
+    def test_title_falls_back_to_core_message_then_topic(self):
+        package = dict(PACKAGE)
+        package["source"] = {"topic": "치매 예방"}
+        package["core_message"] = "작은 습관부터 시작하세요"
+        tweets = xta.build_tweets(package, ban_keywords=[], humanize=False)
+        self.assertTrue(tweets[0]["text"].startswith("작은 습관부터 시작하세요"))
+
+        package["core_message"] = ""
+        tweets = xta.build_tweets(package, ban_keywords=[], humanize=False)
+        self.assertTrue(tweets[0]["text"].startswith("치매 예방"))
+
+    def test_long_title_is_capped(self):
+        package = dict(PACKAGE)
+        package["source"] = {"title": "가" * 200}
+        tweets = xta.build_tweets(package, ban_keywords=[], humanize=False)
+        title = tweets[0]["text"].split(xta.TITLE_SEPARATOR, 1)[0]
+        self.assertLessEqual(len(title), xta.X_TITLE_MAX_CHARS)
+
+    def test_ban_keyword_title_is_dropped(self):
+        package = dict(PACKAGE)
+        package["source"] = {"title": "치매 완치 보장"}
+        package["core_message"] = ""
+        package["topic"] = ""
+        tweets = xta.build_tweets(package, ban_keywords=["완치", "보장"], humanize=False)
+        self.assertNotIn("완치", tweets[0]["text"])
+
+
+class NoHashtagsOrLinksTests(unittest.TestCase):
+    """Hashtags and URLs are banned from thread text outright -- both cost
+    reach on X, and neither may survive the rule-based path or a rewrite."""
+
+    def test_no_hashtags_anywhere_even_though_the_package_has_them(self):
+        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        for tweet in tweets:
+            self.assertNotIn("#", tweet["text"])
+
+    def test_hashtags_inside_source_text_are_stripped(self):
+        package = dict(PACKAGE)
+        package["cta"] = {"action": "오늘부터 시작해보세요 #뇌건강 #치매예방", "next_topic_tease": ""}
+        tweets = xta.build_tweets(package, ban_keywords=[], humanize=False)
+        for tweet in tweets:
+            self.assertNotIn("#", tweet["text"])
+        self.assertIn("오늘부터 시작해보세요", tweets[-1]["text"])
+
+    def test_urls_inside_source_text_are_stripped(self):
+        package = dict(PACKAGE)
+        package["hook"] = "자세한 건 https://example.com/study 를 보세요."
+        tweets = xta.build_tweets(package, ban_keywords=[], humanize=False)
+        for tweet in tweets:
+            self.assertNotIn("http", tweet["text"])
+            self.assertNotIn("www.", tweet["text"])
+
+    def test_rewrite_that_adds_a_hashtag_or_link_is_sanitized(self):
+        rewrite = {
+            "title": "잠 못 자면 기억력부터 흔들려요 #뇌건강",
+            "texts": [
+                "치매 원인, 생각하시는 그게 아닐 수 있어요. https://x.com/foo",
+                "잠이 부족하면 기억력이 떨어진다는 연구가 있어요.",
+                "하루 30분 걷기만 해도 도움이 된대요.",
+                "오늘부터 한 가지만 시작해보세요.",
+            ],
+        }
+        with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
+            tweets = xta.build_tweets(PACKAGE, ban_keywords=[])
+        for tweet in tweets:
+            self.assertNotIn("#", tweet["text"])
+            self.assertNotIn("http", tweet["text"])
+        self.assertTrue(tweets[0]["text"].startswith("잠 못 자면 기억력부터 흔들려요"))
 
 
 class HumanizeTests(unittest.TestCase):
@@ -114,6 +220,11 @@ class HumanizeTests(unittest.TestCase):
         self._budget_patch.stop()
         self._usage_patch.stop()
 
+    def test_prompt_targets_20s_to_40s_in_polite_korean(self):
+        self.assertIn("20~40대", xta.HUMANIZE_PROMPT)
+        self.assertIn("존댓말", xta.HUMANIZE_PROMPT)
+        self.assertNotIn("반말 섞인", xta.HUMANIZE_PROMPT)
+
     def test_no_api_key_falls_back_without_network_call(self):
         with mock.patch("requests.post", side_effect=AssertionError("should not call network")):
             tweets = xta.build_tweets(PACKAGE, ban_keywords=[])  # humanize=None -> default True
@@ -123,21 +234,40 @@ class HumanizeTests(unittest.TestCase):
     def test_env_var_off_disables_rewrite(self):
         os.environ["X_THREAD_HUMANIZE"] = "0"
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
-        with mock.patch.object(xta, "_humanize_texts_with_claude") as rewrite:
+        with mock.patch.object(xta, "_humanize_with_claude") as rewrite:
             xta.build_tweets(PACKAGE, ban_keywords=[])
             rewrite.assert_not_called()
 
-    def test_successful_rewrite_replaces_raw_text(self):
+    def test_successful_rewrite_replaces_raw_text_and_title(self):
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
-        casual = ["치매 원인 그거 아니라던데?", "잠 부족하면 기억력 떨어진대", "산책 30분이면 된대", "오늘부터 해보자! 다음엔 수면 얘기도 궁금하지?"]
-        with mock.patch.object(xta, "_humanize_texts_with_claude", return_value=casual):
+        rewrite = {
+            "title": "치매 원인, 생각하시는 그게 아닙니다",
+            "texts": [
+                "치매 원인, 그거 아니라고 하네요.",
+                "잠이 부족하면 기억력이 떨어진대요.",
+                "산책 30분이면 충분하다고 해요.",
+                "오늘부터 시작해보세요. 다음엔 수면 이야기도 준비할게요.",
+            ],
+        }
+        with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
             tweets = xta.build_tweets(PACKAGE, ban_keywords=[])
-        self.assertIn("치매 원인 그거 아니라던데?", tweets[0]["text"])
+        self.assertTrue(tweets[0]["text"].startswith("치매 원인, 생각하시는 그게 아닙니다"))
+        self.assertIn("치매 원인, 그거 아니라고 하네요.", _body(tweets))
+
+    def test_rewrite_without_a_title_keeps_the_rule_based_one(self):
+        os.environ["ANTHROPIC_API_KEY"] = "test-key"
+        rewrite = {"title": "", "texts": ["가", "나", "다", "라"]}
+        with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
+            tweets = xta.build_tweets(PACKAGE, ban_keywords=[])
+        self.assertTrue(tweets[0]["text"].startswith("치매를 부르는 습관"))
 
     def test_rewrite_reintroducing_ban_keyword_is_discarded_wholesale(self):
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
-        bad_rewrite = ["완치 보장 가능", "잠 부족하면 기억력 떨어진대", "산책 30분이면 된대", "오늘부터 해보자!"]
-        with mock.patch.object(xta, "_humanize_texts_with_claude", return_value=bad_rewrite):
+        bad_rewrite = {
+            "title": "완치 보장",
+            "texts": ["완치 보장 가능", "잠 부족하면 기억력 떨어져요", "산책 30분이면 돼요", "오늘부터 해보세요!"],
+        }
+        with mock.patch.object(xta, "_humanize_with_claude", return_value=bad_rewrite):
             tweets = xta.build_tweets(PACKAGE, ban_keywords=["완치", "보장"])
         baseline = xta.build_tweets(PACKAGE, ban_keywords=["완치", "보장"], humanize=False)
         self.assertEqual([t["text"] for t in tweets], [t["text"] for t in baseline])
@@ -147,6 +277,19 @@ class HumanizeTests(unittest.TestCase):
         response = mock.Mock()
         response.raise_for_status = mock.Mock()
         response.json.return_value = {"content": [{"type": "text", "text": "이건 JSON이 아닙니다"}]}
+        with mock.patch("requests.post", return_value=response):
+            tweets = xta.build_tweets(PACKAGE, ban_keywords=[])
+        baseline = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        self.assertEqual([t["text"] for t in tweets], [t["text"] for t in baseline])
+
+    def test_sentence_count_mismatch_falls_back(self):
+        os.environ["ANTHROPIC_API_KEY"] = "test-key"
+        response = mock.Mock()
+        response.raise_for_status = mock.Mock()
+        response.json.return_value = {"content": [{
+            "type": "text",
+            "text": json.dumps({"title": "제목", "sentences": ["한 문장뿐"]}, ensure_ascii=False),
+        }]}
         with mock.patch("requests.post", return_value=response):
             tweets = xta.build_tweets(PACKAGE, ban_keywords=[])
         baseline = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
@@ -180,7 +323,7 @@ class BuildXThreadTests(unittest.TestCase):
 
             payload = xta.build_x_thread(job_dir, humanize=False)
             self.assertIsNotNone(payload)
-            self.assertEqual(payload["method"], "rule_v1")
+            self.assertEqual(payload["method"], "rule_v2")
             self.assertEqual(len(payload["char_counts"]), len(payload["tweets"]))
             self.assertTrue((job_dir / "x_thread.json").exists())
             self.assertTrue((job_dir / "x_thread.txt").exists())
@@ -212,6 +355,12 @@ class BuildXThreadTests(unittest.TestCase):
             on_disk = json.loads(posted_path.read_text(encoding="utf-8"))
             self.assertEqual(on_disk["tweet_ids"], ["111", "222"])
 
+    def test_save_x_thread_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            xta.save_x_thread(job_dir, {"job_id": "J1", "sources_dm_sent": True})
+            self.assertTrue(xta.load_x_thread(job_dir)["sources_dm_sent"])
+
     def test_no_api_key_end_to_end_falls_back_to_rules(self):
         # Default (humanize=None) path with no ANTHROPIC_API_KEY set must
         # behave identically to humanize=False -- no crash, no network call.
@@ -227,95 +376,69 @@ class BuildXThreadTests(unittest.TestCase):
                 with mock.patch("requests.post", side_effect=AssertionError("should not call network")):
                     payload = xta.build_x_thread(job_dir)
             self.assertIsNotNone(payload)
-            self.assertEqual(payload["method"], "rule_v1")
+            self.assertEqual(payload["method"], "rule_v2")
 
 
-class SourcesTweetTests(unittest.TestCase):
-    """The sources tweet is citations, not copy: it must stay out of the
-    humanize rewrite and never be the tweet carrying the hashtags."""
+class SourcesTests(unittest.TestCase):
+    """Sources are no longer a tweet: they go into the payload as
+    `sources_text` for the bots to DM, so they may keep their links."""
 
-    def test_no_citations_or_evidence_yields_no_sources_tweet(self):
-        baseline = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
-        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=[])
-        self.assertEqual(len(tweets), len(baseline))
-
-    def test_pubmed_citations_produce_a_final_sources_tweet(self):
+    def test_pubmed_citations_never_become_a_tweet(self):
         citations = [{"pmid": "12345678", "journal": "Neurology", "year": "2022"}]
-        baseline = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
-        tweets = xta.build_tweets(
-            PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=citations,
-        )
-        self.assertEqual(len(tweets), len(baseline) + 1)
-        self.assertIn(xta.SOURCES_LABEL, tweets[-1]["text"])
-        self.assertIn("https://pubmed.ncbi.nlm.nih.gov/12345678/", tweets[-1]["text"])
+        text = xta.build_sources_text(PACKAGE, citations, [])
+        self.assertIn(xta.SOURCES_LABEL, text)
+        self.assertIn("https://pubmed.ncbi.nlm.nih.gov/12345678/", text)
+
+        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        for tweet in tweets:
+            self.assertNotIn("pubmed", tweet["text"])
+            self.assertNotIn(xta.SOURCES_LABEL, tweet["text"])
+
+    def test_no_citations_or_evidence_yields_empty_sources_text(self):
+        self.assertEqual(xta.build_sources_text(PACKAGE, [], []), "")
 
     def test_evidence_source_hint_used_when_no_pmids(self):
         package = dict(PACKAGE)
         package["evidence"] = [{"claim": "수면과 기억력", "source_hint": "2019년 국내 코호트 연구"}]
-        tweets = xta.build_tweets(package, ban_keywords=[], humanize=False, pubmed_citations=[])
-        self.assertIn("2019년 국내 코호트 연구", tweets[-1]["text"])
+        self.assertIn("2019년 국내 코호트 연구", xta.build_sources_text(package, [], []))
 
     def test_pmids_take_priority_over_evidence_hint(self):
         package = dict(PACKAGE)
         package["evidence"] = [{"claim": "x", "source_hint": "근거 힌트 텍스트"}]
-        citations = [{"pmid": "1", "journal": "J", "year": "2021"}]
-        tweets = xta.build_tweets(
-            package, ban_keywords=[], humanize=False, pubmed_citations=citations,
-        )
-        self.assertIn("pubmed.ncbi.nlm.nih.gov", tweets[-1]["text"])
-        self.assertNotIn("근거 힌트 텍스트", tweets[-1]["text"])
+        text = xta.build_sources_text(package, [{"pmid": "1", "journal": "J", "year": "2021"}], [])
+        self.assertIn("pubmed.ncbi.nlm.nih.gov", text)
+        self.assertNotIn("근거 힌트 텍스트", text)
 
-    def test_sources_tweet_capped_at_max_source_links(self):
+    def test_sources_capped_at_max_source_links(self):
         citations = [{"pmid": str(i), "journal": "Journal", "year": "2020"} for i in range(10)]
-        tweets = xta.build_tweets(
-            PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=citations,
-        )
-        self.assertLessEqual(
-            tweets[-1]["text"].count("pubmed.ncbi.nlm.nih.gov"), xta.MAX_SOURCE_LINKS,
-        )
-
-    def test_hashtags_stay_on_the_cta_tweet_not_the_sources_tweet(self):
-        citations = [{"pmid": "1", "journal": "J", "year": "2021"}]
-        tweets = xta.build_tweets(
-            PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=citations,
-        )
-        self.assertIn("#", tweets[-2]["text"])
-        self.assertNotIn("#", tweets[-1]["text"])
-
-    def test_sources_tweet_respects_the_char_budget(self):
-        # Budgeted the way X actually counts: t.co rewrites every link to a
-        # fixed width, so raw len() overstates a link-heavy tweet and is not
-        # the number that decides acceptance. Long journal names still get
-        # dropped once the link-aware total exceeds the budget.
-        citations = [
-            {"pmid": f"12345678901{i}", "journal": "A Very Long Journal Name Indeed", "year": "2022"}
-            for i in range(xta.MAX_SOURCE_LINKS)
-        ]
-        tweets = xta.build_tweets(
-            PACKAGE, ban_keywords=[], humanize=False, pubmed_citations=citations,
-        )
-        text = tweets[-1]["text"]
-        counted = sum(xta._link_aware_length(line) + 1 for line in text.split("\n")) - 1
-        self.assertLessEqual(counted, xta.TWEET_MAX_CHARS)
-        self.assertLess(text.count("pubmed"), xta.MAX_SOURCE_LINKS)
+        text = xta.build_sources_text(PACKAGE, citations, [])
+        self.assertLessEqual(text.count("pubmed.ncbi.nlm.nih.gov"), xta.MAX_SOURCE_LINKS)
 
     def test_ban_keyword_drops_the_source_line(self):
         citations = [{"pmid": "1", "journal": "완치 저널", "year": "2020"}]
-        baseline = xta.build_tweets(PACKAGE, ban_keywords=["완치"], humanize=False)
-        tweets = xta.build_tweets(
-            PACKAGE, ban_keywords=["완치"], humanize=False, pubmed_citations=citations,
-        )
-        # No usable source line survives, so no sources tweet is appended.
-        self.assertEqual(len(tweets), len(baseline))
+        self.assertEqual(xta.build_sources_text(PACKAGE, citations, ["완치"]), "")
 
-    def test_sources_tweet_is_not_sent_through_humanize(self):
-        citations = [{"pmid": "1", "journal": "J", "year": "2021"}]
-        with mock.patch.object(xta, "_humanize_texts_with_claude") as rewrite:
-            rewrite.return_value = ["다시 쓴 문장입니다."]
-            tweets = xta.build_tweets(PACKAGE, ban_keywords=[], pubmed_citations=citations)
-        self.assertIn(xta.SOURCES_LABEL, tweets[-1]["text"])
-        for call_texts in rewrite.call_args_list:
-            self.assertNotIn(xta.SOURCES_LABEL, " ".join(call_texts.args[0]))
+    def test_pubmed_status_citations_land_in_the_payload_not_the_tweets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            (job_dir / "video_meta.json").write_text(json.dumps({
+                "topic": "치매 예방", "title": "치매 예방 습관", "core_message": "작은 습관부터",
+                "hashtags": "#치매예방",
+            }, ensure_ascii=False), encoding="utf-8")
+            (job_dir / "scenes.json").write_text(json.dumps([
+                {"text": "훅 문장입니다.", "visual_query": "a"},
+                {"text": "CTA 문장입니다.", "visual_query": "d"},
+            ], ensure_ascii=False), encoding="utf-8")
+            (job_dir / "strategy.json").write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
+            (job_dir / "pubmed_status.json").write_text(json.dumps({
+                "citations": [{"pmid": "999", "journal": "J", "year": "2023"}],
+            }, ensure_ascii=False), encoding="utf-8")
+            cp.build_content_package(job_dir)
+            with mock.patch.object(xta.x_photo_card, "build_thread_photo", return_value=None):
+                payload = xta.build_x_thread(job_dir, humanize=False)
+            self.assertIn("pubmed.ncbi.nlm.nih.gov/999", payload["sources_text"])
+            for tweet in payload["tweets"]:
+                self.assertNotIn("pubmed", tweet["text"])
 
 
 class ThreadPhotoTests(unittest.TestCase):
@@ -353,18 +476,6 @@ class ThreadPhotoTests(unittest.TestCase):
                 payload = xta.build_x_thread(job_dir, humanize=False)
             self.assertIsNone(payload["photo_path"])
 
-    def test_pubmed_status_citations_feed_the_sources_tweet(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            job_dir = Path(tmp)
-            self._write_job(job_dir)
-            (job_dir / "pubmed_status.json").write_text(json.dumps({
-                "citations": [{"pmid": "999", "journal": "J", "year": "2023"}],
-            }, ensure_ascii=False), encoding="utf-8")
-            cp.build_content_package(job_dir)
-            with mock.patch.object(xta.x_photo_card, "build_thread_photo", return_value=None):
-                payload = xta.build_x_thread(job_dir, humanize=False)
-            self.assertIn("pubmed.ncbi.nlm.nih.gov/999", payload["tweets"][-1]["text"])
-
     def test_missing_pubmed_status_file_does_not_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             job_dir = Path(tmp)
@@ -373,6 +484,7 @@ class ThreadPhotoTests(unittest.TestCase):
             with mock.patch.object(xta.x_photo_card, "build_thread_photo", return_value=None):
                 payload = xta.build_x_thread(job_dir, humanize=False)
             self.assertIsNotNone(payload)
+            self.assertEqual(payload["sources_text"], "")
 
 
 if __name__ == "__main__":

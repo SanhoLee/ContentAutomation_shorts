@@ -501,16 +501,31 @@ python3 dev/src/common/adapters/x_thread_adapter.py --job-id J0001 --print
 (`slack_bot._maybe_post_x_thread`). 텔레그램 경로와 `/x_post` 수동 명령은
 그대로 남아 있습니다.
 
-- **트윗 구성**: 훅(+사진) → 핵심 포인트 → CTA(+해시태그) → 출처(PubMed 링크,
-  없으면 근거 힌트 텍스트). 출처가 전혀 없으면 출처 트윗은 생략됩니다.
-  출처 트윗은 humanize 재작성 대상이 아니며 해시태그도 붙지 않습니다.
+- **트윗 구성**: 첫 트윗(X 전용 타이틀 + 첫 메시지 본문 + 사진) → 핵심 포인트
+  → CTA. 타이틀은 쇼츠 제목과 같을 필요가 없고 X 타임라인 기준으로만
+  최적화합니다(최대 `X_TITLE_MAX_CHARS=60`자). humanize 호출이 타이틀도 같이
+  써 주며, 호출이 꺼져 있거나 실패하면 쇼츠 제목 → core_message → 주제 순으로
+  규칙 기반 대체 타이틀을 씁니다.
+- **타겟·어투**: 쇼츠(50대 이상)와 달리 스레드는 **20~40대**를 대상으로
+  다시 씁니다. humanize의 캐주얼한 결은 유지하되 **전부 존댓말(해요체 기본)**
+  입니다.
+- **해시태그·링크 금지**: 스레드 본문에는 해시태그와 URL을 넣지 않습니다.
+  `content_package.json`에 해시태그가 있어도 무시하고, 원문이나 Claude
+  재작성본에 `#태그`/링크가 섞여 들어오면 게시 전에 제거합니다.
+- **출처**: 출처 트윗은 만들지 않습니다. 대신 `x_thread.json`의
+  `sources_text`(PubMed 링크, 없으면 근거 힌트 텍스트)를 게시 직후 운영자에게
+  **슬랙 DM**으로 보내 그대로 복사해 쓸 수 있게 합니다
+  (`slack_bot._maybe_send_x_sources_dm`, 수신자는 `SLACK_DM_USER_ID` 또는
+  `SLACK_ALLOWED_USER_ID`). DM은 `sources_dm_sent` 플래그로 job당 한 번만
+  나가고, DM 실패는 로그만 남기고 job을 실패시키지 않습니다. 텔레그램 경로는
+  대화 자체가 DM이므로 같은 내용을 채팅으로 보냅니다.
 - **사진**: `dev/src/instagram/card_render.py`를 재사용해 훅 문장을 16:9
   카드로 렌더링하고 **첫 트윗에만** 첨부합니다. Pillow가 없거나 렌더링/업로드가
   실패하면 사진 없이 텍스트만 게시합니다. 이어서 게시(resume)할 때는 첫 트윗이
   이미 올라가 있으므로 사진을 다시 올리지 않습니다.
 - **글자수**: `TWEET_MAX_CHARS=139` (X는 CJK 1자를 2자로 계산하므로 280자
-  한도가 한글 기준 약 140자). 출처 트윗의 링크는 t.co 축약 정책(링크당 23자
-  고정)을 감안해 몇 줄까지 넣을지 계산합니다.
+  한도가 한글 기준 약 140자). 첫 트윗은 타이틀이 차지하는 폭을 먼저 빼고
+  본문을 채우므로 타이틀을 붙여도 한도를 넘지 않습니다.
 - **실패 처리**: 스레드 중간 실패는 재시도하지 않고(중복 게시 방지) 그때까지의
   진행 상황을 `x_thread.json`에 기록합니다. `/x_post`로 다시 실행하면 아직
   올라가지 않은 트윗부터 이어서 게시하며, 이미 완료된 스레드는 재게시를
@@ -582,6 +597,7 @@ python 0_script.py "다음 주제"
 | `SLACK_APP_TOKEN` | Slack Socket Mode App Token (`xapp-...`) |
 | `SLACK_CHANNEL_ID` | Slack 봇 허용 채널 ID (권장) |
 | `SLACK_ALLOWED_USER_ID` | Slack 봇 허용 사용자 ID (선택) |
+| `SLACK_DM_USER_ID` | X 스레드 출처 DM 수신자 (선택, 미설정 시 `SLACK_ALLOWED_USER_ID`) |
 | `X_CLIENT_ID` / `X_CLIENT_SECRET` | X(Twitter) OAuth 2.0 앱 크리덴셜 (스레드 게시용) |
 | `X_TOKEN_FILE` | X access/refresh 토큰 저장 경로 (기본 `dev/data/x_token.json`) |
 

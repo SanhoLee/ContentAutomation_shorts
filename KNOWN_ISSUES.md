@@ -140,6 +140,16 @@ Status: fixed in code (classification + reason surfacing); recurrence still poss
 
 Fix: `classify_api_error` now checks `isinstance(exc, RefreshError)` explicitly; `0_topic_plan.py`'s `cmd_plan()` now enriches `objective.reason` with `feedback.latest_sync_error()` in both the blocking (`stale-cache`/`missing`) and non-blocking (`refresh-failed-cache`) branches, so both existing Slack/Telegram messages (which already print `reason`) surface the real cause without any bot-file changes. Two new diagnostic/ops subcommands were added to `6_youtube_feedback.py`: `check-auth` (attempts only credential load/refresh, no API quota use) and `reauth` (forces a fresh interactive OAuth grant via `run_local_server`, usable headlessly on Lightsail through SSH local port forwarding). See `docs/usage/youtube-feedback.md` section 9 for the full re-auth runbook.
 
+### 17. `over_target_length` demoted to warning (2026-08-02)
+
+Status: monitor after deploy.
+
+The 2026-08-01 retention-cliff commit (`7c30586`) cut `TARGET_DURATION_SEC` 80→55 (dev), which shrank the script length budget and hard cap (`MAX_SCRIPT_LENGTH_RATIO=1.40`) by the same 31%, but did not shrink what Stage 1 asks Stage 2 to fit into that budget (`required_beats` count, `evidence_status: limited` hedging language). Job `goal_20260802_025044_005235_f61bea61` produced a 549-char draft against a 358-char hard cap; the single Haiku compression pass (`revise_overlong_script`) only got it to 418 chars, and `validate_script()`'s `over_target_length` was still an `error` (deliberately promoted from `warning` on 2026-07-12, `290146091`), so `enforce_quality_without_revision()` raised `RuntimeError` and killed the whole job — no output was written at all.
+
+Fix: `over_target_length` moved from `errors` to `warnings` in `validate_script()` (`0_script.py`), same production-continuity principle as `#14`. The real safety net is downstream: `stage_guard.py` measures actual TTS audio duration and tolerates 0.5x-1.8x of `TARGET_DURATION_SEC` (~27.5-99s at 55s), far more permissive than the 1.40x char-count proxy ever was. Per explicit product decision, no mechanical trimming was added — the compression pass still runs once, but if the result is still over the cap afterward, the job proceeds with that text as-is (natural narrative flow prioritized over hitting the length target exactly).
+
+**Monitor**: check `script_quality.json` `over_target_length` frequency across the next batch of jobs. If it's frequent (≥30%, same bar as `#14`), the fix isn't the gate — it's that Stage 1's strategy prompt (`required_beats` count / hedging language) is oversized for the 55s budget and needs to be scaled down there instead.
+
 Likely root cause of the original expiry: the Google Cloud OAuth consent screen is in "Testing" publishing status, which caps refresh tokens at 7 days — this must be verified/fixed in Google Cloud Console (Publish App → In production); the code cannot detect or change this. There is still no proactive/scheduled sync health-check (no cron/systemd timer) — sync only runs reactively when a plan/content command triggers it; this is a deliberate scope decision for now (see item 15's "scheduled loop" note).
 
 ## Bugs To Watch For In Next Testing Session

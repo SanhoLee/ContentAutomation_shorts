@@ -316,13 +316,16 @@ class ScriptQualityTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertIn("unsupported_winner_claim", warning_codes(report))
 
-    def test_over_target_length_is_error_and_blocks(self):
+    def test_over_target_length_is_warning_and_does_not_block(self):
+        # An unattended run must not stop because the duration budget got tighter
+        # than the model's content requirements; stage_guard's real TTS-duration
+        # check (0.5x-1.8x) is the actual safety net downstream.
         old_total = script0.total_chars
         try:
             script0.total_chars = 10
             report = script0.validate_script(complete_result(), comparison_strategy())
-            self.assertFalse(report["ok"])
-            self.assertIn("over_target_length", issue_codes(report))
+            self.assertTrue(report["ok"])
+            self.assertIn("over_target_length", warning_codes(report))
             self.assertGreater(report["metrics"]["length_ratio"], 1.40)
         finally:
             script0.total_chars = old_total

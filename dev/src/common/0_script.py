@@ -1662,7 +1662,7 @@ def validate_script(result, strategy):
     if scenes and char_count < total_chars * 0.55:
         warnings.append(quality_issue("under_target_length", f"대본이 목표보다 많이 짧습니다: {char_count}자", "warning"))
     if char_count > total_chars * MAX_SCRIPT_LENGTH_RATIO:
-        errors.append(quality_issue("over_target_length", f"대본이 허용 상한을 넘었습니다: {char_count}자"))
+        warnings.append(quality_issue("over_target_length", f"대본이 허용 상한을 넘었습니다: {char_count}자", "warning"))
     if strategy.get("intent_type") == CONTENT_INTENT_COMPARISON:
         targets = strategy.get("comparison_targets") or []
         if len(targets) < 2:

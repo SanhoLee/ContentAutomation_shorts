@@ -789,6 +789,32 @@ class TopicCandidateFlowTests(unittest.TestCase):
     def _callbacks(rows):
         return [item["callback_data"] for row in rows for item in row]
 
+    def test_start_button_is_on_home_and_routes_to_refresh(self):
+        """The home screen's "주제 선정 시작" button is the direct entry point
+        for testing the queue-level flow -- trend collection then scoring --
+        without a job in progress, reusing topic:refresh's own handler."""
+        callbacks = {item["callback_data"]: item["text"] for row in slack_bot.home_button_rows() for item in row}
+        self.assertIn("topic:start", callbacks)
+        self.assertEqual(callbacks["topic:start"], "주제 선정 시작")
+
+        state = {"chats": {"C1": {}}}
+        started = []
+        old_start_background_task = slack_bot.start_background_task
+        old_save_state = slack_bot.save_state
+        try:
+            slack_bot.start_background_task = lambda *args: started.append(args)
+            slack_bot.save_state = lambda state: None
+            callback = {"message": {"chat": {"id": "C1"}}, "data": "topic:start"}
+            slack_bot.handle_callback(state, callback)
+        finally:
+            slack_bot.start_background_task = old_start_background_task
+            slack_bot.save_state = old_save_state
+
+        self.assertEqual(len(started), 1)
+        # start_background_task(state, chat_id, job, label, fn) -- the label
+        # is what the "진행 중" status message shows while it runs.
+        self.assertEqual(started[0][3], "주제 후보 조사")
+
     def test_card_has_one_select_button_per_candidate(self):
         saved, screens, _, _ = self._patch(candidates=CANDIDATES)
         try:

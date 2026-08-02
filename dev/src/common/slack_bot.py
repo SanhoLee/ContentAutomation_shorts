@@ -231,6 +231,7 @@ def action_request_label(data):
         "claude_budget:override": "Claude 예산 무시하고 계속 진행",
         "retry_topic": "새 주제로 다시 시도",
         "topic:show": "주제 후보 보기",
+        "topic:start": "주제 선정 시작 (트렌드 수집 + 후보 조사)",
         "topic:refresh": "주제 후보 다시 조사",
     }
     if data in exact:
@@ -344,7 +345,7 @@ def home_button_rows():
         [button("단계별 검수 제작", "start_content:review"), button("자동 제작", "start_content:auto")],
         [button("대본 검수 + 최종 승인", "start_content:two_gate")],
         [button("목표 기반 자동 기획", "start_goal"), button("트렌드에서 시작", "start_content:trend")],
-        [button("주제 후보", "topic:show")],
+        [button("주제 후보", "topic:show"), button("주제 선정 시작", "topic:start")],
         [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("메뉴 표시", "show_home")],
         [button("이전 작업 불러오기", "browse_jobs")],
     ]
@@ -2351,7 +2352,7 @@ def handle_callback(state, callback):
             send_message(chat_id, "새 주제를 다음 메시지로 보내주세요. 받는 즉시 스크립트를 다시 생성합니다.")
         elif data == "topic:show":
             send_topic_candidates(chat_id)
-        elif data == "topic:refresh":
+        elif data in ("topic:refresh", "topic:start"):
             start_background_task(state, chat_id, job, "주제 후보 조사", lambda: handle_topic_refresh(chat_id))
         elif data.startswith("topic:select:"):
             handle_topic_select(chat_id, data.split(":", 2)[2])

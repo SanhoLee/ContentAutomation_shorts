@@ -11,6 +11,8 @@ This repository creates Korean YouTube Shorts through a staged AI pipeline, driv
 
 The content target is older Korean viewers, often 50+. Generated scripts should avoid stiff expert language, explain medical/technical terms in plain Korean, and keep claims cautious when direct PubMed evidence is weak.
 
+The X(Twitter) thread adapter is the one deliberate exception to that audience: it re-writes the same script for 20s-40s readers, in polite Korean (존댓말), with no hashtags and no links, and a lead tweet whose title is written for X rather than reused from the Shorts title. See README "X(Twitter) 업로드 후 자동 게시".
+
 ## High-Level Pipeline
 
 The pipeline is split into `dev` and `prod` environments with the same shape. `dev/src` is further split into `common/` (content-type-agnostic), `youtube/` (render pipeline), and `instagram/` (card-content skeleton, not yet in production); `prod/src` has not been reorganized this way yet — mirror only when the split is validated and explicitly requested.

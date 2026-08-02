@@ -3,15 +3,16 @@
 
 Phase 4 of the Pareto design spec. Every tweet's raw text still comes from
 a field content_package.py already computed. On top of that, one bounded,
-non-retrying Claude Haiku call (see _humanize_texts_with_claude) rewrites
-the batch into a more casual, non-expert tone before truncation/hashtags
-are applied -- X's audience (20s-50s) is far broader than the 50+ YouTube
-viewer, and script prose written for narration reads as stiff/robotic in a
-tweet. If ANTHROPIC_API_KEY is unset, the budget guard trips, or the call
-fails for any reason, this falls back silently to the original rule-based
-text (production continuity over a downstream-only artifact). Posting is
-out of scope here — this only writes a draft an operator copies by hand
-(or a future phase wires to the X API).
+non-retrying Claude Haiku call (see _humanize_with_claude) rewrites the
+batch into a more casual, non-expert tone before truncation is applied --
+X's audience here (20s-40s) is both younger and broader than the 50+
+YouTube viewer, and script prose written for narration reads as
+stiff/robotic in a tweet. The same call also writes an X-optimized title
+for the lead tweet. If ANTHROPIC_API_KEY is unset, the budget guard trips,
+or the call fails for any reason, this falls back silently to the original
+rule-based text and a rule-based title (production continuity over a
+downstream-only artifact). Posting is out of scope here — this only writes
+a draft an operator copies by hand (or x_poster.py posts).
 
 Source order is hook, then each key_point, then cta.action (+
 next_topic_tease as a question). These sentences are packed greedily into
@@ -19,7 +20,19 @@ as few tweets as fit under TWEET_MAX_CHARS (139 -- X weighs each CJK
 character as 2 toward its 280-weighted-character cap, so pure-Korean text
 tops out around 140, not the ~270 an ASCII tweet gets) rather than one
 sentence per tweet, since most individual sentences here run far shorter
-than the limit. Hashtags are appended only to the last tweet.
+than the limit.
+
+The lead tweet carries the X title on its own line above the first packed
+group; the title does not have to match the Shorts title, it only has to
+work as a scroll-stopper on X. Packing reserves the title's width from the
+first group's budget so the combined lead tweet still fits.
+
+Three things are banned from the thread text outright, and stripped from
+both the rule-based source and the Claude rewrite: hashtags, URLs, and the
+sources block. Hashtags and links suppress reach on X and read as spam on
+a health account; the sources are still produced, but as `sources_text` in
+the payload for a Slack DM the operator copy-pastes, not as a trailing
+tweet nobody reads.
 
 Sentences that trip the Phase 1 safety ban-list (topic_score's
 ban_keywords — "완치", "보장", "기적", ...) are dropped rather than posted
@@ -53,12 +66,12 @@ import x_photo_card
 # so a pure-Korean post tops out around 280/2=140 chars, not the ~270-280
 # an ASCII tweet gets. 139 leaves a 1-char margin.
 TWEET_MAX_CHARS = 139
-MAX_HASHTAGS_LAST_TWEET = 2
+# The title shares the lead tweet with the first packed group, so it is
+# capped well under TWEET_MAX_CHARS -- a 60-char title still leaves ~70
+# chars of body, enough for a whole hook sentence.
+X_TITLE_MAX_CHARS = 60
+TITLE_SEPARATOR = "\n\n"
 MAX_SOURCE_LINKS = 3
-# X's t.co wrapper counts every link as this many characters regardless of
-# its real length. Used only to decide how many source lines fit; the raw
-# TWEET_MAX_CHARS budget above still applies as the outer safety net.
-LINK_COST_CHARS = 23
 SOURCES_LABEL = "출처"
 
 X_THREAD_HUMANIZE_MODEL = os.environ.get("X_THREAD_HUMANIZE_MODEL", "claude-haiku-4-5-20251001")
@@ -67,23 +80,38 @@ X_THREAD_HUMANIZE_MAX_TOKENS = 1024
 FALSE_VALUES = {"0", "false", "off", "no"}
 
 SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
-JSON_ARRAY = re.compile(r"\[.*\]", re.S)
-URL_PATTERN = re.compile(r"https?://\S+")
+JSON_OBJECT = re.compile(r"\{.*\}", re.S)
+URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.I)
+HASHTAG_PATTERN = re.compile(r"(?<!\S)#\S+")
 
-HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이다. 이 문장들을 X(트위터) 스레드용으로 다시 써라.
+HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이다. 이 문장들을 X(트위터) 스레드용으로 다시 쓰고, 스레드 첫 트윗에 올릴 제목도 함께 만들어라.
 주제: {topic}
+쇼츠 제목(참고용): {title}
 
-조건:
-- 전문가/방송 멘트처럼 딱딱하지 않게, 20~50대가 평소 트위터에 편하게 쓰는 말투로 바꾼다.
-- "~습니다" 같은 격식체 대신 반말 섞인 구어체나 편한 해요체를 쓴다. 완벽한 문장보다 사람이 쓴 것처럼 자연스러운 게 우선이다.
+읽는 사람:
+- 20~40대. 쇼츠 시청자(50대 이상)보다 젊고, 건강 정보를 스스로 찾아보는 사람들이다.
+- 이들이 실제로 공감할 맥락(수면 부족, 스트레스, 스마트폰, 업무 집중력 등)으로 풀어 쓴다.
+
+말투:
+- 전문가/방송 멘트처럼 딱딱하지 않게, 평소 트위터에 편하게 쓰는 자연스러운 문장으로 바꾼다.
+- 반드시 존댓말로 쓴다. 반말은 절대 쓰지 않는다. 격식만 차린 "~하십시오"체 대신 편한 해요체를 기본으로 한다.
+- 완벽한 문장보다 사람이 쓴 것처럼 자연스러운 게 우선이다.
 - 과장, 의학적 단정("완치", "보장", "기적" 등)은 절대 쓰지 않는다.
+
+제목:
+- 쇼츠 제목과 같을 필요 없다. X 타임라인에서 손이 멈추게 만드는 한 줄이면 된다.
+- {title_max}자 이내. 본문 첫 문장을 그대로 베끼지 않는다.
+- 존댓말 기조를 지키고, 낚시성 과장이나 의학적 단정은 쓰지 않는다.
+
+공통 금지:
+- 해시태그(#), URL/링크, 이모지는 절대 넣지 않는다.
 - 각 문장의 핵심 정보와 순서, 문장 개수를 그대로 유지한다. 문장을 합치거나 나누지 않는다.
-- 이모지나 해시태그는 넣지 않는다 (별도로 붙는다).
 
 문장 목록:
 {numbered}
 
-출력은 순수 JSON 배열만. 예: ["문장1", "문장2"]. 다른 설명은 절대 붙이지 않는다."""
+출력은 순수 JSON 객체만. 형식: {{"title": "제목", "sentences": ["문장1", "문장2"]}}
+sentences 배열의 길이는 반드시 {count}개여야 한다. 다른 설명은 절대 붙이지 않는다."""
 
 
 def _ban_keywords() -> list[str]:
@@ -100,9 +128,25 @@ def _humanize_enabled() -> bool:
     return value.strip().lower() not in FALSE_VALUES
 
 
-def _humanize_texts_with_claude(raw_texts: list[str], *, topic: str) -> list[str] | None:
-    """One bounded, non-retrying rewrite pass. Returns None on any failure
-    so the caller can fall back to the original rule-based text rather than
+def _strip_banned_markup(text: str) -> str:
+    """Remove hashtags and URLs, whatever their source.
+
+    Applied to the rule-based text and to the Claude rewrite alike: the
+    prompt asks for neither, but a rewrite that slips one in must not put a
+    link or a "#뇌건강" on a live post. Collapsing whitespace afterwards
+    keeps the gap left by a removed token from becoming a double space.
+    """
+    if not text:
+        return ""
+    text = URL_PATTERN.sub(" ", text)
+    text = HASHTAG_PATTERN.sub(" ", text)
+    return " ".join(text.split())
+
+
+def _humanize_with_claude(raw_texts: list[str], *, topic: str, title: str) -> dict[str, Any] | None:
+    """One bounded, non-retrying rewrite pass, returning
+    {"title": str, "texts": list[str]}. Returns None on any failure so the
+    caller can fall back to the original rule-based text rather than
     blocking a downstream-only artifact on a Claude outage."""
     if not raw_texts:
         return None
@@ -117,10 +161,17 @@ def _humanize_texts_with_claude(raw_texts: list[str], *, topic: str) -> list[str
     import requests
 
     numbered = "\n".join(f"{i}. {text}" for i, text in enumerate(raw_texts, start=1))
+    prompt = HUMANIZE_PROMPT.format(
+        topic=topic or "뇌 건강",
+        title=title or "(없음)",
+        title_max=X_TITLE_MAX_CHARS,
+        numbered=numbered,
+        count=len(raw_texts),
+    )
     payload = {
         "model": X_THREAD_HUMANIZE_MODEL,
         "max_tokens": X_THREAD_HUMANIZE_MAX_TOKENS,
-        "messages": [{"role": "user", "content": HUMANIZE_PROMPT.format(topic=topic or "뇌 건강", numbered=numbered)}],
+        "messages": [{"role": "user", "content": prompt}],
     }
     headers = {
         "x-api-key": api_key,
@@ -143,16 +194,24 @@ def _humanize_texts_with_claude(raw_texts: list[str], *, topic: str) -> list[str
         pass
 
     text = "".join(block.get("text", "") for block in data.get("content") or [] if block.get("type") == "text")
-    match = JSON_ARRAY.search(text)
+    match = JSON_OBJECT.search(text)
     if not match:
         return None
     try:
-        rewritten = json.loads(match.group(0))
+        parsed = json.loads(match.group(0))
     except json.JSONDecodeError:
         return None
-    if not isinstance(rewritten, list) or len(rewritten) != len(raw_texts):
+    if not isinstance(parsed, dict):
         return None
-    return [str(t).strip() for t in rewritten]
+    sentences = parsed.get("sentences")
+    if not isinstance(sentences, list) or len(sentences) != len(raw_texts):
+        return None
+    return {
+        # A missing/empty title is survivable on its own -- the caller falls
+        # back to the rule-based title and still adopts the rewritten body.
+        "title": str(parsed.get("title") or "").strip(),
+        "texts": [str(t).strip() for t in sentences],
+    }
 
 
 def _apply_safety_filter(text: str, ban_keywords: list[str]) -> str:
@@ -190,24 +249,36 @@ def _truncate_at_boundary(text: str, max_chars: int) -> str:
 _PREFIX_RESERVE_WIDTH = len("99/99 ")
 
 
-def _pack_sentences(texts: list[str], *, max_chars: int, prefix_reserve: int) -> list[str]:
+def _pack_sentences(
+    texts: list[str], *, max_chars: int, prefix_reserve: int, lead_reserve: int = 0,
+) -> list[str]:
     """Greedily fill each tweet with as many whole sentences as fit,
     instead of one sentence per tweet -- a 70-char sentence alone in a
     139-char tweet wastes half the post. A single sentence longer than
-    the budget is truncated at a boundary rather than left oversized."""
-    budget = max(1, max_chars - prefix_reserve)
+    the budget is truncated at a boundary rather than left oversized.
+
+    `lead_reserve` shrinks the first group's budget only: the lead tweet
+    also has to carry the X title, so it has less room for body text than
+    every tweet after it."""
+    base = max(1, max_chars - prefix_reserve)
+
+    def budget_for(group_index: int) -> int:
+        return max(1, base - lead_reserve) if group_index == 0 else base
+
     groups: list[str] = []
     current = ""
     for text in texts:
         text = text.strip()
         if not text:
             continue
+        budget = budget_for(len(groups))
         candidate = f"{current} {text}".strip() if current else text
         if len(candidate) <= budget:
             current = candidate
             continue
         if current:
             groups.append(current)
+            budget = budget_for(len(groups))
         current = _truncate_at_boundary(text, budget) if len(text) > budget else text
     if current:
         groups.append(current)
@@ -216,15 +287,6 @@ def _pack_sentences(texts: list[str], *, max_chars: int, prefix_reserve: int) ->
 
 def _pubmed_url(pmid: str) -> str:
     return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-
-
-def _link_aware_length(line: str) -> int:
-    """Line length with any embedded URL discounted to t.co's fixed cost."""
-    match = URL_PATTERN.search(line)
-    if not match:
-        return len(line)
-    literal = match.group(0)
-    return len(line) - len(literal) + LINK_COST_CHARS
 
 
 def _source_lines_from_citations(
@@ -256,25 +318,23 @@ def _source_lines_from_evidence(
     return lines
 
 
-def _build_sources_text(
+def build_sources_text(
     package: dict[str, Any],
-    pubmed_citations: list[dict[str, Any]] | None,
-    ban_keywords: list[str],
+    pubmed_citations: list[dict[str, Any]] | None = None,
+    ban_keywords: list[str] | None = None,
 ) -> str:
-    """PMID links when available (real and verifiable), else evidence's
-    source_hint text. Returns "" when neither exists, so the caller skips
-    the sources tweet rather than posting an empty reference."""
+    """Citations block for the operator's Slack DM — never a tweet.
+
+    PMID links when available (real and verifiable), else evidence's
+    source_hint text. Returns "" when neither exists, so the caller sends
+    no DM rather than an empty reference. Unlike the thread text this may
+    contain URLs: it is copy-paste reference material for a human, not
+    something posted to X, where a link costs reach.
+    """
+    ban_keywords = ban_keywords if ban_keywords is not None else _ban_keywords()
     lines = _source_lines_from_citations(pubmed_citations or [], ban_keywords)
     if not lines:
         lines = _source_lines_from_evidence(package.get("evidence") or [], ban_keywords)
-    if not lines:
-        return ""
-    budget = TWEET_MAX_CHARS - len(SOURCES_LABEL) - 1
-    while lines:
-        used = sum(_link_aware_length(line) + 1 for line in lines) - 1
-        if used <= budget:
-            break
-        lines.pop()
     if not lines:
         return ""
     return SOURCES_LABEL + "\n" + "\n".join(lines)
@@ -289,19 +349,43 @@ def _load_pubmed_citations(job_dir: Path) -> list[dict[str, Any]]:
     return list(citations) if isinstance(citations, list) else []
 
 
+def _fallback_title(package: dict[str, Any], ban_keywords: list[str]) -> str:
+    """Rule-based X title for when the Claude rewrite is off or failed.
+
+    Prefers the Shorts title (already written to grab attention), then the
+    core message, then the topic. Whatever is picked is stripped of
+    hashtags/URLs and safety-filtered like any other posted text."""
+    source = package.get("source") or {}
+    candidates = (
+        source.get("title"),
+        package.get("core_message"),
+        source.get("topic"),
+        package.get("topic"),
+    )
+    for candidate in candidates:
+        text = _strip_banned_markup(str(candidate or "").strip())
+        text = _apply_safety_filter(text, ban_keywords)
+        if text:
+            return _truncate_at_boundary(text, X_TITLE_MAX_CHARS)
+    return ""
+
+
 def build_tweets(
     package: dict[str, Any], *, number_prefix: bool = False, ban_keywords: list[str] | None = None,
-    humanize: bool | None = None, pubmed_citations: list[dict[str, Any]] | None = None,
+    humanize: bool | None = None,
 ) -> list[dict[str, Any]]:
     ban_keywords = ban_keywords if ban_keywords is not None else _ban_keywords()
     raw_texts: list[str] = []
 
-    hook = _apply_safety_filter(str(package.get("hook") or "").strip(), ban_keywords)
+    def clean(value: Any) -> str:
+        return _apply_safety_filter(_strip_banned_markup(str(value or "").strip()), ban_keywords)
+
+    hook = clean(package.get("hook"))
     if hook:
         raw_texts.append(hook)
 
     for point in package.get("key_points") or ():
-        text = _apply_safety_filter(str((point or {}).get("text") or "").strip(), ban_keywords)
+        text = clean((point or {}).get("text"))
         if text:
             raw_texts.append(text)
 
@@ -309,42 +393,42 @@ def build_tweets(
     action = str(cta.get("action") or "").strip()
     tease = str(cta.get("next_topic_tease") or "").strip()
     closing_parts = [p for p in (action, f"다음 편에서는 {tease} 이야기, 궁금하지 않으세요?" if tease else "") if p]
-    closing = _apply_safety_filter(" ".join(closing_parts).strip(), ban_keywords)
+    closing = clean(" ".join(closing_parts).strip())
     if closing:
         raw_texts.append(closing)
 
+    title = _fallback_title(package, ban_keywords)
+
     humanize = humanize if humanize is not None else _humanize_enabled()
     if humanize and raw_texts:
-        topic = str((package.get("source") or {}).get("topic") or package.get("topic") or "").strip()
-        rewritten = _humanize_texts_with_claude(raw_texts, topic=topic)
+        source = package.get("source") or {}
+        topic = str(source.get("topic") or package.get("topic") or "").strip()
+        rewritten = _humanize_with_claude(
+            raw_texts, topic=topic, title=str(source.get("title") or "").strip(),
+        )
         if rewritten:
-            filtered = [_apply_safety_filter(text, ban_keywords) for text in rewritten]
+            filtered = [clean(text) for text in rewritten["texts"]]
             # Only adopt the rewrite if it didn't collapse a sentence to
             # empty -- a partial ban-keyword hit here means the rewrite
             # drifted into risky phrasing the original text never had, so
             # it's safer to keep the pre-rewrite text than to drop a tweet.
             if all(filtered):
                 raw_texts = filtered
-
-    hashtags = [tag for tag in (package.get("hashtags") or [])][:MAX_HASHTAGS_LAST_TWEET]
+                rewritten_title = clean(rewritten["title"])
+                if rewritten_title:
+                    title = _truncate_at_boundary(rewritten_title, X_TITLE_MAX_CHARS)
 
     prefix_reserve = _PREFIX_RESERVE_WIDTH if number_prefix else 0
-    groups = _pack_sentences(raw_texts, max_chars=TWEET_MAX_CHARS, prefix_reserve=prefix_reserve)
+    lead_reserve = len(title) + len(TITLE_SEPARATOR) if title else 0
+    groups = _pack_sentences(
+        raw_texts, max_chars=TWEET_MAX_CHARS, prefix_reserve=prefix_reserve,
+        lead_reserve=lead_reserve,
+    )
 
-    if groups and hashtags:
-        suffix = f" {' '.join(hashtags)}"
-        budget = max(1, TWEET_MAX_CHARS - prefix_reserve - len(suffix))
-        last = groups[-1]
-        if len(last) > budget:
-            last = _truncate_at_boundary(last, budget)
-        groups[-1] = f"{last}{suffix}".strip()
-
-    # Appended after hashtags on purpose: the sources tweet is citations, not
-    # copy, so it stays out of the humanize rewrite above and never becomes
-    # the tweet that carries the hashtags.
-    sources_text = _build_sources_text(package, pubmed_citations, ban_keywords)
-    if groups and sources_text:
-        groups.append(sources_text)
+    # Title only rides along when there is a lead tweet to attach it to --
+    # an empty package must stay empty rather than become a title-only post.
+    if groups and title:
+        groups[0] = f"{title}{TITLE_SEPARATOR}{groups[0]}"
 
     tweets: list[dict[str, Any]] = []
     total = len(groups)
@@ -367,6 +451,14 @@ def load_x_thread(job_dir: str | Path) -> dict[str, Any] | None:
         return json.loads((Path(job_dir) / "x_thread.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def save_x_thread(job_dir: str | Path, payload: dict[str, Any]) -> None:
+    """Persist an updated payload (e.g. after a bot records that the sources
+    DM went out). Shared so callers don't each re-implement the write."""
+    (Path(job_dir) / "x_thread.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+    )
 
 
 def build_x_thread(
@@ -393,22 +485,25 @@ def build_x_thread(
     if package is None:
         return None
 
+    ban_keywords = _ban_keywords()
     tweets = build_tweets(
-        package, number_prefix=number_prefix, humanize=humanize,
-        pubmed_citations=_load_pubmed_citations(job_dir),
+        package, number_prefix=number_prefix, humanize=humanize, ban_keywords=ban_keywords,
     )
     photo_path = x_photo_card.build_thread_photo(package, job_dir)
     payload = {
         "job_id": package.get("job_id") or job_dir.name,
         "tweets": tweets,
         "char_counts": [len(t["text"]) for t in tweets],
+        # Sources live beside the thread, not inside it: the bots DM this
+        # text so the operator can copy-paste it wherever it belongs.
+        "sources_text": build_sources_text(
+            package, _load_pubmed_citations(job_dir), ban_keywords,
+        ),
         "photo_path": str(photo_path) if photo_path else None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "method": "rule_v1",
+        "method": "rule_v2",
     }
-    (job_dir / "x_thread.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
-    )
+    save_x_thread(job_dir, payload)
     (job_dir / "x_thread.txt").write_text(render_text(payload) + "\n", encoding="utf-8")
     content_package.update_platform_flag(job_dir, "x_thread", True)
     return payload
@@ -452,6 +547,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_output:
         print()
         print(render_text(payload))
+        if payload.get("sources_text"):
+            print()
+            print("--- 출처 (스레드에는 넣지 않음, 슬랙 DM용) ---")
+            print(payload["sources_text"])
     return 0
 
 

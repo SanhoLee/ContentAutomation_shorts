@@ -48,6 +48,10 @@ BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
 ALLOWED_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID")
 ALLOWED_USER_ID = os.environ.get("SLACK_ALLOWED_USER_ID")
+# Who receives operator-only DMs (currently the X thread's sources block).
+# Defaults to the single allowed user, so a standard single-operator setup
+# needs no extra configuration.
+DM_USER_ID = os.environ.get("SLACK_DM_USER_ID") or ALLOWED_USER_ID
 BASE_DIR = Path(os.environ.get("BASE_DIR", Path.cwd())).resolve()
 WORK_DIR_BASE = Path(os.environ.get("WORK_DIR_BASE", BASE_DIR / "data" / "work"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", BASE_DIR / "data" / "output"))
@@ -106,6 +110,22 @@ def send_message(channel_id, text):
     if thread_ts := _thread_for(channel_id):
         kwargs["thread_ts"] = thread_ts
     return _slack_client().chat_postMessage(**kwargs)
+
+
+def send_dm(text, user_id=None):
+    """Post to the operator's Slack DM instead of the shared channel.
+
+    Deliberately bypasses send_message(): a DM has no workflow thread to
+    attach to, and threading it under an unrelated channel thread_ts would
+    fail. Raises on transport errors -- callers decide whether a failed DM
+    is worth surfacing (it never is worth failing a job over).
+    """
+    user_id = user_id or DM_USER_ID
+    if not user_id:
+        raise RuntimeError("SLACK_DM_USER_ID(또는 SLACK_ALLOWED_USER_ID)가 없어 DM을 보낼 수 없습니다.")
+    client = _slack_client()
+    channel = (client.conversations_open(users=str(user_id))["channel"] or {})["id"]
+    return client.chat_postMessage(channel=channel, text=str(text))
 
 
 def send_file_or_path(channel_id, path, caption=None, as_video=False):
@@ -1572,6 +1592,41 @@ def _run_render_silent(chat_id, job, extra_env=None):
     return _po.run_render_silent(sys.modules[__name__], chat_id, job, extra_env)
 
 
+SOURCES_DM_HEADER = "X 스레드 출처입니다. 필요하면 아래 내용을 그대로 복사해서 쓰세요."
+
+
+def _maybe_send_x_sources_dm(job_dir):
+    """DM the thread's sources block to the operator, exactly once.
+
+    Sources are no longer posted as a trailing tweet (links suppress reach
+    and the tweet went unread), so this DM is the only place they surface.
+    The `sources_dm_sent` flag lives in x_thread.json rather than in bot
+    memory because several paths reach a posted thread -- the pipeline's own
+    x_post stage, the two-gate flow, /x_post -- and only one of them should
+    send the DM.
+
+    Never raises: a Slack DM failure must not fail a job whose YouTube
+    upload and X thread already succeeded.
+    """
+    payload = x_thread_adapter.load_x_thread(job_dir)
+    if not payload or payload.get("sources_dm_sent"):
+        return False
+    sources_text = str(payload.get("sources_text") or "").strip()
+    if not sources_text:
+        return False
+    try:
+        send_dm(f"{SOURCES_DM_HEADER}\n\n{sources_text}")
+    except Exception as exc:
+        print(f"X 스레드 출처 DM 전송 실패: {exc}", file=sys.stderr)
+        return False
+    payload["sources_dm_sent"] = True
+    try:
+        x_thread_adapter.save_x_thread(job_dir, payload)
+    except OSError as exc:
+        print(f"출처 DM 기록 저장 실패: {exc}", file=sys.stderr)
+    return True
+
+
 def _maybe_post_x_thread(chat_id, job):
     """After a job reaches "done" (YouTube upload succeeded), report its X
     thread -- posting it now if the pipeline's own x_post stage hasn't
@@ -1610,6 +1665,7 @@ def _maybe_post_x_thread(chat_id, job):
             f"X 스레드 게시 완료: {existing.get('thread_url')} "
             f"({len(existing.get('tweet_ids') or [])}개 트윗)",
         )
+        _maybe_send_x_sources_dm(job_dir)
         return
     try:
         payload = x_poster.post_thread(job_dir)
@@ -1621,6 +1677,7 @@ def _maybe_post_x_thread(chat_id, job):
         f"X 스레드 게시 완료: {payload.get('thread_url')} "
         f"({len(payload.get('tweet_ids') or [])}개 트윗)",
     )
+    _maybe_send_x_sources_dm(job_dir)
 
 
 def run_next_stage(chat_id, job):
@@ -2533,8 +2590,9 @@ def handle_x_post(chat_id, job):
     if not job.get("job_id"):
         send_message(chat_id, "진행 중인 작업이 없습니다.")
         return
+    job_dir = work_dir(job["job_id"])
     try:
-        payload = x_poster.post_thread(work_dir(job["job_id"]))
+        payload = x_poster.post_thread(job_dir)
     except RuntimeError as exc:
         send_message(chat_id, f"X 게시 실패: {exc}")
         return
@@ -2542,6 +2600,7 @@ def handle_x_post(chat_id, job):
         chat_id,
         f"X 게시 완료: {payload.get('thread_url')} ({len(payload.get('tweet_ids') or [])}개 트윗)",
     )
+    _maybe_send_x_sources_dm(job_dir)
 
 
 def command_specs():

@@ -744,6 +744,95 @@ class MaybePostXThreadTests(unittest.TestCase):
         self.assertIn("boom", messages[-1])
 
 
+class XSourcesDmTests(unittest.TestCase):
+    """The sources block is no longer a trailing tweet -- it is DM'd to the
+    operator so it can be copy-pasted. It must go out exactly once even
+    though several paths reach a posted thread, and a Slack failure must
+    never escape into a job whose thread is already live."""
+
+    def _patch(self, payload, *, dm_error=None):
+        saved = []
+        dms = []
+        old_load = slack_bot.x_thread_adapter.load_x_thread
+        old_save = slack_bot.x_thread_adapter.save_x_thread
+        old_send_dm = slack_bot.send_dm
+
+        def fake_dm(text, user_id=None):
+            if dm_error is not None:
+                raise dm_error
+            dms.append(text)
+
+        slack_bot.x_thread_adapter.load_x_thread = lambda job_dir: payload
+        slack_bot.x_thread_adapter.save_x_thread = lambda job_dir, data: saved.append(data)
+        slack_bot.send_dm = fake_dm
+        return dms, saved, (old_load, old_save, old_send_dm)
+
+    def _restore(self, originals):
+        (slack_bot.x_thread_adapter.load_x_thread,
+         slack_bot.x_thread_adapter.save_x_thread,
+         slack_bot.send_dm) = originals
+
+    def test_sends_sources_and_marks_them_sent(self):
+        payload = {"sources_text": "출처\nNeurology 2022 https://pubmed.ncbi.nlm.nih.gov/1/"}
+        dms, saved, originals = self._patch(payload)
+        try:
+            sent = slack_bot._maybe_send_x_sources_dm("/tmp/J1")
+        finally:
+            self._restore(originals)
+        self.assertTrue(sent)
+        self.assertIn("pubmed.ncbi.nlm.nih.gov/1", dms[0])
+        self.assertIn(slack_bot.SOURCES_DM_HEADER, dms[0])
+        self.assertTrue(saved[0]["sources_dm_sent"])
+
+    def test_does_not_send_twice(self):
+        payload = {"sources_text": "출처\n- 2019년 코호트 연구", "sources_dm_sent": True}
+        dms, saved, originals = self._patch(payload)
+        try:
+            sent = slack_bot._maybe_send_x_sources_dm("/tmp/J1")
+        finally:
+            self._restore(originals)
+        self.assertFalse(sent)
+        self.assertEqual(dms, [])
+        self.assertEqual(saved, [])
+
+    def test_no_sources_means_no_dm(self):
+        for payload in (None, {}, {"sources_text": "  "}):
+            dms, saved, originals = self._patch(payload)
+            try:
+                sent = slack_bot._maybe_send_x_sources_dm("/tmp/J1")
+            finally:
+                self._restore(originals)
+            self.assertFalse(sent)
+            self.assertEqual(dms, [])
+
+    def test_dm_failure_is_swallowed_and_not_marked_sent(self):
+        payload = {"sources_text": "출처\n- 근거"}
+        dms, saved, originals = self._patch(payload, dm_error=RuntimeError("no DM channel"))
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                sent = slack_bot._maybe_send_x_sources_dm("/tmp/J1")
+        finally:
+            self._restore(originals)
+        self.assertFalse(sent)
+        self.assertEqual(saved, [])
+        self.assertIn("no DM channel", err.getvalue())
+
+    def test_posting_path_triggers_the_sources_dm(self):
+        payload = {
+            "posted": True, "tweet_ids": ["1"], "thread_url": "https://x.com/i/web/status/1",
+            "sources_text": "출처\n- 근거",
+        }
+        dms, saved, originals = self._patch(payload)
+        old_send_message = slack_bot.send_message
+        slack_bot.send_message = lambda channel_id, text: None
+        try:
+            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            slack_bot.send_message = old_send_message
+            self._restore(originals)
+        self.assertEqual(len(dms), 1)
+
+
 CANDIDATES = [
     {"topic_id": "2026-08-02_01_치매-초기증상", "title_hint": "치매 초기증상 건망증 차이",
      "seed": "치매", "score": 88, "score_breakdown": {"niche_relevance": 30, "novelty_vs_history": 20}},

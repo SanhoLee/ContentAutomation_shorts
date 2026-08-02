@@ -12,6 +12,7 @@ Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, 
 - 주제 입력과 실행 확인 화면에는 `← 홈으로`와 `시작 취소`가 있습니다. 기존 작업을 보던 중 새 제작 버튼을 잘못 눌러도 홈으로 돌아가면 기존 작업 상태가 유지됩니다.
 - 모든 작업 메시지와 산출물은 명령을 보낸 메시지의 **스레드**에 모입니다. 여러 작업이 섞이는 것을 줄일 수 있습니다.
 - `SLACK_ALLOWED_USER_ID`를 설정하면 채널뿐 아니라 사용자도 제한할 수 있습니다. Telegram의 chat ID 제한보다 세밀합니다.
+- X 스레드가 게시되면 그 근거(PubMed 링크 등)는 스레드 트윗이 아니라 운영자 **DM**으로 갑니다. 그대로 복사해서 쓰면 됩니다. 수신자는 `SLACK_DM_USER_ID`(미설정 시 `SLACK_ALLOWED_USER_ID`)이며, job당 한 번만 보냅니다. 봇에 DM을 보내려면 `im:write` 스코프가 필요합니다.
 - Slack 파일 업로드로 `script.txt`, `subs.srt`, `video_meta.json` 수정본을 스레드에 올릴 수 있습니다.
 - 각 검수 화면에는 현재 `n/7` 단계와 전체 진행 표시가 함께 나타납니다.
 - 모든 검수 단계에서 `← 이전 단계`, `다음 단계 ▶`, `🚀 여기서부터 끝까지`, `↻ 상태`, `전체 취소`를 사용할 수 있습니다.
@@ -51,6 +52,7 @@ export SLACK_BOT_TOKEN="xoxb-..."
 export SLACK_APP_TOKEN="xapp-..."
 export SLACK_CHANNEL_ID="C0123456789"       # 웰컴 홈·App Home 작업 대상 채널로 필수
 export SLACK_ALLOWED_USER_ID="U0123456789"  # 선택: 특정 운영자만 허용
+export SLACK_DM_USER_ID="U0123456789"       # 선택: X 스레드 출처 DM 수신자 (기본값은 위 값)
 ```
 
 ## 설치 및 실행

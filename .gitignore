@@ -32,6 +32,7 @@ data/ops/
 research_category_usage.json
 client_secret*.json
 youtube_feedback_token*.json
+x_token*.json
 *.mp4
 *.wav
 *.srt

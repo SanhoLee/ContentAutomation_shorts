@@ -35,6 +35,12 @@ import pipeline_flow
 import script_review
 from script_runtime import speech_pace_profile
 
+ADAPTERS_DIR = Path(__file__).resolve().parent / "adapters"
+if str(ADAPTERS_DIR) not in sys.path:
+    sys.path.insert(0, str(ADAPTERS_DIR))
+import x_thread_adapter
+import x_poster
+
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ALLOWED_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 BASE_DIR = Path(os.environ.get("BASE_DIR", Path.cwd())).resolve()
@@ -1540,6 +1546,36 @@ def handle_status(chat_id, job):
     send_message(chat_id, json.dumps(job, ensure_ascii=False, indent=2))
 
 
+def handle_x_thread(chat_id, job):
+    if not job.get("job_id"):
+        send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return
+    payload = x_thread_adapter.build_x_thread(work_dir(job["job_id"]))
+    if payload is None:
+        send_message(chat_id, "content_package.json이 없습니다. 먼저 스크립트 생성을 완료하세요.")
+        return
+    send_message(
+        chat_id,
+        f"X 스레드 초안 {len(payload['tweets'])}개:\n\n{x_thread_adapter.render_text(payload)}\n\n"
+        "게시하려면 /x_post 를 입력하세요.",
+    )
+
+
+def handle_x_post(chat_id, job):
+    if not job.get("job_id"):
+        send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return
+    try:
+        payload = x_poster.post_thread(work_dir(job["job_id"]))
+    except RuntimeError as exc:
+        send_message(chat_id, f"X 게시 실패: {exc}")
+        return
+    send_message(
+        chat_id,
+        f"X 게시 완료: {payload.get('thread_url')} ({len(payload.get('tweet_ids') or [])}개 트윗)",
+    )
+
+
 def command_specs():
     return [
         ("run", "승인형 파이프라인 시작"),
@@ -1559,6 +1595,8 @@ def command_specs():
         ("rerun", "tts/caption/broll 재생성"),
         ("render", "자막 렌더 설정 변경"),
         ("status", "현재 상태 확인"),
+        ("x_thread", "X(트위터) 스레드 초안 생성"),
+        ("x_post", "X(트위터)에 실제 게시"),
         ("cancel", "전체 작업 취소"),
         ("help", "명령어 도움말"),
     ]
@@ -1584,6 +1622,8 @@ def help_text():
         "/proceed",
         "/rerun tts | /rerun caption | /rerun broll",
         "/render font_size=62 margin_v=60",
+        "/x_thread  <- X 스레드 초안 생성/미리보기",
+        "/x_post  <- 미리 만든 X 스레드를 실제 게시",
         "/set  <- 카테고리별 설정 메뉴",
         "/set_all  <- 현재 전체 설정 보기",
         "/set font_size=62 web=off  <- 기존 빠른 입력도 지원",
@@ -1665,6 +1705,10 @@ def handle_message(state, message):
             start_background_task(state, chat_id, job, "재생성", lambda: handle_rerun(chat_id, job, text))
         elif text.startswith("/render"):
             start_background_task(state, chat_id, job, "렌더링", lambda: handle_render(chat_id, job, text))
+        elif text.startswith("/x_thread"):
+            start_background_task(state, chat_id, job, "X 스레드 초안 생성", lambda: handle_x_thread(chat_id, job))
+        elif text.startswith("/x_post"):
+            start_background_task(state, chat_id, job, "X 게시", lambda: handle_x_post(chat_id, job))
         elif text.startswith("/status"):
             handle_status(chat_id, job)
         elif text.startswith("/cancel"):

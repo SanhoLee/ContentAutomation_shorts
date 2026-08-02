@@ -699,5 +699,136 @@ class MaybePostXThreadTests(unittest.TestCase):
         self.assertIn("boom", messages[-1])
 
 
+CANDIDATES = [
+    {"topic_id": "2026-08-02_01_치매-초기증상", "title_hint": "치매 초기증상 건망증 차이",
+     "seed": "치매", "score": 88, "score_breakdown": {"niche_relevance": 30, "novelty_vs_history": 20}},
+    {"topic_id": "2026-08-02_02_수면-기억력", "title_hint": "수면 부족과 기억력 저하",
+     "seed": "수면", "score": 74, "score_breakdown": {"niche_relevance": 20, "evidence_potential": 20}},
+    {"topic_id": "2026-08-02_03_뇌-식단", "title_hint": "뇌 건강 식단 정리",
+     "seed": "식단", "score": 65, "score_breakdown": {"niche_relevance": 20, "safety_tone": 10}},
+]
+
+
+class TopicCandidateFlowTests(unittest.TestCase):
+    """The /topics flow is queue-level: it must never touch job state."""
+
+    def _patch(self, *, candidates=None, selection=None, select_result=None):
+        pipeline = slack_bot.topic_candidate_pipeline
+        saved = {
+            "top": pipeline.top_candidates,
+            "current": pipeline.current_selection,
+            "select": pipeline.select_topic,
+            "send_action": slack_bot.send_action_message,
+            "send_message": slack_bot.send_message,
+        }
+        screens, messages, selected_ids = [], [], []
+
+        pipeline.top_candidates = lambda n=3, base_dir=None: list(candidates or [])
+        pipeline.current_selection = lambda base_dir=None: selection
+        pipeline.select_topic = lambda topic_id, base_dir=None: (
+            selected_ids.append(topic_id) or select_result
+        )
+        slack_bot.send_action_message = lambda channel_id, text, rows: screens.append((text, rows))
+        slack_bot.send_message = lambda channel_id, text: messages.append(text)
+        return saved, screens, messages, selected_ids
+
+    def _restore(self, saved):
+        pipeline = slack_bot.topic_candidate_pipeline
+        pipeline.top_candidates = saved["top"]
+        pipeline.current_selection = saved["current"]
+        pipeline.select_topic = saved["select"]
+        slack_bot.send_action_message = saved["send_action"]
+        slack_bot.send_message = saved["send_message"]
+
+    @staticmethod
+    def _callbacks(rows):
+        return [item["callback_data"] for row in rows for item in row]
+
+    def test_card_has_one_select_button_per_candidate(self):
+        saved, screens, _, _ = self._patch(candidates=CANDIDATES)
+        try:
+            slack_bot.send_topic_candidates("C1")
+        finally:
+            self._restore(saved)
+
+        text, rows = screens[-1]
+        select_callbacks = [c for c in self._callbacks(rows) if c.startswith("topic:select:")]
+        self.assertEqual(len(select_callbacks), len(CANDIDATES))
+        self.assertEqual(select_callbacks[0], f"topic:select:{CANDIDATES[0]['topic_id']}")
+        self.assertIn(CANDIDATES[0]["title_hint"], text)
+        self.assertIn("점수 88", text)
+
+    def test_card_says_selection_only_records(self):
+        saved, screens, _, _ = self._patch(candidates=CANDIDATES)
+        try:
+            slack_bot.send_topic_candidates("C1")
+        finally:
+            self._restore(saved)
+        self.assertIn("제작은 시작되지 않습니다", screens[-1][0])
+
+    def test_empty_queue_offers_refresh_but_no_select_buttons(self):
+        saved, screens, _, _ = self._patch(candidates=[])
+        try:
+            slack_bot.send_topic_candidates("C1")
+        finally:
+            self._restore(saved)
+
+        text, rows = screens[-1]
+        callbacks = self._callbacks(rows)
+        self.assertEqual([c for c in callbacks if c.startswith("topic:select:")], [])
+        self.assertIn("topic:refresh", callbacks)
+        self.assertIn("추천할 후보가 없습니다", text)
+
+    def test_existing_selection_is_shown(self):
+        saved, screens, _, _ = self._patch(
+            candidates=CANDIDATES, selection={"title_hint": "이미 고른 주제"},
+        )
+        try:
+            slack_bot.send_topic_candidates("C1")
+        finally:
+            self._restore(saved)
+        self.assertIn("현재 선택: 이미 고른 주제", screens[-1][0])
+
+    def test_select_records_pick_and_confirms(self):
+        saved, _, messages, selected_ids = self._patch(
+            candidates=CANDIDATES, select_result=CANDIDATES[0],
+        )
+        try:
+            slack_bot.handle_topic_select("C1", CANDIDATES[0]["topic_id"])
+        finally:
+            self._restore(saved)
+
+        self.assertEqual(selected_ids, [CANDIDATES[0]["topic_id"]])
+        self.assertIn(CANDIDATES[0]["title_hint"], messages[-1])
+        self.assertIn("제작 시작은 아직 수동입니다", messages[-1])
+
+    def test_stale_topic_id_re_lists_instead_of_raising(self):
+        saved, screens, messages, _ = self._patch(candidates=CANDIDATES, select_result=None)
+        try:
+            slack_bot.handle_topic_select("C1", "사라진-후보")
+        finally:
+            self._restore(saved)
+
+        self.assertEqual(messages, [])
+        self.assertIn("이미 사라진 후보입니다", screens[-1][0])
+
+    def test_select_is_allowed_while_a_job_is_running(self):
+        # Picking tomorrow's topic must not wait on today's render.
+        state = {"chats": {"C1": {"busy": True, "job_id": "J1", "stage": "render"}}}
+        saved, _, messages, selected_ids = self._patch(
+            candidates=CANDIDATES, select_result=CANDIDATES[0],
+        )
+        try:
+            slack_bot.handle_callback(state, {
+                "message": {"chat": {"id": "C1"}},
+                "data": f"topic:select:{CANDIDATES[0]['topic_id']}",
+            })
+        finally:
+            self._restore(saved)
+
+        self.assertEqual(selected_ids, [CANDIDATES[0]["topic_id"]])
+        self.assertFalse(any("진행 중입니다" in m for m in messages))
+
+
 if __name__ == "__main__":
     unittest.main()

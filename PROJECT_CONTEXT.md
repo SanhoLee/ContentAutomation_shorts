@@ -69,6 +69,14 @@ Long-running work runs in background threads. While a stage is running, other in
 
 `./run_goal.sh {objective} [seed]` runs `src/common/0_topic_plan.py` to pick a topic without a human, score it deterministically in Python (Claude only proposes/critiques, never decides), and hand off to the existing `0_script.py --topic-json` path. Full operating contract — scoring formula, decision/confidence thresholds, evidence probing, exploration randomness — is in `docs/design/objective-driven-content-planner.md`; do not duplicate it here, read that file before touching `objective_planner.py`.
 
+## Scheduled Trend Research and Topic Selection
+
+`sh/common/refresh_topics.sh` runs `topic_candidate_pipeline.py --refresh` (seed pool → Google/YouTube autocomplete → deterministic scoring, no Claude calls) and prints the top 3, optionally posting a Slack card with selection buttons. A human then picks one — `--select-rank N` from the CLI, or `/topics` and a button in Slack.
+
+Selection **records only**; it does not start production. The pick lands in `data/topics/selected.json`, which is the seam for wiring this into `0_topic_plan.py` / `run_pipeline.py` later. `status: "selected"` (a human picked it) is deliberately separate from `consumed` (the pipeline spent it) so `pick_top_eligible()`'s existing auto-path behavior is unchanged.
+
+The refresh is not registered with any timer yet — systemd timer and crontab recipes are in `docs/usage/topic-scheduling.md`, to be enabled on the server when ready.
+
 ## Topic and Script Generation
 
 `src/common/0_script.py` supports direct topics, trend candidates, PubMed lookup (via `evidence_probe.py`'s widening query ladder), bounded web_search, feedback insights, and cautious fallback when PubMed has no direct result.

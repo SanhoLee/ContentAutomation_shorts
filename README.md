@@ -723,6 +723,7 @@ python 0_script.py "다음 주제"
 | [docs/usage/slack-bot.md](docs/usage/slack-bot.md) | Slack 봇 설치·권한·운영 |
 | [docs/usage/environment.md](docs/usage/environment.md) | 환경 설정 |
 | [docs/usage/with-job-id.md](docs/usage/with-job-id.md) | JOB_ID 활용법 |
+| [docs/usage/topic-scheduling.md](docs/usage/topic-scheduling.md) | 트렌드 조사 스케줄링 + 주제 선택 |
 | [docs/usage/youtube-feedback.md](docs/usage/youtube-feedback.md) | YouTube 실데이터 피드백 사용법 |
 | [docs/design/objective-driven-content-planner.md](docs/design/objective-driven-content-planner.md) | 목표 기반 자동 주제 기획 엔진 운영 계약 |
 | [docs/design/story-types.md](docs/design/story-types.md) | 스토리 타입 4장르·비중·자동/수동 동작 |

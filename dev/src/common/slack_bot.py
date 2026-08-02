@@ -34,6 +34,7 @@ import job_state
 import pipeline_orchestrator as _po
 import pipeline_flow
 import script_review
+import topic_candidate_pipeline
 from script_runtime import speech_pace_profile
 
 ADAPTERS_DIR = Path(__file__).resolve().parent / "adapters"
@@ -229,6 +230,8 @@ def action_request_label(data):
         "proceed_no_pubmed": "근거 부족 상태로 계속 진행",
         "claude_budget:override": "Claude 예산 무시하고 계속 진행",
         "retry_topic": "새 주제로 다시 시도",
+        "topic:show": "주제 후보 보기",
+        "topic:refresh": "주제 후보 다시 조사",
     }
     if data in exact:
         return exact[data]
@@ -267,6 +270,7 @@ def action_request_label(data):
         "auto_finish:": "여기서부터 끝까지 실행 확인",
         "auto_finish_confirm:": "여기서부터 끝까지 자동 실행",
         "pick_trend:": "트렌드 선택 및 제작",
+        "topic:select:": "주제 후보 선택",
         "back:": "이전 단계로 이동",
         "render:": "선택한 설정으로 렌더링",
         "rerun:": "현재 산출물 재생성",
@@ -340,6 +344,7 @@ def home_button_rows():
         [button("단계별 검수 제작", "start_content:review"), button("자동 제작", "start_content:auto")],
         [button("대본 검수 + 최종 승인", "start_content:two_gate")],
         [button("목표 기반 자동 기획", "start_goal"), button("트렌드에서 시작", "start_content:trend")],
+        [button("주제 후보", "topic:show")],
         [button("현재 작업", "show_status"), button("제작 설정", "open_settings"), button("메뉴 표시", "show_home")],
         [button("이전 작업 불러오기", "browse_jobs")],
     ]
@@ -1926,6 +1931,59 @@ def handle_pick(chat_id, job, text):
     run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--trend-choice", choice])
 
 
+# ---------------------------------------------------------------------------
+# Topic candidate queue: scheduled trend research -> top 3 -> a human picks one
+#
+# Queue-level, not job-level. Nothing here touches job state, which is why a
+# pick can be made while another job is running, and why the scheduled refresh
+# script can post the very same card from its own process -- every handler
+# re-reads the queue from disk and needs no in-memory bot state to act.
+# ---------------------------------------------------------------------------
+
+def send_topic_candidates(chat_id, notice=None):
+    candidates = topic_candidate_pipeline.top_candidates(topic_candidate_pipeline.DEFAULT_TOP_N)
+    selected = topic_candidate_pipeline.current_selection()
+    lines = ["*주제 후보*"]
+    if notice:
+        lines.append(notice)
+    if selected:
+        lines.append(f"현재 선택: {selected.get('title_hint')}")
+    rows = []
+    if candidates:
+        lines.append("")
+        lines.extend(topic_candidate_pipeline.render_candidate_lines(candidates))
+        lines.extend(("", "버튼을 누르면 선택만 기록됩니다. 제작은 시작되지 않습니다."))
+        rows = [
+            [button(f"{index}. {str(item.get('title_hint') or '')[:55]}", f"topic:select:{item['topic_id']}")]
+            for index, item in enumerate(candidates, start=1)
+        ]
+    else:
+        lines.extend(("", "추천할 후보가 없습니다. 트렌드 조사를 먼저 실행하세요."))
+    rows.append([button("다시 조사", "topic:refresh"), button("← 홈으로", "show_home")])
+    return send_action_message(chat_id, "\n".join(lines), rows)
+
+
+def handle_topic_refresh(chat_id):
+    send_message(chat_id, "트렌드 조사를 시작합니다. 1~2분 걸릴 수 있습니다.")
+    result = topic_candidate_pipeline.run_refresh()
+    meta = result.get("run_meta") or {}
+    send_topic_candidates(
+        chat_id,
+        f"조사 완료: 시드 {meta.get('seed_count', 0)}개 → 후보 {meta.get('candidate_count', 0)}개",
+    )
+
+
+def handle_topic_select(chat_id, topic_id):
+    selected = topic_candidate_pipeline.select_topic(topic_id)
+    if selected is None:
+        send_topic_candidates(chat_id, "이미 사라진 후보입니다. 아래에서 다시 선택하세요.")
+        return
+    send_message(chat_id, "\n".join([
+        f"주제를 선택했습니다: {selected.get('title_hint')}",
+        f"점수 {selected.get('score')} · 시드 {selected.get('seed')}",
+        "선택만 기록했습니다. 제작 시작은 아직 수동입니다.",
+    ]))
+
 
 def handle_edit(chat_id, job):
     job_id = job.get("job_id")
@@ -2069,7 +2127,13 @@ def handle_callback(state, callback):
     if not chat_id:
         return
     job = chat_state(state, chat_id)
-    if is_busy(job) and data not in ("cancel_all", "cancel_confirm", "show_status", "show_home", "show_home_top", "claude_budget:override"):
+    # Topic-queue actions touch no job state, so they stay available while a
+    # job is running -- picking tomorrow's topic must not wait on today's render.
+    busy_allowed = data in (
+        "cancel_all", "cancel_confirm", "show_status", "show_home", "show_home_top",
+        "claude_budget:override", "topic:show",
+    ) or data.startswith("topic:select:")
+    if is_busy(job) and not busy_allowed:
         send_message(chat_id, busy_message(job))
         return True
     try:
@@ -2266,6 +2330,12 @@ def handle_callback(state, callback):
         elif data == "retry_topic":
             job["retry_topic_input"] = True
             send_message(chat_id, "새 주제를 다음 메시지로 보내주세요. 받는 즉시 스크립트를 다시 생성합니다.")
+        elif data == "topic:show":
+            send_topic_candidates(chat_id)
+        elif data == "topic:refresh":
+            start_background_task(state, chat_id, job, "주제 후보 조사", lambda: handle_topic_refresh(chat_id))
+        elif data.startswith("topic:select:"):
+            handle_topic_select(chat_id, data.split(":", 2)[2])
         elif data.startswith("pick_trend:"):
             choice = data.split(":", 1)[1]
             if job.get("stage") != "await_trend_choice":
@@ -2464,6 +2534,7 @@ def command_specs():
         ("run_goal", "목표 기반 주제 기획 후 승인형 제작"),
         ("goal_status", "최근 목표 기획 상태"),
         ("goal_report", "목표 기획·가설 보고서"),
+        ("topics", "주제 후보 상위 3개 확인"),
         ("trend", "트렌드 후보 조회"),
         ("pick", "트렌드 후보 선택"),
         ("approve", "현재 산출물 승인"),
@@ -2488,6 +2559,7 @@ def help_text():
         "",
         "시작 명령어",
         "/run 오메가3가 정말 뇌에 좋을까?",
+        "/topics  <- 조사된 주제 후보 상위 3개에서 선택",
         "/trend 오메가3",
         "/pick 1",
         "/approve",
@@ -2576,6 +2648,8 @@ def handle_message(state, message):
             begin_start_flow(chat_id, job, "auto", text.partition(" ")[2])
         elif text == "/run" or text.startswith("/run "):
             begin_start_flow(chat_id, job, "review", text.partition(" ")[2])
+        elif text == "/topics" or text.startswith("/topics "):
+            send_topic_candidates(chat_id)
         elif text == "/trend" or text.startswith("/trend "):
             begin_start_flow(chat_id, job, "trend", text.partition(" ")[2])
         elif text.startswith("/pick"):

@@ -4,3 +4,5 @@ data/telegram_state.json.tmp
 data/work/
 data/output/
 data/backups/
+data/topics/
+data/ops/

@@ -17,7 +17,7 @@ The end goal is a fully unattended, scheduled content loop: on a recurring sched
 This repo already documents itself in depth; read the relevant file rather than duplicating it here:
 
 - `README.md` — full pipeline stage-by-stage walkthrough, module details, environment variables, content strategy.
-- `docs/usage/` — task-oriented guides: `basic-usage.md`, `with-job-id.md`, `environment.md`, `telegram-bot.md`, `slack-bot.md`, `youtube-feedback.md`.
+- `docs/usage/` — task-oriented guides: `basic-usage.md`, `with-job-id.md`, `environment.md`, `telegram-bot.md`, `slack-bot.md`, `youtube-feedback.md`, `topic-scheduling.md`.
 - `docs/design/objective-driven-content-planner.md` — operating contract for the goal-driven auto-planning engine (the North star's topic-selection piece).
 - `docs/design/story-types.md` — the four narrative genres, how the mix is enforced on the auto path, and what `USE_STORY_TYPES=0` rolls back.
 - `PROJECT_CONTEXT.md` — current stabilization state, recent PRs, key files to read first in a new session.

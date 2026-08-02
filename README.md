@@ -383,6 +383,34 @@ Python이 결정론적으로 점수 매겨 선택합니다. 무인 실행 루프
 동작 계약과 근거 확인(evidence_probe/trend_probe) 상세는
 [docs/design/objective-driven-content-planner.md](docs/design/objective-driven-content-planner.md) 참고.
 
+### 시드 없이 주제 후보 자동 생성 (topic_candidate_pipeline)
+
+사람이 시드 키워드를 떠올릴 필요가 없습니다. `research_categories.json`과 발행
+키워드 이력에서 시드 풀을 자동으로 구성하고, 기존 `trend_probe`(en→ja→ko 사다리,
+상업어·drift 필터 그대로 유지)로 확장한 뒤, 결정론적 점수(니치 적합·검색의도·근거
+가능성·최근 주제와의 중복 여부·안전한 톤)로 줄 세워 `dev/data/topics/eligible/`에
+저장합니다. **이 경로에서 Claude 호출은 0회**입니다.
+
+```bash
+# 매일/매 실행 시: eligible 큐 갱신
+python3 dev/src/common/topic_candidate_pipeline.py --refresh
+
+# 기록 없이 상위 후보만 확인
+python3 dev/src/common/topic_candidate_pipeline.py --dry-run --limit 20
+
+# 현재 eligible 큐 확인
+python3 dev/src/common/topic_candidate_pipeline.py --list-eligible
+
+# 운영자는 목록에서 골라 그대로 주제로 쓰거나, 최고점 1건을 자동 소비
+python3 dev/src/common/0_topic_plan.py plan --objective balanced --from-eligible
+python3 dev/src/common/run_pipeline.py --job-id J advance --mode review --from-eligible
+```
+
+통과 기준(`threshold`)과 상위 개수(`eligible_top_k`)는
+`dev/config/topic_score_rules.json`에서, 시드 풀 상한과 추가 시드는
+`dev/config/topic_pipeline.json`에서 조정합니다. 기존 직접 입력·`topic.json`
+경로는 그대로 동작합니다 — `--from-eligible`을 켜지 않으면 아무 영향이 없습니다.
+
 ### 트렌드 기반 주제 선택
 
 ```bash

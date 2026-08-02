@@ -9,6 +9,7 @@ config/*/secrets*.sh
 data/work/
 data/output/
 data/backups/
+data/topics/
 /dev/data/telegram_state.json
 /dev/data/telegram_state.json.tmp
 /dev/data/slack_state.json

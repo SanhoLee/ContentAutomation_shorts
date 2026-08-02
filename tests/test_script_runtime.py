@@ -98,6 +98,45 @@ class ScriptRuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.youtube_feedback_strictness, "strict")
         self.assertFalse(settings.youtube_feedback_auto_sync)
 
+    def test_use_creative_dna_defaults_on(self):
+        os.environ.pop("USE_CREATIVE_DNA", None)
+        settings = script_runtime.load_runtime_settings()
+        self.assertTrue(settings.use_creative_dna)
+
+    def test_use_creative_dna_can_be_disabled_via_env(self):
+        os.environ["USE_CREATIVE_DNA"] = "off"
+        try:
+            settings = script_runtime.load_runtime_settings()
+        finally:
+            os.environ.pop("USE_CREATIVE_DNA", None)
+        self.assertFalse(settings.use_creative_dna)
+
+
+class LoadCreativeDnaTests(unittest.TestCase):
+    def test_missing_file_returns_empty_string(self):
+        self.assertEqual(script_runtime.load_creative_dna("/no/such/creative_dna.md"), "")
+
+    def test_repo_config_file_loads_and_contains_expected_sections(self):
+        content = script_runtime.load_creative_dna()
+        self.assertIn("## Voice", content)
+        self.assertIn("## Must not", content)
+
+    def test_cache_reflects_file_edits_by_mtime(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "creative_dna.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("v1")
+            self.assertEqual(script_runtime.load_creative_dna(path), "v1")
+
+            # Same mtime resolution as a fast test run can collide; force it forward.
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("v2")
+            future = os.path.getmtime(path) + 1
+            os.utime(path, (future, future))
+
+            self.assertEqual(script_runtime.load_creative_dna(path), "v2")
+
 
 if __name__ == "__main__":
     unittest.main()

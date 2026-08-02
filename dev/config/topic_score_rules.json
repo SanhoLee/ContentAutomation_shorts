@@ -1,0 +1,22 @@
+{
+  "threshold": 60,
+  "eligible_top_k": 15,
+  "weights": {
+    "niche_relevance": 30,
+    "search_intent_fit": 20,
+    "evidence_potential": 20,
+    "novelty_vs_history": 20,
+    "safety_tone": 10
+  },
+  "intent_patterns": {
+    "question": ["할까", "이란", "증상", "원인", "차이", "방법", "언제"],
+    "compare": ["차이", "vs", "비교", "다른점"],
+    "symptom": ["증상", "징후", "신호"]
+  },
+  "evidence_hints": ["연구", "논문", "예방", "인지", "신경", "수면", "운동", "식단", "치매", "기억"],
+  "ban_keywords": ["완치", "보장", "기적", "100%", "즉시 회복"],
+  "novelty": {
+    "lookback_days": 60,
+    "similarity_threshold": 0.75
+  }
+}

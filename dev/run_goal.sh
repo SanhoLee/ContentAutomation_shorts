@@ -4,12 +4,14 @@
 # 모드는 MODE 환경변수로 바꾼다:
 #   MODE=auto   (기본) 사람 개입 없이 업로드까지
 #   MODE=review 대본 검수 / 최종 승인 두 지점에서 멈춤
+#   FORCE=1     dev/config/schedules.yaml의 daily_limit/시간대를 무시하고 강제 실행
 set -e
 
 OBJECTIVE="${1:-}"
 SEED="${2:-}"
 JOB_ID="${3:-auto_$(date +%Y%m%d_%H%M%S)}"
 MODE="${MODE:-auto}"
+FORCE="${FORCE:-0}"
 
 if [ -z "$OBJECTIVE" ]; then
     echo "사용법: ./run_goal.sh subscriber_growth [씨드 주제] [JOB_ID]"
@@ -20,6 +22,11 @@ export JOB_ID
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$BASE_DIR/config.sh"
 source "$BASE_DIR/sh/common/notify.sh"
+
+if [ "$FORCE" != "1" ] && ! python3 "$SRC_DIR/common/schedule_policy.py" can-run shorts; then
+    echo "스케줄 정책(dev/config/schedules.yaml)에 따라 오늘 shorts 실행을 건너뜁니다. (강제 실행: FORCE=1)"
+    exit 0
+fi
 
 trap 'notify_error "목표 기반 파이프라인 실패 (단계: ${CURRENT_STEP:-unknown}, JOB_ID: $JOB_ID)"' ERR
 
@@ -41,6 +48,7 @@ set -e
 
 case "$STATUS" in
     0)
+        python3 "$SRC_DIR/common/schedule_policy.py" record shorts "$JOB_ID" >/dev/null || true
         notify_success "목표 기반 영상 생성+업로드 완료 (JOB_ID: $JOB_ID)"
         ;;
     10)

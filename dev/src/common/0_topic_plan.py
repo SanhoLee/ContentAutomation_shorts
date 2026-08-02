@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+import topic_candidate_pipeline
 import trend_probe
 from content_objectives import normalize_objective_type, objective_label
 from objective_planner import (
@@ -79,7 +80,23 @@ def maybe_sync(no_sync: bool) -> str:
     return status
 
 
+def apply_from_eligible(args: argparse.Namespace) -> None:
+    """When --from-eligible is set and no --seed was given, consume the top
+    scored candidate from data/topics/eligible/ (Phase 1 topic candidate
+    pipeline) and use it as the seed. Marks the candidate consumed=true so a
+    later run doesn't pick it again."""
+    if not args.from_eligible or args.seed:
+        return
+    picked = topic_candidate_pipeline.pick_top_eligible()
+    if picked:
+        args.seed = picked["title_hint"]
+        print(f"eligible 큐에서 선택: {picked['title_hint']} (score={picked['score']}, topic_id={picked['topic_id']})")
+    else:
+        print("eligible 큐가 비어 있습니다. topic_candidate_pipeline.py --refresh를 먼저 실행하세요.", file=sys.stderr)
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
+    apply_from_eligible(args)
     sync_status = maybe_sync(args.no_sync)
     if sync_status in {"stale-cache", "missing"} and not args.allow_stale:
         objective_type = normalize_objective_type(args.objective)
@@ -194,6 +211,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     plan = subparsers.add_parser("plan", help="후보 생성·Planner·Critic·Judge 실행")
     plan.add_argument("--objective", required=True, help="subscriber_growth/reach/retention/share_growth/balanced 또는 한국어 별칭")
     plan.add_argument("--seed")
+    plan.add_argument("--from-eligible", action="store_true",
+                       help="eligible 큐(Phase 1 topic_candidate_pipeline) 최고점 1건을 시드로 사용하고 consumed 처리")
     plan.add_argument("--job-id", default=os.environ.get("JOB_ID"))
     plan.add_argument("--output", default=str(Path(os.environ.get("WORK_DIR", ".")) / "topic_plan.json"))
     plan.add_argument("--no-ai", action="store_true", help="Planner/Critic 없이 deterministic dry-run")

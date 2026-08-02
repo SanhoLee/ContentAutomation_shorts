@@ -1,0 +1,22 @@
+timezone: "Asia/Seoul"
+
+platforms:
+  shorts:
+    enabled: true
+    times: ["10:35"]
+    daily_limit: 1
+  x:
+    enabled: true
+    times: ["11:00"]
+    daily_limit: 1
+  instagram:
+    enabled: false
+    times: ["10:30"]
+    daily_limit: 1
+  wordpress:
+    enabled: false
+    times: ["09:00"]
+    daily_limit: 1
+
+# 글로벌 안전장치
+max_jobs_per_day: 3

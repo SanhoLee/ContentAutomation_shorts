@@ -32,6 +32,7 @@ from pathlib import Path
 import job_state
 import pipeline_flow
 import script_review
+import topic_candidate_pipeline
 
 EXIT_DONE = 0
 EXIT_FAILED = 1
@@ -104,8 +105,18 @@ def cmd_advance(args):
 
     state = job_state.load(work_dir)
     settings = dict(state.get("settings") or {})
+
+    topic = args.topic
+    if args.from_eligible and not topic and not args.topic_json and not settings.get("topic"):
+        picked = topic_candidate_pipeline.pick_top_eligible()
+        if picked:
+            topic = picked["title_hint"]
+            print(f"eligible 큐에서 선택: {topic} (score={picked['score']}, topic_id={picked['topic_id']})")
+        else:
+            print("eligible 큐가 비어 있습니다. topic_candidate_pipeline.py --refresh를 먼저 실행하세요.", file=sys.stderr)
+
     # Topic details are stored once so later resume calls need not repeat them.
-    for key, value in (("topic", args.topic), ("topic_json", args.topic_json)):
+    for key, value in (("topic", topic), ("topic_json", args.topic_json)):
         if value:
             settings[key] = value
     if args.allow_no_pubmed:
@@ -175,6 +186,8 @@ def parse_args(argv=None):
                          help="기본값: 저장된 모드, 없으면 review")
     advance.add_argument("--topic", help="script 단계에 넘길 주제")
     advance.add_argument("--topic-json", help="topic_plan.json 경로")
+    advance.add_argument("--from-eligible", action="store_true",
+                          help="eligible 큐(Phase 1 topic_candidate_pipeline) 최고점 1건을 topic으로 사용하고 consumed 처리")
     advance.add_argument("--allow-no-pubmed", action="store_true")
     advance.set_defaults(func=cmd_advance)
 

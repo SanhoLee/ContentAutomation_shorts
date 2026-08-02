@@ -1,0 +1,12 @@
+{
+  "max_seeds_total": 60,
+  "max_seeds_per_category": 8,
+  "min_seed_len": 2,
+  "max_seed_len": 20,
+  "suggest_sleep_ms": 200,
+  "eligible_top_k": 15,
+  "score_manual_topics": false,
+  "use_google_trends_bonus": false,
+  "extra_seeds": [],
+  "auto_consume": false
+}

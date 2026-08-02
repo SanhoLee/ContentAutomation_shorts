@@ -210,6 +210,27 @@ class ScriptQualityTests(unittest.TestCase):
         self.assertIn("실사례·통계 활용 지침", prompt)
         self.assertIn("하이닥", prompt)
 
+    def test_build_prompt_includes_creative_dna_by_default(self):
+        strategy = script0.normalize_strategy_contract(script0.local_strategy_fallback("야간뇨"), "야간뇨")
+        prompt = script0.build_prompt(strategy, abstracts="", trend_context=None, web_research="", youtube_guidance="")
+        self.assertIn("채널 크리에이티브 DNA", prompt)
+        self.assertIn("## Voice", prompt)
+
+    def test_build_prompt_flag_off_restores_prior_prompt(self):
+        strategy = script0.normalize_strategy_contract(script0.local_strategy_fallback("야간뇨"), "야간뇨")
+        old = script0.USE_CREATIVE_DNA
+        try:
+            script0.USE_CREATIVE_DNA = False
+            prompt = script0.build_prompt(strategy, abstracts="", trend_context=None, web_research="", youtube_guidance="")
+        finally:
+            script0.USE_CREATIVE_DNA = old
+        self.assertNotIn("채널 크리에이티브 DNA", prompt)
+        self.assertTrue(prompt.startswith("아래는"))
+
+    def test_plan_strategy_prompt_includes_creative_dna_by_default(self):
+        self.assertTrue(script0.USE_CREATIVE_DNA)
+        self.assertIn("## Voice", script0.creative_dna_block())
+
     def test_stage2_prompt_includes_youtube_channel_guidance(self):
         strategy = script0.normalize_strategy_contract({}, "수면과 기억력")
         prompt = script0.build_prompt(

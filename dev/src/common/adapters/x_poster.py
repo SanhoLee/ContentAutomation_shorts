@@ -33,7 +33,9 @@ if str(COMMON_DIR) not in sys.path:
 import x_auth
 
 POST_ENDPOINT = "https://api.x.com/2/tweets"
+MEDIA_ENDPOINT = "https://api.x.com/2/media/upload"
 POST_TIMEOUT_SEC = int(os.environ.get("X_POST_TIMEOUT_SEC", "20"))
+MEDIA_UPLOAD_TIMEOUT_SEC = int(os.environ.get("X_MEDIA_UPLOAD_TIMEOUT_SEC", "60"))
 
 
 def _thread_path(job_dir: Path) -> Path:
@@ -53,12 +55,44 @@ def _write_thread(job_dir: Path, payload: dict[str, Any]) -> None:
     )
 
 
-def _post_one(text: str, *, reply_to: str | None, access_token: str) -> str:
+def _upload_media(image_path: Path, *, access_token: str) -> str:
+    """Upload the thread's lead image and return its media id.
+
+    Raises on any failure. Callers treat that as "post without a photo"
+    rather than as a reason to abandon the thread -- the text is the
+    content, the card is decoration.
+    """
+    import requests
+
+    with open(image_path, "rb") as handle:
+        res = requests.post(
+            MEDIA_ENDPOINT,
+            headers={"Authorization": f"Bearer {access_token}"},
+            files={"media": (image_path.name, handle, "image/png")},
+            data={"media_category": "tweet_image"},
+            timeout=MEDIA_UPLOAD_TIMEOUT_SEC,
+        )
+    res.raise_for_status()
+    body = res.json()
+    # v2 answers {"data": {"id": ...}}; the older v1.1-shaped response uses
+    # media_id_string. Accept both so an API-version change degrades to the
+    # text-only path instead of raising a KeyError mid-thread.
+    media_id = (body.get("data") or {}).get("id") or body.get("media_id_string")
+    if not media_id:
+        raise RuntimeError(f"media upload 응답에 media id가 없습니다: {body}")
+    return str(media_id)
+
+
+def _post_one(
+    text: str, *, reply_to: str | None, access_token: str, media_id: str | None = None,
+) -> str:
     import requests
 
     body: dict[str, Any] = {"text": text}
     if reply_to:
         body["reply"] = {"in_reply_to_tweet_id": reply_to}
+    if media_id:
+        body["media"] = {"media_ids": [media_id]}
     res = requests.post(
         POST_ENDPOINT,
         headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
@@ -99,9 +133,24 @@ def post_thread(job_dir: str | Path, *, dry_run: bool = False) -> dict[str, Any]
     access_token = x_auth.get_valid_access_token()
     reply_to = posted_ids[-1] if posted_ids else None
 
+    # Only the lead tweet carries the card, and only on a fresh run -- on a
+    # resume the lead tweet is already live and re-uploading would attach the
+    # image to a mid-thread reply instead.
+    media_id = None
+    photo_path = payload.get("photo_path")
+    if photo_path and resume_from == 0 and Path(photo_path).exists():
+        try:
+            media_id = _upload_media(Path(photo_path), access_token=access_token)
+        except Exception as exc:
+            # Decoration, not content: a rejected image (scope, tier, size)
+            # must not cost us the thread.
+            print(f"사진 업로드 실패, 텍스트만 게시합니다: {exc}", file=sys.stderr)
+
     for tweet in tweets[resume_from:]:
         try:
-            tweet_id = _post_one(tweet["text"], reply_to=reply_to, access_token=access_token)
+            tweet_id = _post_one(
+                tweet["text"], reply_to=reply_to, access_token=access_token, media_id=media_id,
+            )
         except Exception as exc:
             payload["tweet_ids"] = posted_ids
             payload["post_error"] = str(exc)
@@ -112,6 +161,7 @@ def post_thread(job_dir: str | Path, *, dry_run: bool = False) -> dict[str, Any]
             ) from exc
         posted_ids.append(tweet_id)
         reply_to = tweet_id
+        media_id = None  # the card belongs to the lead tweet only
         # Persist after every tweet, not just at the end -- a crash here
         # must not lose track of what's already live on the account.
         payload["tweet_ids"] = posted_ids

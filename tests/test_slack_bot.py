@@ -621,5 +621,83 @@ class SlackBotTests(unittest.TestCase):
                 module.save_state = old_save_state
 
 
+class MaybePostXThreadTests(unittest.TestCase):
+    """Auto-posting after upload must never mask the pipeline's own result.
+
+    post_thread() signals by raising, and owns resume/double-post safety
+    itself, so this hook only has to translate outcomes into messages.
+    """
+
+    def _patch(self, post_result=None, post_error=None):
+        calls = []
+        old_post = slack_bot.x_poster.post_thread
+        old_send_message = slack_bot.send_message
+
+        def fake_post(job_dir):
+            calls.append(job_dir)
+            if post_error is not None:
+                raise post_error
+            return post_result
+
+        messages = []
+        slack_bot.x_poster.post_thread = fake_post
+        slack_bot.send_message = lambda channel_id, text: messages.append(text)
+        return calls, messages, old_post, old_send_message
+
+    def _restore(self, old_post, old_send_message):
+        slack_bot.x_poster.post_thread = old_post
+        slack_bot.send_message = old_send_message
+
+    def test_skips_when_job_not_done(self):
+        calls, messages, old_post, old_send = self._patch()
+        try:
+            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "await_render_approval"})
+        finally:
+            self._restore(old_post, old_send)
+        self.assertEqual(calls, [])
+        self.assertEqual(messages, [])
+
+    def test_skips_when_no_job_id(self):
+        calls, messages, old_post, old_send = self._patch()
+        try:
+            slack_bot._maybe_post_x_thread("C1", {"stage": "done"})
+        finally:
+            self._restore(old_post, old_send)
+        self.assertEqual(calls, [])
+        self.assertEqual(messages, [])
+
+    def test_success_reports_thread_url_and_tweet_count(self):
+        result = {"tweet_ids": ["1", "2", "3"], "thread_url": "https://x.com/i/web/status/1"}
+        calls, messages, old_post, old_send = self._patch(post_result=result)
+        try:
+            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore(old_post, old_send)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("게시 완료", messages[-1])
+        self.assertIn("https://x.com/i/web/status/1", messages[-1])
+        self.assertIn("3개", messages[-1])
+
+    def test_failure_is_reported_not_raised_and_points_at_x_post(self):
+        calls, messages, old_post, old_send = self._patch(
+            post_error=RuntimeError("2/4개 게시 후 실패: 429"),
+        )
+        try:
+            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore(old_post, old_send)
+        self.assertIn("자동 게시 실패", messages[-1])
+        self.assertIn("429", messages[-1])
+        self.assertIn("/x_post", messages[-1])
+
+    def test_unexpected_exception_does_not_escape(self):
+        calls, messages, old_post, old_send = self._patch(post_error=ValueError("boom"))
+        try:
+            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore(old_post, old_send)
+        self.assertIn("boom", messages[-1])
+
+
 if __name__ == "__main__":
     unittest.main()

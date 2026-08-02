@@ -1566,15 +1566,51 @@ def _run_render_silent(chat_id, job, extra_env=None):
     return _po.run_render_silent(sys.modules[__name__], chat_id, job, extra_env)
 
 
-def run_next_stage(chat_id, job):
-    return _po.run_next_stage(
-        sys.modules[__name__], chat_id, job,
-        final_message=lambda job, default_text: workflow_status_text(job, default_text),
+def _maybe_post_x_thread(chat_id, job):
+    """After a job reaches "done" (YouTube upload succeeded), post its X
+    thread without waiting for another human step.
+
+    A posting failure never surfaces past this function. The upload already
+    succeeded, which is the part that matters; X is a downstream bonus, so
+    its failures are reported rather than raised and cannot mask the
+    pipeline's completion message.
+
+    Recovery is left to post_thread() rather than reimplemented here: it
+    persists progress after every tweet, resumes from the first unposted
+    one, and refuses to repost a finished thread. So the operator's retry
+    after a failure is just /x_post, with no risk of double-posting what is
+    already live.
+    """
+    if job.get("stage") != "done":
+        return
+    job_id = job.get("job_id")
+    if not job_id:
+        return
+    try:
+        payload = x_poster.post_thread(work_dir(job_id))
+    except Exception as exc:
+        send_message(chat_id, f"X 스레드 자동 게시 실패: {exc}\n확인 후 /x_post 로 이어서 게시할 수 있습니다.")
+        return
+    send_message(
+        chat_id,
+        f"X 스레드 게시 완료: {payload.get('thread_url')} "
+        f"({len(payload.get('tweet_ids') or [])}개 트윗)",
     )
 
 
+def run_next_stage(chat_id, job):
+    result = _po.run_next_stage(
+        sys.modules[__name__], chat_id, job,
+        final_message=lambda job, default_text: workflow_status_text(job, default_text),
+    )
+    _maybe_post_x_thread(chat_id, job)
+    return result
+
+
 def run_review_pipeline(chat_id, job):
-    return _po.run_review_pipeline(sys.modules[__name__], chat_id, job)
+    result = _po.run_review_pipeline(sys.modules[__name__], chat_id, job)
+    _maybe_post_x_thread(chat_id, job)
+    return result
 
 
 def approve_review_gate(chat_id, job):
@@ -1645,11 +1681,13 @@ def run_remaining_to_upload(chat_id, job):
     send_message(chat_id, f"{STAGE_LABELS[start_stage]} 승인 완료. 여기서부터 업로드까지 자동 진행합니다.")
 
     try:
-        return _po.run_to_completion(
+        result = _po.run_to_completion(
             sys.modules[__name__], chat_id, job,
             final_message=lambda job, default_text: workflow_status_text(job, default_text),
             running_stage="running_after_review",
         )
+        _maybe_post_x_thread(chat_id, job)
+        return result
     finally:
         job.pop("auto_from_stage", None)
         job.pop("auto_progress", None)

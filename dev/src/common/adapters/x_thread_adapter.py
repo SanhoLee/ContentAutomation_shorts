@@ -47,12 +47,19 @@ if str(COMMON_DIR) not in sys.path:
 import claude_cost
 import content_package
 import topic_score
+import x_photo_card
 
 # X weighs every CJK character as 2 toward its 280-weighted-character cap,
 # so a pure-Korean post tops out around 280/2=140 chars, not the ~270-280
 # an ASCII tweet gets. 139 leaves a 1-char margin.
 TWEET_MAX_CHARS = 139
 MAX_HASHTAGS_LAST_TWEET = 2
+MAX_SOURCE_LINKS = 3
+# X's t.co wrapper counts every link as this many characters regardless of
+# its real length. Used only to decide how many source lines fit; the raw
+# TWEET_MAX_CHARS budget above still applies as the outer safety net.
+LINK_COST_CHARS = 23
+SOURCES_LABEL = "출처"
 
 X_THREAD_HUMANIZE_MODEL = os.environ.get("X_THREAD_HUMANIZE_MODEL", "claude-haiku-4-5-20251001")
 X_THREAD_HUMANIZE_TIMEOUT_SEC = int(os.environ.get("X_THREAD_HUMANIZE_TIMEOUT_SEC", "20"))
@@ -61,6 +68,7 @@ FALSE_VALUES = {"0", "false", "off", "no"}
 
 SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
 JSON_ARRAY = re.compile(r"\[.*\]", re.S)
+URL_PATTERN = re.compile(r"https?://\S+")
 
 HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이다. 이 문장들을 X(트위터) 스레드용으로 다시 써라.
 주제: {topic}
@@ -206,9 +214,84 @@ def _pack_sentences(texts: list[str], *, max_chars: int, prefix_reserve: int) ->
     return groups
 
 
+def _pubmed_url(pmid: str) -> str:
+    return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+
+
+def _link_aware_length(line: str) -> int:
+    """Line length with any embedded URL discounted to t.co's fixed cost."""
+    match = URL_PATTERN.search(line)
+    if not match:
+        return len(line)
+    literal = match.group(0)
+    return len(line) - len(literal) + LINK_COST_CHARS
+
+
+def _source_lines_from_citations(
+    citations: list[dict[str, Any]], ban_keywords: list[str],
+) -> list[str]:
+    lines: list[str] = []
+    for citation in (citations or [])[:MAX_SOURCE_LINKS]:
+        pmid = str((citation or {}).get("pmid") or "").strip()
+        if not pmid:
+            continue
+        journal = str((citation or {}).get("journal") or "").strip()
+        year = str((citation or {}).get("year") or "").strip()
+        label = " ".join(p for p in (journal, year) if p)
+        line = f"{label} {_pubmed_url(pmid)}".strip() if label else _pubmed_url(pmid)
+        line = _apply_safety_filter(line, ban_keywords)
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _source_lines_from_evidence(
+    evidence: list[dict[str, Any]], ban_keywords: list[str],
+) -> list[str]:
+    lines: list[str] = []
+    for item in (evidence or [])[:MAX_SOURCE_LINKS]:
+        hint = _apply_safety_filter(str((item or {}).get("source_hint") or "").strip(), ban_keywords)
+        if hint:
+            lines.append(f"- {hint}")
+    return lines
+
+
+def _build_sources_text(
+    package: dict[str, Any],
+    pubmed_citations: list[dict[str, Any]] | None,
+    ban_keywords: list[str],
+) -> str:
+    """PMID links when available (real and verifiable), else evidence's
+    source_hint text. Returns "" when neither exists, so the caller skips
+    the sources tweet rather than posting an empty reference."""
+    lines = _source_lines_from_citations(pubmed_citations or [], ban_keywords)
+    if not lines:
+        lines = _source_lines_from_evidence(package.get("evidence") or [], ban_keywords)
+    if not lines:
+        return ""
+    budget = TWEET_MAX_CHARS - len(SOURCES_LABEL) - 1
+    while lines:
+        used = sum(_link_aware_length(line) + 1 for line in lines) - 1
+        if used <= budget:
+            break
+        lines.pop()
+    if not lines:
+        return ""
+    return SOURCES_LABEL + "\n" + "\n".join(lines)
+
+
+def _load_pubmed_citations(job_dir: Path) -> list[dict[str, Any]]:
+    try:
+        status = json.loads((job_dir / "pubmed_status.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    citations = status.get("citations")
+    return list(citations) if isinstance(citations, list) else []
+
+
 def build_tweets(
     package: dict[str, Any], *, number_prefix: bool = False, ban_keywords: list[str] | None = None,
-    humanize: bool | None = None,
+    humanize: bool | None = None, pubmed_citations: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     ban_keywords = ban_keywords if ban_keywords is not None else _ban_keywords()
     raw_texts: list[str] = []
@@ -255,6 +338,13 @@ def build_tweets(
         if len(last) > budget:
             last = _truncate_at_boundary(last, budget)
         groups[-1] = f"{last}{suffix}".strip()
+
+    # Appended after hashtags on purpose: the sources tweet is citations, not
+    # copy, so it stays out of the humanize rewrite above and never becomes
+    # the tweet that carries the hashtags.
+    sources_text = _build_sources_text(package, pubmed_citations, ban_keywords)
+    if groups and sources_text:
+        groups.append(sources_text)
 
     tweets: list[dict[str, Any]] = []
     total = len(groups)
@@ -303,11 +393,16 @@ def build_x_thread(
     if package is None:
         return None
 
-    tweets = build_tweets(package, number_prefix=number_prefix, humanize=humanize)
+    tweets = build_tweets(
+        package, number_prefix=number_prefix, humanize=humanize,
+        pubmed_citations=_load_pubmed_citations(job_dir),
+    )
+    photo_path = x_photo_card.build_thread_photo(package, job_dir)
     payload = {
         "job_id": package.get("job_id") or job_dir.name,
         "tweets": tweets,
         "char_counts": [len(t["text"]) for t in tweets],
+        "photo_path": str(photo_path) if photo_path else None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "method": "rule_v1",
     }

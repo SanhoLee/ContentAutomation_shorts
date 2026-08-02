@@ -1,6 +1,6 @@
 # Known Issues and Risk Register
 
-Last updated: 2026-08-01
+Last updated: 2026-08-02
 Current base branch: `main`
 
 ## Active / Watch Items
@@ -169,6 +169,19 @@ Status: by design.
 The story-types design spec offers "Stage 2 재시도 1회 또는 guard 실패" when a scene arrives without `visual.brief`. Neither was taken. A `stage_guard` check on the `script` stage feeds `pipeline_flow.run_stage`, which retries the stage once on guard failure — that retry re-runs Stage 1 + Stage 2 in full, doubling the most expensive Claude spend in the pipeline, which is exactly what this repo's cost convention forbids (see items 14/17 and `CLAUDE.md`).
 
 Instead `normalize_story_scenes()` backfills a missing `brief` deterministically from the scene's own text, and `validate_script()` records `visual_brief_backfilled` / `role_off_sequence` / `role_bookends_missing` as warnings in `script_quality.json` at zero cost. **Monitor**: if `visual_brief_backfilled` shows up in ≥30% of jobs, the Stage 2 prompt is not landing the field and the prompt should be tightened — not the guard added.
+
+### 20. X(Twitter) auto-posting assumptions are unverified against a live account (2026-08-02)
+
+Status: new, verify against real credentials before relying on it.
+
+`slack_bot._maybe_post_x_thread` now calls `x_poster.post_thread()` once a job reaches `stage == "done"`, so a Slack-driven job publishes to X with no second human step. Two additions on top of the existing posting path are unverified against a live account, because no X credentials existed when they were written:
+
+- **Photo upload.** The lead tweet carries a rendered card (`x_photo_card.py`), uploaded via `POST https://api.x.com/2/media/upload` with the same OAuth 2.0 bearer `post_thread` already uses. Whether this account's tier and token scopes actually grant `media.write` is unconfirmed, as is the exact response shape — `_upload_media` accepts both `data.id` and `media_id_string` for that reason. Any failure is caught and the thread posts text-only.
+- **`x_thread_adapter.LINK_COST_CHARS = 23`** — t.co's fixed link cost, used to decide how many source lines fit in the sources tweet. If X has changed the number, the sources tweet holds slightly too few or too many citations. Note the sources tweet is the one place where raw `len()` exceeds `TWEET_MAX_CHARS` by design: URLs collapse to 23 weighted chars on X, so the raw string is longer than the budget while the posted tweet is not.
+
+Not blocking: every failure mode here degrades rather than breaks. No Pillow → no card (`x_photo_card` imports `card_render` lazily so the thread stage and both bots still import cleanly). Rejected image → text-only thread. Mid-thread failure → progress persisted, resumable with `/x_post`, and an already-posted thread refuses to repost.
+
+**Action**: after the first real auto-post, confirm the lead tweet actually shows the card. If `media.write` turns out not to be granted, the log line is `사진 업로드 실패, 텍스트만 게시합니다` and the fix is a scope change in the X Developer Portal, not a code change.
 
 ## Bugs To Watch For In Next Testing Session
 

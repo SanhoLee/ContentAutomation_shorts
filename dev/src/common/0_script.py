@@ -9,9 +9,10 @@ from collections import defaultdict
 from pathlib import Path
 from urllib.parse import quote
 
+import content_package
 import evidence_probe
 from claude_cost import assert_budget, record_usage, web_search_total
-from script_runtime import load_runtime_settings
+from script_runtime import load_creative_dna, load_runtime_settings
 
 SETTINGS = load_runtime_settings()
 WORK_DIR = SETTINGS.work_dir
@@ -53,6 +54,7 @@ YOUTUBE_FEEDBACK_AUTO_SYNC = SETTINGS.youtube_feedback_auto_sync
 total_chars = SETTINGS.total_chars
 prompt_target_chars = SETTINGS.prompt_target_chars
 min_scenes_estimate = SETTINGS.min_scenes_estimate
+USE_CREATIVE_DNA = SETTINGS.use_creative_dna
 MAX_SCRIPT_LENGTH_RATIO = 1.40
 PROMPT_MIN_LENGTH_RATIO = 0.90
 PROMPT_MAX_LENGTH_RATIO = 1.15
@@ -61,6 +63,18 @@ TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
 PUBMED_STATUS_PATH = os.path.join(WORK_DIR, "pubmed_status.json")
 CLAUDE_USAGE_PATH = os.path.join(WORK_DIR, "claude_usage.jsonl")
 CLAUDE_TRANSIENT_STATUSES = (429, 500, 502, 503, 504)
+
+
+def creative_dna_block():
+    """Channel tone/style guide, prepended identically to Stage 1 and Stage 2
+    prompts (see docs/design Phase 2). USE_CREATIVE_DNA=off restores the
+    pre-Phase-2 prompt exactly, for A/B comparison or rollback."""
+    if not USE_CREATIVE_DNA:
+        return ""
+    dna = load_creative_dna()
+    if not dna:
+        return ""
+    return f"[채널 크리에이티브 DNA — 항상 이 톤과 문체를 따르세요]\n{dna}\n\n"
 
 
 # ─────────────────────────────────────────────
@@ -1027,7 +1041,7 @@ def plan_strategy(
     channel_hint = f"\n\n{youtube_guidance}" if youtube_guidance else ""
     design_hint = design_constraint_hint(content_design)
 
-    prompt = f"""주제: {topic}{trend_hint}{research_hint}{channel_hint}{design_hint}
+    prompt = f"""{creative_dna_block()}주제: {topic}{trend_hint}{research_hint}{channel_hint}{design_hint}
 
 이 주제로 50대 이상을 위한 YouTube Shorts 콘텐츠 전략을 수립하세요.
 
@@ -1317,7 +1331,7 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", youtu
     prompt_max_chars = max(prompt_min_chars, int(total_chars * PROMPT_MAX_LENGTH_RATIO))
     hard_max_chars = max(prompt_max_chars, int(total_chars * MAX_SCRIPT_LENGTH_RATIO))
 
-    return f"""아래는 '{topic}'와 관련한 연구 자료와 콘텐츠 전략입니다. 
+    return f"""{creative_dna_block()}아래는 '{topic}'와 관련한 연구 자료와 콘텐츠 전략입니다. 
 
 당신은 50대 이상 시청자들의 일상적 고민을 진심으로 경청하고, 불안감을 따뜻하게 보듬어주는 '다정한 동네 주치의'이자 스토리텔러입니다. 정보를 다그치듯 나열하지 말고, 자녀나 오랜 친구가 조곤조곤 챙겨주듯 다정한 이야기로 풀어내세요.
 
@@ -1752,6 +1766,13 @@ def write_outputs(result, strategy, trend_context=None):
 
     with open(os.path.join(WORK_DIR, "frame_header.json"), "w", encoding="utf-8") as f:
         json.dump(frame_header, f, ensure_ascii=False, indent=2)
+
+    try:
+        content_package.build_content_package(WORK_DIR)
+    except Exception as exc:
+        # content_package.json feeds downstream cross-platform adapters only —
+        # never let it take down a script generation that otherwise succeeded.
+        print(f"⚠️  content_package.json 생성 실패(무시하고 계속): {type(exc).__name__}: {exc}")
 
     print("\n=== 생성된 대본 (TTS용) ==="); print(full_text)
     print(f"\n제목      : {meta['title']}")

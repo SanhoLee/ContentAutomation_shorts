@@ -12,6 +12,7 @@
 - [스크립트 모듈 상세](#스크립트-모듈-상세)
 - [주요 개선 사항](#주요-개선-사항)
 - [사용법](#사용법)
+- [멀티플랫폼 확장 (Phase 3~5)](#멀티플랫폼-확장-phase-35)
 - [피드백 루프](#피드백-루프)
 - [환경 변수 목록](#환경-변수-목록)
 - [콘텐츠 전략 원칙](#콘텐츠-전략-원칙)
@@ -156,11 +157,18 @@ brain50/
 │   │   │   ├── objective_planner.py
 │   │   │   ├── evidence_probe.py  # PubMed 근거 확인 쿼리 사다리
 │   │   │   ├── trend_probe.py     # 다국어 트렌드 신호 + drift 필터
+│   │   │   ├── topic_seed_pool.py       # 시드 없이 시드 풀 구성 (Phase 1)
+│   │   │   ├── topic_score.py           # 주제 후보 결정론적 점수 (Phase 1)
+│   │   │   ├── topic_candidate_pipeline.py  # 시드→probe→점수→eligible 큐 (Phase 1)
+│   │   │   ├── content_package.py       # 대본→멀티플랫폼 중간 산출물 (Phase 3)
+│   │   │   ├── schedule_policy.py       # 플랫폼별 시간대·일일 한도 (Phase 5)
+│   │   │   ├── adapters/
+│   │   │   │   └── x_thread_adapter.py  # content_package → X 스레드 (Phase 4)
 │   │   │   ├── pipeline_flow.py   # 단계 순서 정의 (STAGES)
 │   │   │   ├── pipeline_orchestrator.py
 │   │   │   ├── run_pipeline.py    # 봇 없이 CLI로 잡 진행
 │   │   │   ├── stage_guard.py     # 단계별 결정론적 자동 점검
-│   │   │   ├── script_runtime.py  # Stage 0 런타임 설정 중앙화
+│   │   │   ├── script_runtime.py  # Stage 0 런타임 설정 중앙화 + Creative DNA 로더
 │   │   │   ├── telegram_bot.py
 │   │   │   └── slack_bot.py
 │   │   ├── youtube/              # YouTube 전용 렌더 파이프라인
@@ -172,14 +180,23 @@ brain50/
 │   │   │   └── classify_uploads_by_category.py  # 업로드 영상을 research_categories로 분류
 │   │   └── instagram/            # Instagram 카드 콘텐츠 (스켈레톤)
 │   ├── sh/                     # Shell wrapper (common/youtube 하위 구조 동일)
+│   ├── config/                 # Pareto 5-Phase 설정 (JSON/YAML/MD, 코드와 분리)
+│   │   ├── creative_dna.md          # 채널 톤·문체 (Phase 2)
+│   │   ├── topic_score_rules.json   # 주제 후보 점수 가중치·임계값 (Phase 1)
+│   │   ├── topic_pipeline.json      # 시드 풀 상한·eligible_top_k (Phase 1)
+│   │   └── schedules.yaml           # 플랫폼별 시간대·일일 한도 (Phase 5)
 │   └── data/
 │       ├── youtube_feedback.db # YouTube API 성과 SQLite DB
+│       ├── topics/{raw,eligible,rejected}/  # 자동 생성 주제 후보 큐 (Phase 1)
+│       ├── ops/publish_log.jsonl            # 플랫폼별 발행 기록 (Phase 5)
 │       └── work/{JOB_ID}/      # 실행별 작업 폴더
 │           ├── strategy.json   # Stage 1 전략 결과
 │           ├── youtube_guidance.json # 채널 실데이터 분석
 │           ├── script.txt      # 생성된 대본 (TTS 입력)
 │           ├── scenes.json     # 장면별 텍스트 + visual_query
 │           ├── video_meta.json # 제목·훅유형·해시태그 등
+│           ├── content_package.json # 멀티플랫폼 중간 산출물 (Phase 3)
+│           ├── x_thread.json / x_thread.txt # X 스레드 초안 (Phase 4)
 │           ├── voice.wav       # TTS 음성
 │           ├── subs.srt        # 자막 파일
 │           └── scenes_timed.json # 장면별 타임스탬프
@@ -311,6 +328,13 @@ Shorts 피드 초반 몰입 대리지표·평균 시청률·구독 전환율·�
 Stage 1이 검색 키워드·제목·훅 유형을 먼저 확정하므로,  
 Stage 2 Sonnet은 감정 여정과 문장 품질에만 집중합니다.
 
+### 채널 톤 고정 (Creative DNA)
+
+`dev/config/creative_dna.md` 한 파일이 채널의 목소리·서사 스타일·금지 표현을
+정의하고, Stage 1/2 프롬프트 맨 앞에 매 호출 동일하게 삽입됩니다. **코드를
+건드리지 않고 이 파일만 고쳐도 대본 톤이 바뀝니다.** `USE_CREATIVE_DNA=off`로
+끄면 이 기능이 없던 이전 프롬프트와 동일하게 동작합니다(A/B·롤백용).
+
 ### 검색 최적화 강제 규칙
 
 ```
@@ -434,6 +458,45 @@ python src/youtube/3_broll.py                   # B-roll
 # render (ffmpeg)
 python src/youtube/4_upload.py                  # YouTube 업로드
 ```
+
+---
+
+## 멀티플랫폼 확장 (Phase 3~5)
+
+Shorts 대본이 완성되면 자동으로 `data/work/{JOB_ID}/content_package.json`이
+생성됩니다. YouTube 전용 산출물(script.txt, scenes.json, video_meta.json)을
+그대로 두고, 다른 플랫폼 어댑터가 읽을 수 있는 정규화된 JSON 계약 하나를
+추가하는 것뿐입니다 (Claude 재호출 없음).
+
+```bash
+# content_package.json은 0_script.py 실행 시 자동 생성됩니다. 수동 재생성:
+python3 -c "import content_package as cp; cp.build_content_package('dev/data/work/J0001')"
+
+# X(Twitter) 스레드 초안 생성 (규칙 기반, Claude 호출 없음)
+python3 dev/src/common/adapters/x_thread_adapter.py --job-id J0001 --print
+```
+
+Instagram·워드프레스 어댑터는 아직 없습니다 — `content_package.json`의
+`platforms.instagram_carousel` / `platforms.wordpress`가 `ready: false`로
+남아 있는 것이 정상입니다.
+
+### 발행 스케줄 · 일일 한도
+
+`dev/config/schedules.yaml`이 플랫폼별 실행 시각과 하루 발행 한도를
+결정합니다. `run_goal.sh`(무인 실행 진입점)는 시작 전에
+`schedule_policy.can_run("shorts")`를 확인하고, 한도를 넘겼으면 그날은
+조용히 건너뜁니다.
+
+```bash
+# 오늘 shorts를 실행해도 되는지 확인
+python3 dev/src/common/schedule_policy.py can-run shorts
+
+# 정책을 무시하고 강제 실행
+FORCE=1 ./run_goal.sh subscriber_growth
+```
+
+시간·한도는 `dev/config/schedules.yaml` 파일만 고치면 바뀌며, 발행 기록은
+`dev/data/ops/publish_log.jsonl`에 쌓입니다.
 
 ---
 

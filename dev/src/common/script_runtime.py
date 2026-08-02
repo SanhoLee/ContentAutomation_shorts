@@ -3,6 +3,37 @@ from dataclasses import dataclass
 
 FALSE_VALUES = {"0", "false", "off", "no", "n"}
 
+DEFAULT_CREATIVE_DNA_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "config", "creative_dna.md",
+)
+_creative_dna_cache: dict[str, tuple[float, str]] = {}
+
+
+def load_creative_dna(path=None):
+    """Channel tone/style guide, cached by file mtime so an operator edit to
+    creative_dna.md takes effect on the next call with no restart needed.
+
+    Never raises: a missing/unreadable file just yields "" and callers treat
+    that the same as the feature being off (see Phase 2 design spec 2.4-2.5).
+    """
+    target = path or os.environ.get("CREATIVE_DNA_PATH") or DEFAULT_CREATIVE_DNA_PATH
+    try:
+        mtime = os.path.getmtime(target)
+    except OSError:
+        return ""
+    cached = _creative_dna_cache.get(target)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+    except OSError:
+        return ""
+    _creative_dna_cache[target] = (mtime, content)
+    return content
+
+
 SPEECH_PACE_PROFILES = {
     "slow": {"atempo": 0.95, "script_density": 4.0},
     "normal": {"atempo": 1.10, "script_density": 4.66},
@@ -164,6 +195,7 @@ class ScriptRuntimeSettings:
     total_chars: int
     prompt_target_chars: int
     min_scenes_estimate: int
+    use_creative_dna: bool
 
 
 def load_runtime_settings():
@@ -245,4 +277,5 @@ def load_runtime_settings():
         total_chars=total_chars,
         prompt_target_chars=prompt_target_chars,
         min_scenes_estimate=min_scenes_estimate,
+        use_creative_dna=env_bool("USE_CREATIVE_DNA", True),
     )

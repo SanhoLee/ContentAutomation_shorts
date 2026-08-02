@@ -188,6 +188,30 @@ class BuildXThreadTests(unittest.TestCase):
             package = cp.load_content_package(job_dir)
             self.assertTrue(package["platforms"]["x_thread"]["ready"])
 
+    def test_rebuild_refuses_to_overwrite_an_already_posted_thread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            self._write_job(job_dir, [
+                {"text": "훅 문장입니다.", "visual_query": "a"},
+                {"text": "본문 문장입니다.", "visual_query": "b"},
+            ])
+            cp.build_content_package(job_dir)
+            xta.build_x_thread(job_dir, humanize=False)
+
+            posted_path = job_dir / "x_thread.json"
+            posted = json.loads(posted_path.read_text(encoding="utf-8"))
+            posted["posted"] = True
+            posted["posted_at"] = "2026-01-01T00:00:00+00:00"
+            posted["tweet_ids"] = ["111", "222"]
+            posted_path.write_text(json.dumps(posted, ensure_ascii=False), encoding="utf-8")
+
+            result = xta.build_x_thread(job_dir, humanize=False)
+            self.assertEqual(result["tweet_ids"], ["111", "222"])
+            self.assertTrue(result["posted"])
+
+            on_disk = json.loads(posted_path.read_text(encoding="utf-8"))
+            self.assertEqual(on_disk["tweet_ids"], ["111", "222"])
+
     def test_no_api_key_end_to_end_falls_back_to_rules(self):
         # Default (humanize=None) path with no ANTHROPIC_API_KEY set must
         # behave identically to humanize=False -- no crash, no network call.

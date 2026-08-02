@@ -514,7 +514,21 @@ class SlackBotTests(unittest.TestCase):
                     setattr(module, name, original)
 
     def test_auto_finish_can_resume_from_every_review_stage(self):
-        expected_commands = {
+        # dev's slack_bot drives this through pipeline_flow.STAGES, which now
+        # includes x_thread (right after script) and x_post (right after
+        # upload). prod/src/slack_bot.py has its own hardcoded
+        # run_remaining_to_upload, wholly independent of pipeline_flow, and
+        # was not touched -- it still expects the pre-X-posting sequence.
+        dev_expected_commands = {
+            "await_script_approval": ["x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
+            "await_tts_approval": ["1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
+            "await_caption_approval": ["1_broll.sh", "3_upload.sh", "x_post.sh"],
+            "await_broll_approval": ["3_upload.sh", "x_post.sh"],
+            "await_render_config": ["3_upload.sh", "x_post.sh"],
+            "await_render_approval": ["3_upload.sh", "x_post.sh"],
+            "await_upload_meta_approval": ["3_upload.sh", "x_post.sh"],
+        }
+        prod_expected_commands = {
             "await_script_approval": ["1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh"],
             "await_tts_approval": ["1_caption.sh", "1_broll.sh", "3_upload.sh"],
             "await_caption_approval": ["1_broll.sh", "3_upload.sh"],
@@ -533,30 +547,30 @@ class SlackBotTests(unittest.TestCase):
         real_check = slack_bot.pipeline_flow.stage_guard.check
         slack_bot.pipeline_flow.stage_guard.check = lambda *a, **k: (True, "")
         try:
-            self._assert_auto_finish_resumes(expected_commands, render_stages)
+            self._assert_auto_finish_resumes(slack_bot, dev_expected_commands, render_stages)
+            self._assert_auto_finish_resumes(prod_slack_bot, prod_expected_commands, render_stages)
         finally:
             slack_bot.pipeline_flow.stage_guard.check = real_check
 
-    def _assert_auto_finish_resumes(self, expected_commands, render_stages):
-        for module in (slack_bot, prod_slack_bot):
-            for stage in module.WORKFLOW_STAGES:
-                commands, renders = [], []
-                old_run_command = module.run_command
-                old_run_render_silent = module._run_render_silent
-                old_send_message = module.send_message
-                try:
-                    module.run_command = lambda args, *a, **k: commands.append(Path(args[0]).name)
-                    module._run_render_silent = lambda *a, **k: renders.append("render")
-                    module.send_message = lambda *a, **k: None
-                    job = {"job_id": f"job-{stage}", "topic": "테스트", "stage": stage}
-                    module.run_remaining_to_upload("C1", job)
-                finally:
-                    module.run_command = old_run_command
-                    module._run_render_silent = old_run_render_silent
-                    module.send_message = old_send_message
-                self.assertEqual(commands, expected_commands[stage])
-                self.assertEqual(len(renders), 1 if stage in render_stages else 0)
-                self.assertEqual(job["stage"], "done")
+    def _assert_auto_finish_resumes(self, module, expected_commands, render_stages):
+        for stage in module.WORKFLOW_STAGES:
+            commands, renders = [], []
+            old_run_command = module.run_command
+            old_run_render_silent = module._run_render_silent
+            old_send_message = module.send_message
+            try:
+                module.run_command = lambda args, *a, **k: commands.append(Path(args[0]).name)
+                module._run_render_silent = lambda *a, **k: renders.append("render")
+                module.send_message = lambda *a, **k: None
+                job = {"job_id": f"job-{stage}", "topic": "테스트", "stage": stage}
+                module.run_remaining_to_upload("C1", job)
+            finally:
+                module.run_command = old_run_command
+                module._run_render_silent = old_run_render_silent
+                module.send_message = old_send_message
+            self.assertEqual(commands, expected_commands[stage])
+            self.assertEqual(len(renders), 1 if stage in render_stages else 0)
+            self.assertEqual(job["stage"], "done")
 
     def test_cancel_request_is_available_while_busy(self):
         for module in (slack_bot, prod_slack_bot):

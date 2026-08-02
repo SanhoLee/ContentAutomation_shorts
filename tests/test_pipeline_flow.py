@@ -70,8 +70,14 @@ class GraphTests(unittest.TestCase):
     def test_stage_order_is_the_pipeline_order(self):
         self.assertEqual(
             pipeline_flow.STAGE_NAMES,
-            ("script", "tts", "caption", "broll", "render", "upload"),
+            ("script", "x_thread", "tts", "caption", "broll", "render", "upload", "x_post"),
         )
+
+    def test_x_thread_and_x_post_have_no_gates(self):
+        # Both are best-effort, downstream-only artifacts: they must never
+        # introduce a third approval stop, or block on their own failure.
+        self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_thread"].gates, ())
+        self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_post"].gates, ())
 
     def test_review_mode_honours_exactly_two_gates(self):
         gates = pipeline_flow.gates_for_mode(job_state.MODE_REVIEW)
@@ -134,7 +140,9 @@ class ReviewModeTests(PipelineFlowTestCase):
         result = self.advance(runner, job_state.MODE_REVIEW)
         self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
         self.assertEqual(result.gate, "final_confirm")
-        self.assertEqual(runner.stages, ["script", "tts", "caption", "broll", "render"])
+        # x_thread runs right after script (no gate of its own) so its draft
+        # already exists by the time final_confirm shows it alongside the video.
+        self.assertEqual(runner.stages, ["script", "x_thread", "tts", "caption", "broll", "render"])
 
     def test_upload_only_happens_after_the_final_confirmation(self):
         runner = FakeRunner()
@@ -146,7 +154,8 @@ class ReviewModeTests(PipelineFlowTestCase):
         pipeline_flow.approve(self.work_dir)
         result = self.advance(runner, job_state.MODE_REVIEW)
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
-        self.assertEqual(runner.stages[-1], "upload")
+        # x_post (no gate) runs immediately after upload in the same pass.
+        self.assertEqual(runner.stages[-2:], ["upload", "x_post"])
 
     def test_a_human_intervenes_exactly_twice(self):
         runner = FakeRunner()

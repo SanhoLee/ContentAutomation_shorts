@@ -47,11 +47,13 @@ BOT_STAGE_TO_FLOW = {
 
 STAGE_PROGRESS_LABELS = {
     "script": "스크립트 생성",
+    "x_thread": "X 스레드 초안 생성",
     "tts": "TTS 음성 생성",
     "caption": "자막 생성",
     "broll": "B-roll 수집",
     "render": "렌더링",
     "upload": "YouTube 비공개 업로드",
+    "x_post": "X 게시",
 }
 
 

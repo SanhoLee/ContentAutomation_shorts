@@ -52,6 +52,16 @@ STAGES = (
         gates=("script_review",),
     ),
     Stage(
+        # No gate of its own: the draft it writes is picked up and shown
+        # alongside the video at render's final_confirm gate, so review of
+        # both happens in that one decision instead of a third approval.
+        # The wrapper script always exits 0 -- a failure here (Claude
+        # outage, budget guard) must not block the YouTube pipeline, since
+        # this is a downstream-only artifact (see x_thread_adapter.py).
+        name="x_thread",
+        command=("sh/common/x_thread.sh",),
+    ),
+    Stage(
         name="tts",
         command=("sh/youtube/1_tts.sh",),
         gates=("tts_review",),
@@ -81,6 +91,16 @@ STAGES = (
     Stage(
         name="upload",
         command=("sh/youtube/3_upload.sh",),
+    ),
+    Stage(
+        # Runs immediately after the YouTube upload, no gate: the operator
+        # already approved this thread's content at final_confirm. Also
+        # always exits 0 -- a posting failure (e.g. billing, X API outage)
+        # must not mark the whole job failed when the video itself is
+        # already safely uploaded; the standalone /x_post command remains
+        # available to retry.
+        name="x_post",
+        command=("sh/common/x_post.sh",),
     ),
 )
 

@@ -112,7 +112,8 @@ class ReviewOrchestrationTests(unittest.TestCase):
         result = po.approve_review_gate(self.bot, 1, self.job)
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
         self.assertEqual(self.job["stage"], "done")
-        self.assertEqual(self.bot.scripts_run[-1], "3_upload.sh")
+        # x_post (no gate of its own) runs immediately after upload.
+        self.assertEqual(self.bot.scripts_run[-2:], ["3_upload.sh", "x_post.sh"])
 
     def test_the_human_sees_exactly_two_gates(self):
         po.run_review_pipeline(self.bot, 1, self.job)

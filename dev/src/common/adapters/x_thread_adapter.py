@@ -269,6 +269,16 @@ def render_text(payload: dict[str, Any]) -> str:
     return "\n\n".join(f"[{t['index']}/{total}] {t['text']}" for t in payload["tweets"])
 
 
+def load_x_thread(job_dir: str | Path) -> dict[str, Any] | None:
+    """Read an already-built x_thread.json without rebuilding it -- for a
+    caller (e.g. the final_confirm gate) that wants to show a draft built
+    earlier in the pipeline rather than pay for another humanize call."""
+    try:
+        return json.loads((Path(job_dir) / "x_thread.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def build_x_thread(
     job_dir: str | Path, *, number_prefix: bool = False, humanize: bool | None = None,
 ) -> dict[str, Any] | None:
@@ -277,8 +287,18 @@ def build_x_thread(
     Returns None if content_package.json doesn't exist yet (Stage 2 hasn't
     finished, or content_package build failed) -- the caller should tell the
     operator to run the script stage first rather than guessing at a thread.
+
+    Refuses to rebuild (returns the existing payload unchanged) once the
+    thread is marked posted: overwriting here would wipe tweet_ids/posted_at
+    and make x_poster think a live thread was never posted, risking a
+    duplicate. A real re-post after an intentional content change means
+    removing x_thread.json (or its "posted" flag) by hand first.
     """
     job_dir = Path(job_dir)
+    existing = load_x_thread(job_dir)
+    if existing and existing.get("posted"):
+        return existing
+
     package = content_package.load_content_package(job_dir)
     if package is None:
         return None
@@ -327,7 +347,13 @@ def main(argv: list[str] | None = None) -> int:
     if payload is None:
         print(f"content_package.json이 없습니다: {job_dir}. 먼저 스크립트 생성을 완료하세요.", file=sys.stderr)
         return 1
-    print(f"x_thread.json 작성 완료: {job_dir / 'x_thread.json'} ({len(payload['tweets'])}개 트윗)")
+    if payload.get("posted"):
+        print(
+            f"이미 게시된 스레드라 다시 만들지 않았습니다: {job_dir / 'x_thread.json'} "
+            f"({len(payload['tweets'])}개 트윗, posted_at={payload.get('posted_at')})"
+        )
+    else:
+        print(f"x_thread.json 작성 완료: {job_dir / 'x_thread.json'} ({len(payload['tweets'])}개 트윗)")
     if args.print_output:
         print()
         print(render_text(payload))

@@ -520,11 +520,13 @@ def send_rendered_video(chat_id, job_id):
 
 
 def send_final_confirm(chat_id, job_id):
-    """The second and last human gate: finished video and its metadata at once.
+    """The second and last human gate: finished video, its metadata, and the
+    X thread draft (already built by the x_thread stage) all at once.
 
     The six-gate flow reviewed the video and its title/description as two
-    separate approvals.  Here they are one decision -- approve and it uploads
-    -- so the reviewer sees exactly what goes out in a single message.
+    separate approvals.  Here they are one decision -- approve and it
+    uploads to YouTube, then immediately posts the X thread -- so the
+    reviewer sees exactly what goes out, on both platforms, in one pass.
     """
     video_path = output_file(job_id)
     if video_path.exists():
@@ -540,11 +542,22 @@ def send_final_confirm(chat_id, job_id):
         except json.JSONDecodeError:
             meta = {}
     text = (
-        "최종 확인 단계입니다. 승인하면 이대로 YouTube에 비공개 업로드합니다.\n\n"
+        "최종 확인 단계입니다. 승인하면 YouTube에 비공개 업로드하고, 이어서 X 스레드도 자동 게시합니다.\n\n"
         f"제목: {meta.get('title', '')}\n\n"
         f"해시태그: {meta.get('hashtags', '')}\n\n"
         f"설명:\n{meta.get('description', '')}"
     )
+
+    x_payload = x_thread_adapter.load_x_thread(work_dir(job_id))
+    if x_payload and x_payload.get("tweets"):
+        send_message(
+            chat_id,
+            f"X 스레드 초안 ({len(x_payload['tweets'])}개, 승인 시 업로드 직후 자동 게시):\n\n"
+            + x_thread_adapter.render_text(x_payload),
+        )
+    else:
+        send_message(chat_id, "X 스레드 초안을 만들지 못했습니다. 승인 후 /x_thread 로 직접 만들 수 있습니다.")
+
     send_approval_prompt(chat_id, "await_final_confirm", text[:MAX_TEXT_PREVIEW])
     if meta_path.exists():
         send_file_or_path(chat_id, meta_path, "video_meta.json")

@@ -37,6 +37,7 @@ from research_signals import (
     research_depth_metric,
 )
 from script_runtime import load_runtime_settings
+import story_types
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1488,7 +1489,63 @@ def _local_candidate_rows(
     return sorted(rows, key=lambda item: item["judgment"]["adjusted_score"], reverse=True)
 
 
-def _topic_plan(selected: Mapping[str, Any], plan_id: int, objective_id: int) -> dict[str, Any]:
+def _recent_format_types(conn: sqlite3.Connection, limit: int) -> list[str]:
+    """format_type of the most recently published videos, newest first.
+
+    Backfill source for the story_type history (design spec §4.3-2): videos
+    made before story_type existed still tell us which genre they were, via
+    the format mapping.
+    """
+    try:
+        rows = conn.execute("""
+            SELECT f.format_type FROM content_features f
+            JOIN videos v ON v.video_id=f.video_id
+            ORDER BY v.published_at DESC LIMIT ?
+        """, (limit,)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [str(row[0] or "") for row in rows]
+
+
+def resolve_story_type(
+    conn: sqlite3.Connection | None,
+    selected: Mapping[str, Any],
+    *,
+    suggested: Sequence[str] | None = None,
+    rng: random.Random | None = None,
+) -> str:
+    """The genre this plan gets, chosen so the feed tracks the configured mix.
+
+    Deterministic apportionment over the recent history, per CLAUDE.md — the
+    planner's Claude call proposes format/hook, but the genre that decides the
+    Stage 2 skeleton is picked in Python. A candidate's
+    `suggested_story_types` (set by the eligible queue) narrows the pool but
+    never overrides the quota.
+    """
+    config = story_types.load_config()
+    candidate = selected.get("candidate") or {}
+    if not config["enforce_on_auto"]:
+        # Mix enforcement disabled: keep whatever the planner's format implies.
+        planner = selected.get("planner") or {}
+        return (
+            story_types.story_type_for_format(planner.get("format_type"))
+            or config["default_story_type"]
+        )
+    format_rows = _recent_format_types(conn, config["lookback_jobs"]) if conn is not None else []
+    recent = story_types.recent_story_types(limit=config["lookback_jobs"], format_rows=format_rows)
+    return story_types.pick_story_type(
+        recent, config,
+        suggested=suggested or candidate.get("suggested_story_types"),
+        rng=rng,
+    )
+
+
+def _topic_plan(
+    selected: Mapping[str, Any],
+    plan_id: int,
+    objective_id: int,
+    story_type: str | None = None,
+) -> dict[str, Any]:
     """Build the planning contract for `0_script.py --topic-json`.
 
     Deliberately carries no copywriting fields (main_keyword, title,
@@ -1503,8 +1560,15 @@ def _topic_plan(selected: Mapping[str, Any], plan_id: int, objective_id: int) ->
     judgment = selected["judgment"]
     topic = str(planner.get("topic") or candidate["topic"])
     format_type = str(planner.get("format_type") or "오해반전형")
+    # story_type is the source of truth (spec §3): when the mix picked a genre
+    # the planner's format_type did not imply, the format is rewritten to match
+    # rather than the other way round.
+    resolved_story_type, format_type, format_warning = story_types.reconcile(story_type, format_type)
+    if format_warning:
+        print(f"기획 단계 {format_warning}", file=sys.stderr)
     return {
         "topic": topic,
+        "story_type": resolved_story_type,
         "objective": {
             "type": selected["objective_type"], "objective_id": objective_id,
             "plan_id": plan_id, "selection_mode": candidate.get("exploration_mode"),
@@ -1527,6 +1591,7 @@ def _topic_plan(selected: Mapping[str, Any], plan_id: int, objective_id: int) ->
         "content_design": {
             "topic_family": planner.get("topic_family") or candidate.get("topic_family"),
             "angle": planner.get("angle") or "생활 속 판단 기준",
+            "story_type": resolved_story_type,
             "format_type": format_type,
             "hook_type": str(planner.get("hook_type") or "반전형"),
             "emotion_curve": list(planner.get("emotion_curve") or ["공감", "이해", "안심", "행동"]),
@@ -1550,6 +1615,7 @@ def plan_objective_topic(
     critic_call: Callable[[str], Mapping[str, Any]] | None = None,
     interpreter_call: Callable[[str], Mapping[str, Any]] | None = None,
     allow_ai: bool = True,
+    suggested_story_types: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     settings = load_runtime_settings()
     config = build_objective_config(objective_type)
@@ -1877,6 +1943,12 @@ def plan_objective_topic(
             "claude_cost_usd": round(usage_total(db_path=database_file, job_id=job_id), 8),
         }
 
+        # Picked before the row is written so selected_candidate_json carries the
+        # genre too — that JSON is what the ops report and any later re-read of
+        # the plan look at (spec §4.4).
+        selected_story_type = resolve_story_type(
+            conn, selected, suggested=suggested_story_types, rng=planning_rng,
+        )
         conn.execute(
             """UPDATE planning_runs SET
                 planner_output_json=?, critic_output_json=?, selected_candidate_json=?,
@@ -1886,14 +1958,17 @@ def plan_objective_topic(
             (
                 _json({**planner_output, "error": planner_error}),
                 _json({**critic_output, "error": critic_error}),
-                _json({**selected["candidate"], **selected["planner"], "judgment": selected["judgment"]}),
+                _json({
+                    **selected["candidate"], **selected["planner"],
+                    "story_type": selected_story_type, "judgment": selected["judgment"],
+                }),
                 _json({"status": interpreter_status, "error": interpreter_error, **(interpretation or {})}),
                 selected["candidate"].get("exploration_mode") or "manual",
                 selected["judgment"]["base_score"], selected["judgment"]["adjusted_score"],
                 selected["judgment"]["confidence"], final_decision, plan_id,
             ),
         )
-        plan = _topic_plan(selected, plan_id, objective_id)
+        plan = _topic_plan(selected, plan_id, objective_id, story_type=selected_story_type)
         if final_decision in {"selected", "limited_test"}:
             research_category_id = ((selected.get("candidate") or {}).get("research_category") or {}).get("category_id")
             if research_category_id:

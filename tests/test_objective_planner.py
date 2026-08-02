@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "dev" / "src" / "common"))
 os.environ["EVIDENCE_PROBE_ENABLED"] = "0"
 
 import objective_planner
+import story_types
 
 
 class ObjectivePlannerTests(unittest.TestCase):
@@ -691,6 +692,92 @@ class ObjectivePlannerTests(unittest.TestCase):
             self.assertEqual(plan["strategy_source"], "deterministic_fallback")
             self.assertIn("content_design", plan)
             self.assertTrue(output.exists())
+
+
+class StoryTypeSelectionTests(unittest.TestCase):
+    """The genre the planner hands to Stage 1 (design spec §4.4)."""
+
+    def setUp(self):
+        # resolve_story_type reads the live work root for history; point it at
+        # an empty one so these assertions do not depend on the host's jobs.
+        self._work_root = tempfile.TemporaryDirectory()
+        self._previous = os.environ.get("WORK_DIR_BASE")
+        os.environ["WORK_DIR_BASE"] = self._work_root.name
+
+    def tearDown(self):
+        if self._previous is None:
+            os.environ.pop("WORK_DIR_BASE", None)
+        else:
+            os.environ["WORK_DIR_BASE"] = self._previous
+        self._work_root.cleanup()
+
+    def selected(self, format_type="오해반전형", **candidate):
+        return {
+            "candidate": {"candidate_id": "c1", "topic": "수면과 기억", **candidate},
+            "planner": {"topic": "수면과 기억", "format_type": format_type, "hook_type": "반전형"},
+            "judgment": {
+                "confidence": 0.5, "decision": "limited_test",
+                "base_score": 50.0, "adjusted_score": 50.0,
+            },
+            "objective_type": "subscriber_growth",
+        }
+
+    def test_topic_plan_always_records_a_story_type(self):
+        plan = objective_planner._topic_plan(self.selected(), plan_id=1, objective_id=1)
+        self.assertIn(plan["story_type"], story_types.STORY_TYPES)
+        self.assertEqual(plan["content_design"]["story_type"], plan["story_type"])
+
+    def test_story_type_rewrites_a_format_it_disagrees_with(self):
+        plan = objective_planner._topic_plan(
+            self.selected(format_type="사례추적형"), plan_id=1, objective_id=1,
+            story_type="habit_mechanism",
+        )
+        self.assertEqual(plan["story_type"], "habit_mechanism")
+        self.assertEqual(plan["content_design"]["format_type"], "행동챌린지형")
+
+    def test_a_consistent_format_is_left_alone(self):
+        plan = objective_planner._topic_plan(
+            self.selected(format_type="비교형"), plan_id=1, objective_id=1, story_type="myth_bust",
+        )
+        self.assertEqual(plan["content_design"]["format_type"], "비교형")
+
+    def test_empty_history_picks_the_highest_weighted_genre(self):
+        self.assertEqual(objective_planner.resolve_story_type(None, self.selected()), "principle_experience")
+
+    def test_a_candidate_hint_narrows_the_choice(self):
+        picked = objective_planner.resolve_story_type(
+            None, self.selected(suggested_story_types=["habit_mechanism", "case_journey"]),
+        )
+        self.assertEqual(picked, "habit_mechanism")
+
+    def test_disabling_enforcement_defers_to_the_planner_format(self):
+        with unittest.mock.patch.object(
+            story_types, "load_config",
+            return_value={**story_types.DEFAULT_CONFIG, "enforce_on_auto": False},
+        ):
+            picked = objective_planner.resolve_story_type(None, self.selected(format_type="사례추적형"))
+        self.assertEqual(picked, "case_journey")
+
+    def test_end_to_end_plan_carries_the_genre_to_stage_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = objective_planner.plan_objective_topic(
+                "subscriber_growth", seed_topic="수면", job_id="fixed_job",
+                output_path=Path(tmp) / "topic_plan.json",
+                db_path=Path(tmp) / "feedback.db", allow_ai=False,
+            )
+            self.assertIn(plan["story_type"], story_types.STORY_TYPES)
+            self.assertEqual(plan["content_design"]["story_type"], plan["story_type"])
+
+    def test_recent_history_moves_the_next_pick_off_the_over_produced_genre(self):
+        for index in range(6):
+            job_dir = Path(self._work_root.name) / f"job_{index}"
+            job_dir.mkdir()
+            (job_dir / "strategy.json").write_text(
+                '{"story_type": "principle_experience"}', encoding="utf-8",
+            )
+        self.assertNotEqual(
+            objective_planner.resolve_story_type(None, self.selected()), "principle_experience",
+        )
 
 
 if __name__ == "__main__":

@@ -11,8 +11,14 @@ from urllib.parse import quote
 
 import content_package
 import evidence_probe
+import story_types
 from claude_cost import assert_budget, record_usage, web_search_total
-from script_runtime import load_creative_dna, load_runtime_settings
+from script_runtime import (
+    load_creative_dna,
+    load_runtime_settings,
+    load_story_common_template,
+    load_story_template,
+)
 
 SETTINGS = load_runtime_settings()
 WORK_DIR = SETTINGS.work_dir
@@ -55,6 +61,7 @@ total_chars = SETTINGS.total_chars
 prompt_target_chars = SETTINGS.prompt_target_chars
 min_scenes_estimate = SETTINGS.min_scenes_estimate
 USE_CREATIVE_DNA = SETTINGS.use_creative_dna
+USE_STORY_TYPES = SETTINGS.use_story_types
 MAX_SCRIPT_LENGTH_RATIO = 1.40
 PROMPT_MIN_LENGTH_RATIO = 0.90
 PROMPT_MAX_LENGTH_RATIO = 1.15
@@ -75,6 +82,74 @@ def creative_dna_block():
     if not dna:
         return ""
     return f"[채널 크리에이티브 DNA — 항상 이 톤과 문체를 따르세요]\n{dna}\n\n"
+
+
+def strategy_story_type(strategy):
+    """story_type already decided for this job, or None.
+
+    Checked in the order it becomes authoritative: an explicit field on the
+    strategy, then the goal planner's content_design, then whatever the
+    format_type maps to. Returns None only when the job genuinely has no
+    genre yet, which is Stage 1's cue to choose one.
+    """
+    strategy = strategy or {}
+    design = strategy.get("content_design")
+    design = design if isinstance(design, dict) else {}
+    return (
+        story_types.normalize(strategy.get("story_type"))
+        or story_types.normalize(design.get("story_type"))
+        or story_types.story_type_for_format(strategy.get("format_type") or design.get("format_type"))
+    )
+
+
+def apply_story_type(strategy, fallback=None):
+    """Settle story_type/format_type on a strategy dict, in place.
+
+    story_type is the source of truth: a format_type that maps to a different
+    genre is rewritten to the mapped value and the rewrite is printed, per
+    design spec §3. content_design keeps a mirrored copy so Stage 2 and
+    downstream readers see the same pair wherever they look.
+    """
+    if not USE_STORY_TYPES:
+        return strategy
+    design = strategy.get("content_design")
+    design = design if isinstance(design, dict) else None
+    resolved = strategy_story_type(strategy) or story_types.normalize(fallback)
+    raw_format = strategy.get("format_type") or (design or {}).get("format_type")
+    story_type, format_type, warning = story_types.reconcile(resolved, raw_format)
+    if warning:
+        print(f"⚠️  {warning}")
+    strategy["story_type"] = story_type
+    strategy["format_type"] = format_type
+    if design is not None:
+        design["story_type"] = story_type
+        design["format_type"] = format_type
+    return strategy
+
+
+def story_type_directive(story_type, decided):
+    """The one instruction block that carries the genre into a Claude prompt.
+
+    `decided` distinguishes the two cases the spec calls out (§5.3): a genre
+    handed down by the planner must not be changed, while a job that arrives
+    without one lets Stage 1 choose and say why.
+    """
+    if not USE_STORY_TYPES:
+        return ""
+    if decided and story_type:
+        return (
+            f"\n\n[이번 영상의 story_type — 이미 확정됨, 변경 금지]\n"
+            f"{story_types.describe(story_type)}\n"
+            f"이 타입의 훅과 전개 의도를 전략에 반영하세요. story_type 필드에는 "
+            f"'{story_type}'을 그대로 출력하세요."
+        )
+    options = "\n".join(f"- {story_types.describe(item)}" for item in story_types.STORY_TYPES)
+    return (
+        "\n\n[이번 영상의 story_type — 아직 정해지지 않음]\n"
+        f"{options}\n"
+        "주제에 가장 맞는 하나를 골라 story_type 필드에 id를 그대로 출력하고, "
+        "고른 이유를 story_type_reason에 한 줄로 쓰세요."
+    )
 
 
 # ─────────────────────────────────────────────
@@ -855,7 +930,7 @@ def normalize_strategy_contract(strategy, topic):
     }
     strategy.setdefault("required_beats", default_beats)
     strategy.setdefault("title_promise", strategy.get("title") or strategy.get("core_message") or normalize_keyword(topic))
-    return strategy
+    return apply_story_type(strategy)
 
 
 # Stage 1 — 전략 수립 (Haiku)
@@ -868,7 +943,13 @@ def strategy_output_schema():
         "viewer_question", "answer_requirement", "evidence_status",
         "final_answer", "title_promise", "cta_next",
     )
+    if USE_STORY_TYPES:
+        # Required, not optional: a strategy without a genre would make Stage 2
+        # fall back to the generic skeleton silently (design spec §5.2).
+        string_fields = string_fields + ("story_type", "story_type_reason")
     properties = {field: {"type": "string"} for field in string_fields}
+    if USE_STORY_TYPES:
+        properties["story_type"] = {"type": "string", "enum": list(story_types.STORY_TYPES)}
     for field in ("sub_keywords", "thumbnail_text", "comparison_targets", "comparison_criteria", "required_beats"):
         properties[field] = {"type": "array", "items": {"type": "string"}}
     properties["evidence_brief"] = {
@@ -969,6 +1050,7 @@ def design_constraint_hint(content_design):
     if not isinstance(design, dict):
         return ""
     fields = (
+        ("story_type", "스토리 타입"),
         ("format_type", "콘텐츠 형식"),
         ("hook_type", "훅 유형"),
         ("topic_family", "주제 계열"),
@@ -1010,6 +1092,17 @@ def merge_planning_contract(strategy, pre_strategy):
     design = pre_strategy.get("content_design") or {}
     if isinstance(design, dict) and str(design.get("hook_type") or "").strip():
         merged["hook_type"] = design["hook_type"]
+    # The planner's genre outranks Stage 1's echo of it: the mix quota was spent
+    # on that choice when the candidate was selected, so a model that ignored
+    # the "변경 금지" instruction must not silently rewrite the distribution.
+    planned_story_type = story_types.normalize((design or {}).get("story_type"))
+    if USE_STORY_TYPES and planned_story_type:
+        if story_types.normalize(merged.get("story_type")) not in (None, planned_story_type):
+            print(
+                f"⚠️  Stage 1이 story_type을 '{merged.get('story_type')}'으로 바꿨지만 "
+                f"기획 단계 확정값 '{planned_story_type}'을 유지합니다."
+            )
+        merged["story_type"] = planned_story_type
     return merged
 
 
@@ -1040,8 +1133,18 @@ def plan_strategy(
     research_hint = f"\n\n[근거 자료 요약]\n{research_context}" if research_context else ""
     channel_hint = f"\n\n{youtube_guidance}" if youtube_guidance else ""
     design_hint = design_constraint_hint(content_design)
+    decided_story_type = strategy_story_type({"content_design": content_design or {}})
+    story_hint = story_type_directive(decided_story_type, bool(decided_story_type))
+    story_rule = ""
+    story_json_fields = ""
+    if USE_STORY_TYPES:
+        story_rule = (
+            "story_type   : " + " / ".join(story_types.STORY_TYPES) + " 중 하나 (위 지시 참고)\n"
+            "story_type_reason: story_type을 그렇게 정한 이유 한 줄 (이미 확정된 경우 '기획 단계 확정')\n"
+        )
+        story_json_fields = ',\n  "story_type": "",\n  "story_type_reason": ""'
 
-    prompt = f"""{creative_dna_block()}주제: {topic}{trend_hint}{research_hint}{channel_hint}{design_hint}
+    prompt = f"""{creative_dna_block()}주제: {topic}{trend_hint}{research_hint}{channel_hint}{design_hint}{story_hint}
 
 이 주제로 50대 이상을 위한 YouTube Shorts 콘텐츠 전략을 수립하세요.
 
@@ -1053,7 +1156,7 @@ main_keyword : YouTube에서 실제 검색할 핵심 키워드 (공백 포함 12
 sub_keywords : 연관 검색어 2~3개 (배열)
 search_intent: 이 키워드를 검색하는 사람의 상황/걱정 (20자 이내)
 hook_type    : 두려움형 / 반전형 / 숫자충격형 / 공감형 중 하나
-title        : 영상 본문과 훅을 자연스럽게 대표하는 한국어 제목 (15~28자 권장)
+{story_rule}title        : 영상 본문과 훅을 자연스럽게 대표하는 한국어 제목 (15~28자 권장)
                - 사용자가 입력한 주제문을 그대로 복사하거나 어순만 바꾸지 말 것
                - main_keyword는 가능하면 앞쪽에 넣되, 억지스럽거나 기계적인 제목 금지
                - 실제 영상에서 밝혀지는 긴장/반전/해결 약속이 제목에 드러나야 함
@@ -1109,7 +1212,7 @@ JSON만 출력. 설명·주석·마크다운 없이.
   "final_answer": "",
   "required_beats": [],
   "title_promise": "",
-  "cta_next": ""
+  "cta_next": ""{story_json_fields}
 }}"""
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -1174,6 +1277,8 @@ JSON만 출력. 설명·주석·마크다운 없이.
             print(f"  ✅ main_keyword    : {strategy.get('main_keyword')}")
             print(f"  ✅ title           : {strategy.get('title')}")
             print(f"  ✅ hook_type       : {strategy.get('hook_type')}")
+            if USE_STORY_TYPES:
+                print(f"  ✅ story_type      : {strategy.get('story_type')} / {strategy.get('format_type')}")
             print(f"  ✅ search_format   : {strategy.get('search_title_format')}")
             print(f"  ✅ core_message    : {strategy.get('core_message')}")
             print(f"  ✅ thumbnail_text  : {strategy.get('thumbnail_text')}")
@@ -1222,7 +1327,7 @@ def adaptive_research_policy(pubmed_status, strategy=None):
 
 def narrative_template(strategy):
     design = strategy.get("content_design") or {}
-    format_type = str(design.get("format_type") or "오해반전형")
+    format_type = str(design.get("format_type") or strategy.get("format_type") or "오해반전형")
     emotion_curve = design.get("emotion_curve") or ["공감", "이해", "안심", "행동"]
     templates = {
         "오해반전형": "익숙한 오해를 먼저 짚고, 근거로 반전한 뒤, 안전한 실천으로 마무리하세요.",
@@ -1238,6 +1343,66 @@ def narrative_template(strategy):
 
 # Stage 2 — 프롬프트 빌더
 # ─────────────────────────────────────────────
+
+def story_type_block(strategy):
+    """The Stage 2 skeleton: shared story rules + this genre's role sequence.
+
+    Returns "" when the feature is off or the template files are missing, in
+    which case Stage 2 falls back to the pre-story_type emotion-curve prompt
+    below. Where the two overlap the story_type sequence wins (spec §6.3), so
+    this block is placed after the emotion curve in the assembled prompt.
+    """
+    if not USE_STORY_TYPES:
+        return ""
+    story_type = strategy_story_type(strategy)
+    if not story_type:
+        return ""
+    template = load_story_template(story_type)
+    if not template:
+        return ""
+    sequence = " → ".join(story_types.role_sequence(story_type))
+    parts = [
+        "\n[스토리 타입 — 이 영상의 뼈대. 아래 감정 곡선보다 이 순서를 우선하세요]",
+        f"story_type: {story_types.describe(story_type)}",
+        f"role 시퀀스: {sequence}",
+    ]
+    common = load_story_common_template()
+    if common:
+        parts.append(common)
+    parts.append(template)
+    return "\n\n".join(parts) + "\n"
+
+
+def scene_output_spec():
+    """The `scenes[]` shape asked of Stage 2, and the rules for filling it.
+
+    With story types on, every scene additionally carries `role` (from the
+    genre's sequence) and `visual` (what the screen must actually show). The
+    English `visual_query` stays required either way — Pexels is searched in
+    English, so the Korean `visual.brief` cannot replace it.
+    """
+    # Braces are single here: these strings are interpolated *into* the prompt
+    # f-string as values, so they are never re-parsed for placeholders.
+    if not USE_STORY_TYPES:
+        return "", '{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}'
+    rules = (
+        "\n7. scenes[].role: 위 role 시퀀스의 이름을 그대로 쓰세요. hook으로 시작하고 cta로 끝나야 합니다.\n"
+        "   - 분량 때문에 role을 건너뛰지 마세요. 나눠야 하면 같은 role 이름을 가진 Scene 두 개로 쪼개세요.\n"
+        "8. scenes[].visual: 이 Scene에서 화면에 무엇이 보여야 하는지입니다. 분위기용 배경이 아니라 "
+        "말하고 있는 대상 자체가 보여야 합니다.\n"
+        f"   - type: {' / '.join(story_types.VISUAL_TYPES)} 중 하나\n"
+        "   - brief: 한국어 한 줄 연출 지시. (예: \"식탁에 앉아 약통을 열다 멈추는 손\")\n"
+        "   - must_show: 화면에 반드시 보여야 할 요소 1~3개(한국어 배열)\n"
+        "   - 모든 Scene에 brief를 채우세요. 비워 두면 그 Scene은 실패로 처리됩니다.\n"
+        "   - 같은 brief를 두 Scene 이상에서 반복하지 마세요.\n"
+    )
+    shape = (
+        '{"text": "한국어 장면 텍스트", "role": "hook", '
+        '"visual": {"type": "paradox", "brief": "한 줄 연출 지시", "must_show": ["요소1"]}, '
+        '"visual_query": "english search keywords"}'
+    )
+    return rules, shape
+
 
 def pace_instruction():
     if ATEMPO >= 1.2:
@@ -1327,6 +1492,9 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", youtu
             "※ 채널 성과는 구성·표현의 방향에만 사용하고 의학적 사실은 연구 근거를 우선하세요.\n"
         )
 
+    story_block = story_type_block(strategy)
+    scene_rules, scene_shape = scene_output_spec()
+
     prompt_min_chars = max(1, int(total_chars * PROMPT_MIN_LENGTH_RATIO))
     prompt_max_chars = max(prompt_min_chars, int(total_chars * PROMPT_MAX_LENGTH_RATIO))
     hard_max_chars = max(prompt_max_chars, int(total_chars * MAX_SCRIPT_LENGTH_RATIO))
@@ -1356,7 +1524,7 @@ main_keyword       : {main_keyword}
 
 [형식별 서사 지침]
 {narrative_instruction}
-
+{story_block}
 [콘텐츠 계약]
 {contract_block}
 {comparison_instruction}{source_mix_instruction}===
@@ -1423,7 +1591,7 @@ main_keyword       : {main_keyword}
      끊거나 조사를 잘라내지 마세요. 렌더러가 길이에 맞춰 글자 크기를 자동으로 줄이고 필요하면
      줄바꿈하므로, 짧게 만드는 것보다 문맥이 완결되는 것이 훨씬 중요합니다.
    - 사용자가 준 단어를 그대로 복사하지 말고, 이 영상 고유의 훅으로 재창작하세요.
-
+{scene_rules}
 반드시 아래 JSON 객체 포맷으로만 출력하세요. 마크다운이나 추가 설명은 절대 넣지 마세요.
 
 {{
@@ -1440,7 +1608,7 @@ main_keyword       : {main_keyword}
   "promise_fulfilled": true,
   "evidence_limit": "근거가 부족하거나 비교가 불가한 지점",
   "scenes": [
-    {{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}}
+    {scene_shape}
   ]
 }}"""
 
@@ -1635,6 +1803,95 @@ def unsupported_winner_claim(result, strategy):
     return decisive and not cautious
 
 
+def _fallback_visual_brief(scene):
+    """A directing line derived from what the scene already says.
+
+    Used only when Stage 2 omitted `visual.brief`. Backfilling deterministically
+    beats the two alternatives the spec offers: a second Claude call would
+    double the most expensive stage's cost, and failing the job would throw
+    away a finished script over a downstream-only field. The omission is
+    counted in script_quality.json so a model that keeps skipping it is
+    visible rather than silently patched over.
+    """
+    text = re.sub(r"\s+", " ", str(scene.get("text") or "")).strip()
+    if text:
+        return clip_at_word_boundary(text, 40)
+    return clip_at_word_boundary(str(scene.get("visual_query") or "") or "장면 화면", 40)
+
+
+def normalize_story_scenes(result, strategy):
+    """Return a copy of `result` with `role` and `visual` filled in on every scene.
+
+    Stage 2 is asked for both, but a model that drops them must not produce a
+    scenes.json with a different shape from every other job's — 2_caption.py
+    carries these keys straight through to scenes_timed.json and B-roll reads
+    them. Roles come from the genre's sequence, stretched over however many
+    scenes were actually written (the middle roles repeat when there are more
+    scenes than roles, which is exactly what the template asks for).
+    """
+    if not USE_STORY_TYPES:
+        return result
+    result = dict(result or {})
+    scenes = result.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        return result
+
+    story_type = strategy_story_type(strategy) or story_types.load_config()["default_story_type"]
+    sequence = story_types.role_sequence(story_type)
+    normalized = []
+    missing_brief = 0
+    for index, raw in enumerate(scenes):
+        scene = dict(raw) if isinstance(raw, dict) else {"text": str(raw)}
+        role = str(scene.get("role") or "").strip()
+        if role not in sequence:
+            role = _positional_role(index, len(scenes), sequence)
+        scene["role"] = role
+
+        visual = scene.get("visual")
+        visual = dict(visual) if isinstance(visual, dict) else {}
+        visual_type = str(visual.get("type") or "").strip()
+        if visual_type not in story_types.VISUAL_TYPES:
+            visual_type = story_types.default_visual_type(role)
+        brief = re.sub(r"\s+", " ", str(visual.get("brief") or "")).strip()
+        if not brief:
+            missing_brief += 1
+            brief = _fallback_visual_brief(scene)
+        must_show = visual.get("must_show")
+        if not isinstance(must_show, list):
+            must_show = [must_show] if must_show else []
+        must_show = [str(item).strip() for item in must_show if str(item or "").strip()]
+        scene["visual"] = {"type": visual_type, "brief": brief, "must_show": must_show[:3]}
+        # 2_caption.py and 3_broll.py index scenes["visual_query"] directly, so a
+        # scene that arrived without one would KeyError mid-pipeline. The Korean
+        # brief cannot stand in — Pexels is searched in English.
+        if not str(scene.get("visual_query") or "").strip():
+            scene["visual_query"] = story_types.FALLBACK_VISUAL_QUERY
+        normalized.append(scene)
+
+    result["scenes"] = normalized
+    result["story_type"] = story_type
+    if missing_brief:
+        print(f"⚠️  visual.brief가 없는 장면 {missing_brief}개를 대본 문장으로 채웠습니다.")
+    result["_visual_brief_backfilled"] = missing_brief
+    return result
+
+
+def _positional_role(index, total, sequence):
+    """Map scene position onto the genre's role sequence.
+
+    hook and cta are pinned to the first and last scenes; the middle roles are
+    spread evenly over what remains, so a 10-scene script over a 7-role
+    sequence repeats middle roles rather than dropping any.
+    """
+    if index == 0 or total <= 1:
+        return sequence[0]
+    if index == total - 1:
+        return sequence[-1]
+    middle = sequence[1:-1] or sequence
+    span = max(1, total - 2)
+    return middle[min(len(middle) - 1, (index - 1) * len(middle) // span)]
+
+
 def quality_issue(code, message, level="error"):
     return {"code": code, "level": level, "message": message}
 
@@ -1659,6 +1916,29 @@ def validate_script(result, strategy):
         warnings.append(quality_issue("hooky_title_hashtag", "제목에 해시태그가 들어 있습니다.", "warning"))
     if result.get("promise_fulfilled") is not True:
         warnings.append(quality_issue("promise_not_fulfilled", "제목과 질문의 약속 충족 여부를 확인해 주세요.", "warning"))
+    if USE_STORY_TYPES and scenes:
+        backfilled = int(result.get("_visual_brief_backfilled") or 0)
+        if backfilled:
+            warnings.append(quality_issue(
+                "visual_brief_backfilled",
+                f"{backfilled}개 장면의 visual.brief가 비어 있어 대본 문장으로 채웠습니다.",
+                "warning",
+            ))
+        roles = [str(scene.get("role") or "") for scene in scenes if isinstance(scene, dict)]
+        expected = story_types.role_sequence(strategy_story_type(strategy))
+        off_sequence = [role for role in roles if role not in expected]
+        if off_sequence:
+            warnings.append(quality_issue(
+                "role_off_sequence",
+                "story_type의 role 시퀀스에 없는 role이 있습니다: " + ", ".join(sorted(set(off_sequence))),
+                "warning",
+            ))
+        if roles and (roles[0] != expected[0] or roles[-1] != expected[-1]):
+            warnings.append(quality_issue(
+                "role_bookends_missing",
+                f"첫 장면은 {expected[0]}, 마지막 장면은 {expected[-1]}이어야 합니다.",
+                "warning",
+            ))
     if scenes and char_count < total_chars * 0.55:
         warnings.append(quality_issue("under_target_length", f"대본이 목표보다 많이 짧습니다: {char_count}자", "warning"))
     if char_count > total_chars * MAX_SCRIPT_LENGTH_RATIO:
@@ -1689,6 +1969,11 @@ def validate_script(result, strategy):
             "intent_type": strategy.get("intent_type"),
             "comparison_targets": strategy.get("comparison_targets", []),
             "final_answer_present": bool(final_answer),
+            "story_type": strategy_story_type(strategy) if USE_STORY_TYPES else None,
+            "scenes_with_visual_brief": sum(
+                1 for scene in scenes
+                if isinstance(scene, dict) and str((scene.get("visual") or {}).get("brief") or "").strip()
+            ),
         },
     }
 
@@ -1717,6 +2002,9 @@ def enforce_quality_without_revision(result, strategy):
 
 def write_outputs(result, strategy, trend_context=None):
     scenes = trim_scenes(result["scenes"])
+    # Bookkeeping from normalize_story_scenes; belongs in script_quality.json,
+    # not in the scene file every downstream stage reads.
+    result = {key: value for key, value in result.items() if key != "_visual_brief_backfilled"}
     full_text = "\n\n".join(s["text"] for s in scenes)
     thumbnail_text = result.get("thumbnail_text", strategy.get("thumbnail_text", []))
     if isinstance(thumbnail_text, str):
@@ -1753,6 +2041,9 @@ def write_outputs(result, strategy, trend_context=None):
         "evidence_limit":      result.get("evidence_limit", ""),
         "source_mix":          strategy.get("source_mix", {}),
     }
+    if USE_STORY_TYPES:
+        meta["story_type"] = strategy_story_type(strategy)
+        meta["format_type"] = strategy.get("format_type", "")
     if strategy.get("objective"):
         meta["objective"] = strategy["objective"]
     if strategy.get("content_design"):
@@ -1781,9 +2072,12 @@ def write_outputs(result, strategy, trend_context=None):
     print(f"핵심 메시지: {meta['core_message']}")
     print(f"프레임 헤더: {frame_header['title']} / {frame_header['subtitle']}")
     print(f"해시태그  : {meta['hashtags']}")
+    if USE_STORY_TYPES:
+        print(f"스토리 타입: {meta.get('story_type')} / {meta.get('format_type')}")
     print("\n=== 장면별 영상 검색어 ===")
     for i, s in enumerate(scenes):
-        print(f"{i}: {s['visual_query']}")
+        role = f"[{s['role']}] " if s.get("role") else ""
+        print(f"{i}: {role}{s['visual_query']}")
 
 
 # ─────────────────────────────────────────────
@@ -1904,6 +2198,7 @@ def main():
     response = call_claude(prompt)
     result   = parse_claude_json(response)
     result   = revise_overlong_script(result, strategy)
+    result   = normalize_story_scenes(result, strategy)
     result   = enforce_quality_without_revision(result, strategy)
     write_outputs(result, strategy, trend_context)
 

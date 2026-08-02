@@ -1,0 +1,18 @@
+{
+  "story_type_mix": {
+    "principle_experience": 0.35,
+    "myth_bust": 0.30,
+    "habit_mechanism": 0.25,
+    "case_journey": 0.10
+  },
+  "lookback_jobs": 20,
+  "enforce_on_auto": true,
+  "enforce_on_manual": false,
+  "default_story_type": "principle_experience",
+  "priority_on_tie": [
+    "principle_experience",
+    "myth_bust",
+    "habit_mechanism",
+    "case_journey"
+  ]
+}

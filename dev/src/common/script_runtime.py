@@ -34,6 +34,23 @@ def load_creative_dna(path=None):
     return content
 
 
+def load_story_template(story_type, directory=None):
+    """Stage 2 skeleton for one story_type, or "" when the file is missing.
+
+    Thin re-export of story_types.load_template so 0_script.py keeps loading
+    every prompt fragment through this module (see the load_creative_dna note
+    above and KNOWN_ISSUES.md on scattered runtime lookups).
+    """
+    import story_types
+    return story_types.load_template(story_type, directory)
+
+
+def load_story_common_template(directory=None):
+    """Story rules shared by all four story_types (`_common.md`)."""
+    import story_types
+    return story_types.load_common_template(directory)
+
+
 SPEECH_PACE_PROFILES = {
     "slow": {"atempo": 0.95, "script_density": 4.0},
     "normal": {"atempo": 1.10, "script_density": 4.66},
@@ -196,6 +213,7 @@ class ScriptRuntimeSettings:
     prompt_target_chars: int
     min_scenes_estimate: int
     use_creative_dna: bool
+    use_story_types: bool
 
 
 def load_runtime_settings():
@@ -278,4 +296,7 @@ def load_runtime_settings():
         prompt_target_chars=prompt_target_chars,
         min_scenes_estimate=min_scenes_estimate,
         use_creative_dna=env_bool("USE_CREATIVE_DNA", True),
+        # Off restores the pre-story_type Stage 1/Stage 2 prompts exactly, so a
+        # bad rollout can be reverted with one env var instead of a deploy.
+        use_story_types=env_bool("USE_STORY_TYPES", True),
     )

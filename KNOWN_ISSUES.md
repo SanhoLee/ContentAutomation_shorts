@@ -152,6 +152,24 @@ Fix: `over_target_length` moved from `errors` to `warnings` in `validate_script(
 
 Likely root cause of the original expiry: the Google Cloud OAuth consent screen is in "Testing" publishing status, which caps refresh tokens at 7 days — this must be verified/fixed in Google Cloud Console (Publish App → In production); the code cannot detect or change this. There is still no proactive/scheduled sync health-check (no cron/systemd timer) — sync only runs reactively when a plan/content command triggers it; this is a deliberate scope decision for now (see item 15's "scheduled loop" note).
 
+### 18. story_type mix resets if `data/work/` is pruned (2026-08-02)
+
+Status: accepted, monitor.
+
+`story_types.recent_story_types()` reconstructs the recent-genre history by reading `story_type` out of `data/work/*/strategy.json`. That directory is gitignored working state, so anything that clears it (disk cleanup on Lightsail, a fresh container, moving to a new host) also erases the history the mix apportionment reasons over. The picker then cold-starts and hands out `principle_experience` first, and the observed distribution takes ~10 jobs to re-converge on the configured 35/30/25/10.
+
+Partially mitigated: the feedback DB backfill (`content_features.format_type` → story_type, via `objective_planner._recent_format_types`) covers *published* videos even when the work directory is gone, so a channel with sync history degrades much less than a brand-new one. It does not cover jobs that were made but never published.
+
+Not fixed on purpose: persisting story_type history to its own table would add a second source of truth for something the job artifacts already record, and the failure mode is a temporarily skewed genre mix — not a broken job. **Monitor**: if work-directory pruning becomes routine, check `story_type` distribution over the last 20 jobs before adding a dedicated store.
+
+### 19. Script-stage guard deliberately not wired for story_type checks (2026-08-02)
+
+Status: by design.
+
+The story-types design spec offers "Stage 2 재시도 1회 또는 guard 실패" when a scene arrives without `visual.brief`. Neither was taken. A `stage_guard` check on the `script` stage feeds `pipeline_flow.run_stage`, which retries the stage once on guard failure — that retry re-runs Stage 1 + Stage 2 in full, doubling the most expensive Claude spend in the pipeline, which is exactly what this repo's cost convention forbids (see items 14/17 and `CLAUDE.md`).
+
+Instead `normalize_story_scenes()` backfills a missing `brief` deterministically from the scene's own text, and `validate_script()` records `visual_brief_backfilled` / `role_off_sequence` / `role_bookends_missing` as warnings in `script_quality.json` at zero cost. **Monitor**: if `visual_brief_backfilled` shows up in ≥30% of jobs, the Stage 2 prompt is not landing the field and the prompt should be tightened — not the guard added.
+
 ## Bugs To Watch For In Next Testing Session
 
 - Duplicate welcome/bye messages during rapid systemd restart.

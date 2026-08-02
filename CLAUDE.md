@@ -19,6 +19,7 @@ This repo already documents itself in depth; read the relevant file rather than 
 - `README.md` — full pipeline stage-by-stage walkthrough, module details, environment variables, content strategy.
 - `docs/usage/` — task-oriented guides: `basic-usage.md`, `with-job-id.md`, `environment.md`, `telegram-bot.md`, `slack-bot.md`, `youtube-feedback.md`.
 - `docs/design/objective-driven-content-planner.md` — operating contract for the goal-driven auto-planning engine (the North star's topic-selection piece).
+- `docs/design/story-types.md` — the four narrative genres, how the mix is enforced on the auto path, and what `USE_STORY_TYPES=0` rolls back.
 - `PROJECT_CONTEXT.md` — current stabilization state, recent PRs, key files to read first in a new session.
 - `HANDOFF.md` — prior cloud-agent session handoff notes, PR workflow, validation checklist.
 - `KNOWN_ISSUES.md` — active risk register; check before touching Telegram polling, caption timing, web_search cost, or Stage 0 runtime settings.
@@ -38,5 +39,5 @@ This repo already documents itself in depth; read the relevant file rather than 
 - Production stability beats theoretical cleanliness: automated flows should keep moving unless a step genuinely cannot continue. Prefer bounded, non-retrying failure handling over retries that could double API cost (see `KNOWN_ISSUES.md`).
 - `dev` is the default target for new work; only touch `prod` when explicitly asked or when a change is clearly production-ready.
 - Don't add new scattered `os.environ` parsing in `0_script.py` — centralize runtime knobs in `script_runtime.py` (this has regressed before, see `KNOWN_ISSUES.md`).
-- In the goal-driven planner, keep scoring/selection deterministic in Python — Claude proposes and critiques candidates but never makes the final numeric decision (see `docs/design/objective-driven-content-planner.md`).
+- In the goal-driven planner, keep scoring/selection deterministic in Python — Claude proposes and critiques candidates but never makes the final numeric decision (see `docs/design/objective-driven-content-planner.md`). The same rule covers `story_type`: the genre is apportioned in `story_types.pick_story_type()`, and Claude only writes inside the genre it is handed.
 - Never commit `secrets.sh`, `.env`, `client_secret*.json`, or `youtube_feedback_token*.json` — these are gitignored and expected per-environment on the Lightsail host.

@@ -24,6 +24,37 @@ CROSS_JOB_REUSE_PENALTY = float(os.environ.get("BROLL_CROSS_JOB_PENALTY", "55"))
 SLOW_MOTION_PENALTY = float(os.environ.get("BROLL_SLOW_MOTION_PENALTY", "80"))
 
 
+def scene_queries(scene):
+    """Stock-search queries for one scene, best first.
+
+    Priority follows the story_type spec §6.4 — visual.brief, then must_show,
+    then the scene's own visual_query — but only over candidates that actually
+    contain latin letters. Pexels is indexed in English, and a Korean query
+    returns nothing at all, so a Korean `brief` is a directing note for a human
+    or a later AI-video step rather than a search term. That keeps the ordering
+    honest without silently turning every scene into a zero-result search.
+    """
+    scene = scene or {}
+    visual = scene.get("visual") if isinstance(scene.get("visual"), dict) else {}
+    must_show = visual.get("must_show")
+    must_show = must_show if isinstance(must_show, list) else []
+    candidates = [
+        visual.get("brief"),
+        " ".join(str(item) for item in must_show if item),
+        scene.get("visual_query"),
+    ]
+    queries = []
+    for candidate in candidates:
+        text = " ".join(str(candidate or "").split())
+        if text and _is_searchable(text) and text not in queries:
+            queries.append(text)
+    return queries
+
+
+def _is_searchable(text):
+    return any("a" <= character.lower() <= "z" for character in text)
+
+
 def is_slow_motion(video):
     """Pexels describes each clip in its page URL slug; tags come back empty."""
     haystack = str(video.get("url") or "").lower()

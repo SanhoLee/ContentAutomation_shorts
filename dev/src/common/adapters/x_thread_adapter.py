@@ -14,13 +14,18 @@ rule-based text and a rule-based title (production continuity over a
 downstream-only artifact). Posting is out of scope here — this only writes
 a draft an operator copies by hand (or x_poster.py posts).
 
-Source order is hook, then each key_point, then cta.action (+
-next_topic_tease as a question). These sentences are packed greedily into
-as few tweets as fit under TWEET_MAX_CHARS (139 -- X weighs each CJK
-character as 2 toward its 280-weighted-character cap, so pure-Korean text
-tops out around 140, not the ~270 an ASCII tweet gets) rather than one
-sentence per tweet, since most individual sentences here run far shorter
-than the limit.
+Source order is hook, then each key_point. These sentences are packed
+greedily into as few tweets as fit under TWEET_MAX_CHARS (139 -- X weighs
+each CJK character as 2 toward its 280-weighted-character cap, so
+pure-Korean text tops out around 140, not the ~270 an ASCII tweet gets)
+rather than one sentence per tweet, since most individual sentences here
+run far shorter than the limit.
+
+The script's CTA scene and its next-episode tease are deliberately NOT
+posted. They are a Shorts outro ("오늘부터 시작해보세요. 다음 편에서는...")
+and asking a reader who just finished the thread to go do one more thing
+reads as unnatural on X and scatters the attention the thread just built.
+The last tweet is a recap instead -- see _render_summary_tweet.
 
 The lead tweet carries the X title on its own line above the first packed
 group; the title does not have to match the Shorts title, it only has to
@@ -61,6 +66,7 @@ import claude_cost
 import content_package
 import topic_score
 import x_photo_card
+from objective_planner import job_rng
 
 # X weighs every CJK character as 2 toward its 280-weighted-character cap,
 # so a pure-Korean post tops out around 280/2=140 chars, not the ~270-280
@@ -73,6 +79,16 @@ X_TITLE_MAX_CHARS = 60
 TITLE_SEPARATOR = "\n\n"
 MAX_SOURCE_LINKS = 3
 SOURCES_LABEL = "출처"
+
+# The closing recap tweet. There is deliberately no fixed label constant
+# here: a hardcoded "핵심만 정리하면" on every single thread is its own kind
+# of robot tell. The lead line is written per-episode by Claude, and falls
+# back to a curated pool keyed by story_type (see _pick_summary_lead).
+SUMMARY_PHRASES_PATH = Path(__file__).resolve().parent / "x_thread_phrases.json"
+SUMMARY_MAX_LINES = 3
+SUMMARY_LINE_MAX_CHARS = 40
+SUMMARY_LEAD_MAX_CHARS = 24
+SUMMARY_BULLET = "- "
 
 X_THREAD_HUMANIZE_MODEL = os.environ.get("X_THREAD_HUMANIZE_MODEL", "claude-haiku-4-5-20251001")
 X_THREAD_HUMANIZE_TIMEOUT_SEC = int(os.environ.get("X_THREAD_HUMANIZE_TIMEOUT_SEC", "20"))
@@ -103,6 +119,15 @@ HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이
 - {title_max}자 이내. 본문 첫 문장을 그대로 베끼지 않는다.
 - 존댓말 기조를 지키고, 낚시성 과장이나 의학적 단정은 쓰지 않는다.
 
+마지막 요약(스레드를 닫는 트윗):
+- summary: 위 문장들의 핵심만 1~3줄로 압축한다. 줄당 {line_max}자 이내.
+- 본문에 없는 새로운 정보나 숫자를 만들어내지 않는다. 있는 내용만 줄인다.
+- summary_lead: 그 요약을 여는 짧은 한 줄. {lead_max}자 이내.
+- summary_lead는 이 편의 내용과 결에 맞게 매번 새로 쓴다. "핵심만 정리하면" 같은
+  상투구를 기계적으로 반복하지 않는다.
+- 요약과 머리말 모두 행동 유도("~해보세요")나 다음 편 예고를 넣지 않는다.
+  이 트윗은 CTA가 아니라 읽은 내용을 한 번 더 정리해 주는 자리다.
+
 공통 금지:
 - 해시태그(#), URL/링크, 이모지는 절대 넣지 않는다.
 - 각 문장의 핵심 정보와 순서, 문장 개수를 그대로 유지한다. 문장을 합치거나 나누지 않는다.
@@ -110,7 +135,8 @@ HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이
 문장 목록:
 {numbered}
 
-출력은 순수 JSON 객체만. 형식: {{"title": "제목", "sentences": ["문장1", "문장2"]}}
+출력은 순수 JSON 객체만. 형식:
+{{"title": "제목", "sentences": ["문장1", "문장2"], "summary_lead": "머리말", "summary": ["요약1", "요약2"]}}
 sentences 배열의 길이는 반드시 {count}개여야 한다. 다른 설명은 절대 붙이지 않는다."""
 
 
@@ -145,9 +171,10 @@ def _strip_banned_markup(text: str) -> str:
 
 def _humanize_with_claude(raw_texts: list[str], *, topic: str, title: str) -> dict[str, Any] | None:
     """One bounded, non-retrying rewrite pass, returning
-    {"title": str, "texts": list[str]}. Returns None on any failure so the
-    caller can fall back to the original rule-based text rather than
-    blocking a downstream-only artifact on a Claude outage."""
+    {"title": str, "texts": list[str], "summary_lead": str, "summary": list}.
+    Returns None on any failure so the caller can fall back to the original
+    rule-based text rather than blocking a downstream-only artifact on a
+    Claude outage."""
     if not raw_texts:
         return None
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -165,6 +192,8 @@ def _humanize_with_claude(raw_texts: list[str], *, topic: str, title: str) -> di
         topic=topic or "뇌 건강",
         title=title or "(없음)",
         title_max=X_TITLE_MAX_CHARS,
+        line_max=SUMMARY_LINE_MAX_CHARS,
+        lead_max=SUMMARY_LEAD_MAX_CHARS,
         numbered=numbered,
         count=len(raw_texts),
     )
@@ -206,11 +235,16 @@ def _humanize_with_claude(raw_texts: list[str], *, topic: str, title: str) -> di
     sentences = parsed.get("sentences")
     if not isinstance(sentences, list) or len(sentences) != len(raw_texts):
         return None
+    summary = parsed.get("summary")
     return {
-        # A missing/empty title is survivable on its own -- the caller falls
-        # back to the rule-based title and still adopts the rewritten body.
+        # A missing/empty title, lead or summary is survivable on its own --
+        # each has a rule-based fallback, and the caller still adopts the
+        # rewritten body. Only a sentence-count mismatch (above) is fatal,
+        # because that means the body no longer maps onto the source.
         "title": str(parsed.get("title") or "").strip(),
         "texts": [str(t).strip() for t in sentences],
+        "summary_lead": str(parsed.get("summary_lead") or "").strip(),
+        "summary": [str(line).strip() for line in summary] if isinstance(summary, list) else [],
     }
 
 
@@ -370,9 +404,94 @@ def _fallback_title(package: dict[str, Any], ban_keywords: list[str]) -> str:
     return ""
 
 
+_summary_phrases_cache: dict[str, Any] | None = None
+
+
+def _load_summary_phrases() -> dict[str, Any]:
+    """Curated lead-in pool, read once and cached.
+
+    A missing or corrupt file yields {} rather than raising: the thread
+    then closes with the recap lines and no lead-in, which is a smaller
+    loss than failing a downstream-only artifact over a data file.
+    """
+    global _summary_phrases_cache
+    if _summary_phrases_cache is None:
+        try:
+            loaded = json.loads(SUMMARY_PHRASES_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = {}
+        _summary_phrases_cache = loaded if isinstance(loaded, dict) else {}
+    return _summary_phrases_cache
+
+
+def _pick_summary_lead(package: dict[str, Any], job_id: str, ban_keywords: list[str]) -> str:
+    """Rule-based lead-in for the recap tweet, varied per job.
+
+    Deliberately not one hardcoded phrase: the same opener on every thread
+    reads as canned. The pool is bucketed by story_type because a myth-bust
+    and a habit piece close differently, and the pick is seeded from job_id
+    via objective_planner.job_rng -- so consecutive episodes differ, but a
+    given job always rebuilds the identical thread (re-running a job must
+    not silently reword what a human already reviewed).
+    """
+    phrases = _load_summary_phrases()
+    story_type = str(package.get("story_type") or "").strip()
+    buckets = phrases.get("by_story_type") or {}
+    pool = buckets.get(story_type) or phrases.get("default") or []
+    pool = [str(phrase).strip() for phrase in pool if str(phrase).strip()]
+    if not pool:
+        return ""
+    lead = _apply_safety_filter(_strip_banned_markup(job_rng(job_id).choice(pool)), ban_keywords)
+    return _truncate_at_boundary(lead, SUMMARY_LEAD_MAX_CHARS) if lead else ""
+
+
+def _summary_lines(
+    package: dict[str, Any], ban_keywords: list[str], claude_summary: list[str] | None,
+) -> list[str]:
+    """The recap body: Claude's condensed lines, else the core message.
+
+    core_message is Stage 1's "딱 한 문장" (the single sentence a viewer
+    should leave with, capped at 30 chars), so it is exactly the right
+    fallback for a recap that has to stand alone in one line.
+    """
+    raw = list(claude_summary or []) or [package.get("core_message")]
+    lines: list[str] = []
+    for value in raw[:SUMMARY_MAX_LINES]:
+        text = _apply_safety_filter(_strip_banned_markup(str(value or "").strip()), ban_keywords)
+        if text:
+            lines.append(_truncate_at_boundary(text, SUMMARY_LINE_MAX_CHARS))
+    return lines
+
+
+def _render_summary_tweet(lead: str, lines: list[str], *, prefix_reserve: int) -> str:
+    """Assemble the recap tweet, dropping content until it fits.
+
+    Bullets only appear from two lines up -- a single recap line reads as a
+    sentence, not a list of one. Overflow drops whole trailing lines before
+    it resorts to cutting one, since a dropped point is cleaner than a
+    half-sentence.
+    """
+    if not lines:
+        return ""
+    budget = max(1, TWEET_MAX_CHARS - prefix_reserve)
+    lines = list(lines)
+    while lines:
+        body = [f"{SUMMARY_BULLET}{line}" for line in lines] if len(lines) > 1 else [lines[0]]
+        text = "\n".join(([lead] if lead else []) + body)
+        if len(text) <= budget:
+            return text
+        if len(lines) > 1:
+            lines.pop()
+            continue
+        # One line left and still over: cut it rather than return nothing.
+        head = f"{lead}\n" if lead else ""
+        return head + _truncate_at_boundary(lines[0], max(1, budget - len(head)))
+    return ""
+
+
 def build_tweets(
     package: dict[str, Any], *, number_prefix: bool = False, ban_keywords: list[str] | None = None,
-    humanize: bool | None = None,
+    humanize: bool | None = None, job_id: str = "",
 ) -> list[dict[str, Any]]:
     ban_keywords = ban_keywords if ban_keywords is not None else _ban_keywords()
     raw_texts: list[str] = []
@@ -389,15 +508,13 @@ def build_tweets(
         if text:
             raw_texts.append(text)
 
-    cta = package.get("cta") or {}
-    action = str(cta.get("action") or "").strip()
-    tease = str(cta.get("next_topic_tease") or "").strip()
-    closing_parts = [p for p in (action, f"다음 편에서는 {tease} 이야기, 궁금하지 않으세요?" if tease else "") if p]
-    closing = clean(" ".join(closing_parts).strip())
-    if closing:
-        raw_texts.append(closing)
+    # package["cta"] is read for nothing on purpose: the CTA scene and its
+    # next-episode tease are a Shorts outro and stay off the thread (see
+    # module docstring). The recap tweet below closes it instead.
 
     title = _fallback_title(package, ban_keywords)
+    summary_lead = _pick_summary_lead(package, job_id, ban_keywords)
+    summary_source: list[str] | None = None
 
     humanize = humanize if humanize is not None else _humanize_enabled()
     if humanize and raw_texts:
@@ -412,11 +529,17 @@ def build_tweets(
             # empty -- a partial ban-keyword hit here means the rewrite
             # drifted into risky phrasing the original text never had, so
             # it's safer to keep the pre-rewrite text than to drop a tweet.
+            # The title/lead/summary ride on that same verdict: they came
+            # from the one call, so a body we distrust taints them too.
             if all(filtered):
                 raw_texts = filtered
                 rewritten_title = clean(rewritten["title"])
                 if rewritten_title:
                     title = _truncate_at_boundary(rewritten_title, X_TITLE_MAX_CHARS)
+                rewritten_lead = clean(rewritten["summary_lead"])
+                if rewritten_lead:
+                    summary_lead = _truncate_at_boundary(rewritten_lead, SUMMARY_LEAD_MAX_CHARS)
+                summary_source = rewritten["summary"] or None
 
     prefix_reserve = _PREFIX_RESERVE_WIDTH if number_prefix else 0
     lead_reserve = len(title) + len(TITLE_SEPARATOR) if title else 0
@@ -429,6 +552,16 @@ def build_tweets(
     # an empty package must stay empty rather than become a title-only post.
     if groups and title:
         groups[0] = f"{title}{TITLE_SEPARATOR}{groups[0]}"
+
+    # The recap gets its own tweet rather than being packed in with body
+    # sentences: it is a distinct block the reader should land on, which is
+    # the whole point of closing with it. Same emptiness rule as the title.
+    summary_tweet = _render_summary_tweet(
+        summary_lead, _summary_lines(package, ban_keywords, summary_source),
+        prefix_reserve=prefix_reserve,
+    )
+    if groups and summary_tweet:
+        groups.append(summary_tweet)
 
     tweets: list[dict[str, Any]] = []
     total = len(groups)
@@ -488,6 +621,7 @@ def build_x_thread(
     ban_keywords = _ban_keywords()
     tweets = build_tweets(
         package, number_prefix=number_prefix, humanize=humanize, ban_keywords=ban_keywords,
+        job_id=str(package.get("job_id") or job_dir.name),
     )
     photo_path = x_photo_card.build_thread_photo(package, job_dir)
     payload = {
@@ -501,7 +635,7 @@ def build_x_thread(
         ),
         "photo_path": str(photo_path) if photo_path else None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "method": "rule_v2",
+        "method": "rule_v3",
     }
     save_x_thread(job_dir, payload)
     (job_dir / "x_thread.txt").write_text(render_text(payload) + "\n", encoding="utf-8")

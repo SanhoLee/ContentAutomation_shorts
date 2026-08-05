@@ -45,6 +45,42 @@ def _photo_text(package: dict[str, Any], job_dir: Path) -> str:
     return _video_meta_title(job_dir)
 
 
+def normalize_thread_photo(source: Path, output_path: Path) -> Path:
+    """Re-shape an operator-supplied image into the thread's lead photo.
+
+    Center-crops to THREAD_PHOTO_SIZE's 16:9 and re-encodes as PNG, so a
+    square AI image or a phone screenshot lands the way we chose rather
+    than however X's timeline decides to crop it.
+
+    Without Pillow the file is moved through untouched and its own path is
+    returned: X accepts JPEG/WebP fine, and a correctly-uploaded but
+    unshaped image beats no image at all. Raises only on filesystem
+    failure -- the caller reports that to the operator and keeps waiting.
+    """
+    source, output_path = Path(source), Path(output_path)
+    try:
+        from PIL import Image
+    except ImportError:
+        kept = output_path.with_suffix(source.suffix.lower())
+        if kept != source:
+            source.replace(kept)
+        return kept
+
+    target_w, target_h = THREAD_PHOTO_SIZE
+    with Image.open(source) as image:
+        image = image.convert("RGB")
+        width, height = image.size
+        # Widest 16:9 box that fits, centered -- crop the surplus dimension.
+        if width * target_h > height * target_w:
+            crop_w, crop_h = height * target_w // target_h, height
+        else:
+            crop_w, crop_h = width, width * target_h // target_w
+        left, top = (width - crop_w) // 2, (height - crop_h) // 2
+        cropped = image.crop((left, top, left + crop_w, top + crop_h))
+        cropped.resize(THREAD_PHOTO_SIZE).save(output_path, format="PNG")
+    return output_path
+
+
 def build_thread_photo(package: dict[str, Any], job_dir: str | Path) -> Path | None:
     job_dir = Path(job_dir)
     text = _photo_text(package, job_dir)

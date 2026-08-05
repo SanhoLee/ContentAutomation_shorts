@@ -41,6 +41,7 @@ ADAPTERS_DIR = Path(__file__).resolve().parent / "adapters"
 if str(ADAPTERS_DIR) not in sys.path:
     sys.path.insert(0, str(ADAPTERS_DIR))
 import x_thread_adapter
+import x_photo_card
 import x_poster
 
 # Slack Socket Mode transport configuration.
@@ -833,7 +834,7 @@ def is_busy(job):
 def _mark_workflow_cancelled(job):
     job["stage"] = "cancelled"
     job["cancelled_at"] = datetime.now().isoformat(timespec="seconds")
-    for key in ("cancel_requested", "auto_from_stage", "auto_progress", "edit_target", "edit_stage", "title_edit_field", "title_edit_stage"):
+    for key in ("cancel_requested", "auto_from_stage", "auto_progress", "edit_target", "edit_stage", "title_edit_field", "title_edit_stage", "x_photo_target"):
         job.pop(key, None)
 
 
@@ -1254,6 +1255,13 @@ def send_final_confirm(chat_id, job_id):
             f"X 스레드 초안 ({len(x_payload['tweets'])}개, 승인 시 업로드 직후 자동 게시):\n\n"
             + x_thread_adapter.render_text(x_payload),
         )
+        # The photo goes out with the lead tweet, so it belongs in the same
+        # review as the text -- approving here approves the image too.
+        photo_path = x_payload.get("photo_path")
+        if photo_path and Path(photo_path).exists():
+            send_file_or_path(chat_id, photo_path, "첫 트윗에 붙을 이미지입니다.")
+        else:
+            send_message(chat_id, "첫 트윗 이미지가 없습니다. 지금 첨부하면 반영됩니다 (/x_photo).")
     else:
         send_message(chat_id, "X 스레드 초안을 만들지 못했습니다. 승인 후 /x_thread 로 직접 만들 수 있습니다.")
 
@@ -1593,6 +1601,125 @@ def _run_render_silent(chat_id, job, extra_env=None):
 
 
 SOURCES_DM_HEADER = "X 스레드 출처입니다. 필요하면 아래 내용을 그대로 복사해서 쓰세요."
+
+# Lead-photo intake. The operator makes the image (ChatGPT or anything
+# else) and hands it back over Slack; the pipeline only asks, receives and
+# attaches. Extensions X actually accepts, and its image ceiling.
+X_PHOTO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
+X_PHOTO_MAX_BYTES = 5 * 1024 * 1024
+
+
+def request_x_photo(chat_id, job):
+    """Ask for the thread's lead image and start waiting for the upload.
+
+    Fired when the x_thread stage finishes -- deliberately early. That is
+    before tts/caption/broll/render, so the whole render window is
+    available to make an image and send it back, and it is still in hand
+    by the time final_confirm asks for approval.
+
+    Nothing blocks on this. No image by posting time simply means the
+    generated text card goes out, exactly as before.
+    """
+    job_id = job.get("job_id")
+    if not job_id:
+        return False
+    payload = x_thread_adapter.load_x_thread(work_dir(job_id))
+    if not payload or not payload.get("tweets") or payload.get("posted"):
+        return False
+    job["x_photo_target"] = str(work_dir(job_id) / x_photo_card.PHOTO_FILENAME)
+    lead = (payload["tweets"][0] or {}).get("text", "")
+    send_message(
+        chat_id,
+        "X 스레드 첫 트윗에 붙일 이미지를 이 스레드에 첨부해 주세요.\n"
+        "지금 보내지 않으셔도 됩니다 — 최종 승인 전까지 언제든 올리면 반영되고, "
+        "안 올리시면 자동 생성한 글자 카드로 나갑니다.\n\n"
+        f"첫 트윗 내용:\n{lead}",
+    )
+    return True
+
+
+def apply_x_photo_message(chat_id, job, message):
+    """Consume an uploaded image as the thread's lead photo.
+
+    Returns False for anything that is not an image upload while armed, so
+    a text message during the wait still reaches the command handlers --
+    the operator must not get stuck in a mode they cannot type out of.
+
+    A rejected upload (wrong type, too large, download failure) keeps the
+    armed state so the next attempt just works, and never raises: the
+    YouTube pipeline is mid-flight and a bad attachment is not its problem.
+    """
+    target = job.get("x_photo_target")
+    if not target:
+        return False
+    doc = message.get("document")
+    if not doc:
+        return False
+
+    name = str(doc.get("name") or doc.get("title") or "")
+    suffix = Path(name).suffix.lower()
+    if suffix not in X_PHOTO_EXTENSIONS:
+        send_message(
+            chat_id,
+            f"이미지 파일만 받을 수 있습니다 ({', '.join(X_PHOTO_EXTENSIONS)}). "
+            f"받은 파일: {name or '이름 없음'}",
+        )
+        return True
+    size = doc.get("size")
+    if isinstance(size, int) and size > X_PHOTO_MAX_BYTES:
+        send_message(
+            chat_id,
+            f"이미지가 너무 큽니다 ({size:,}바이트). "
+            f"{X_PHOTO_MAX_BYTES:,}바이트 이하로 줄여서 다시 보내주세요.",
+        )
+        return True
+
+    job_id = job.get("job_id")
+    job_dir = work_dir(job_id) if job_id else None
+    payload = x_thread_adapter.load_x_thread(job_dir) if job_dir else None
+    if payload is None:
+        send_message(chat_id, "X 스레드 초안이 아직 없습니다. /x_thread 로 먼저 초안을 만들어주세요.")
+        return True
+    if payload.get("posted"):
+        # The tweet is live; its media cannot be swapped after the fact.
+        job.pop("x_photo_target", None)
+        send_message(chat_id, "이미 게시된 스레드라 이미지를 바꿀 수 없습니다.")
+        return True
+
+    target_path = Path(target)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    staged = target_path.with_name(f"x_thread_photo_upload{suffix}")
+    try:
+        download_slack_file(doc, staged)
+        final_path = x_photo_card.normalize_thread_photo(staged, target_path)
+    except Exception as exc:
+        staged.unlink(missing_ok=True)
+        send_message(chat_id, f"이미지를 저장하지 못했습니다: {exc}\n다시 첨부해 주세요.")
+        return True
+    if staged != final_path:
+        staged.unlink(missing_ok=True)
+
+    payload["photo_path"] = str(final_path)
+    try:
+        x_thread_adapter.save_x_thread(job_dir, payload)
+    except OSError as exc:
+        send_message(chat_id, f"이미지 경로를 기록하지 못했습니다: {exc}\n다시 첨부해 주세요.")
+        return True
+    job.pop("x_photo_target", None)
+    send_file_or_path(chat_id, final_path, "첫 트윗에 붙일 이미지로 저장했습니다.")
+    return True
+
+
+def handle_x_photo(chat_id, job):
+    """/x_photo -- re-arm the intake to replace an image already sent."""
+    if not job.get("job_id"):
+        send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return
+    if not request_x_photo(chat_id, job):
+        send_message(
+            chat_id,
+            "지금은 이미지를 받을 수 없습니다. 초안이 없거나 이미 게시된 스레드입니다.",
+        )
 
 
 def _maybe_send_x_sources_dm(job_dir):
@@ -2624,6 +2751,7 @@ def command_specs():
         ("render", "자막 렌더 설정 변경"),
         ("app_status", "현재 상태 확인"),
         ("x_thread", "X(트위터) 스레드 초안 생성"),
+        ("x_photo", "X 첫 트윗 이미지 첨부 요청"),
         ("x_post", "X(트위터)에 실제 게시"),
         ("cancel", "전체 작업 취소"),
         ("help", "명령어 도움말"),
@@ -2648,6 +2776,7 @@ def help_text():
         "/rerun tts | /rerun caption | /rerun broll",
         "/render font_size=62 margin_v=60",
         "/x_thread  <- X 스레드 초안 생성/미리보기",
+        "/x_photo  <- 첫 트윗 이미지 첨부 (이 명령 뒤 이미지를 올리면 저장)",
         "/x_post  <- 미리 만든 X 스레드를 실제 게시",
         "/set  <- 카테고리별 설정 메뉴",
         "/set_all  <- 현재 전체 설정 보기",
@@ -2702,6 +2831,12 @@ def handle_message(state, message):
             return
         if apply_title_edit_message(chat_id, job, message):
             return
+        # Before apply_edit_message: an armed text-artifact edit and an armed
+        # photo intake can overlap, and an uploaded image is never the answer
+        # to a script.txt edit prompt.
+        if apply_x_photo_message(chat_id, job, message):
+            save_state(state)
+            return
         if apply_edit_message(chat_id, job, message):
             return
         if not text:
@@ -2747,6 +2882,9 @@ def handle_message(state, message):
             start_background_task(state, chat_id, job, "렌더링", lambda: handle_render(chat_id, job, text))
         elif text.startswith("/x_thread"):
             start_background_task(state, chat_id, job, "X 스레드 초안 생성", lambda: handle_x_thread(chat_id, job))
+        elif text.startswith("/x_photo"):
+            handle_x_photo(chat_id, job)
+            save_state(state)
         elif text.startswith("/x_post"):
             start_background_task(state, chat_id, job, "X 게시", lambda: handle_x_post(chat_id, job))
         elif text.startswith("/app_status"):

@@ -3,6 +3,8 @@ import importlib.util
 import io
 import os
 import sys
+import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -12,6 +14,7 @@ sys.path.insert(0, str(SRC))
 # dev/config.sh puts common/, youtube/ and instagram/ all on PYTHONPATH so
 # the pipeline modules can import each other; tests must do the same.
 sys.path.insert(0, str(ROOT / "dev" / "src" / "youtube"))
+import pipeline_orchestrator as _po
 import slack_bot
 
 PROD_SPEC = importlib.util.spec_from_file_location("prod_slack_bot", ROOT / "prod" / "src" / "slack_bot.py")
@@ -831,6 +834,150 @@ class XSourcesDmTests(unittest.TestCase):
             slack_bot.send_message = old_send_message
             self._restore(originals)
         self.assertEqual(len(dms), 1)
+
+
+class XPhotoIntakeTests(unittest.TestCase):
+    """The operator makes the lead image and hands it back over Slack. The
+    intake must never trap them in a mode they cannot type out of, and must
+    never let a bad attachment reach a job that is mid-flight."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.job_dir = Path(self._tmp.name)
+        self.messages = []
+        self.sent_files = []
+        self.saved = []
+        self._originals = (
+            slack_bot.work_dir, slack_bot.send_message, slack_bot.send_file_or_path,
+            slack_bot.download_slack_file, slack_bot.x_thread_adapter.load_x_thread,
+            slack_bot.x_thread_adapter.save_x_thread,
+            slack_bot.x_photo_card.normalize_thread_photo,
+        )
+        self.payload = {"tweets": [{"index": 1, "text": "첫 트윗입니다"}]}
+
+        slack_bot.work_dir = lambda job_id: self.job_dir
+        slack_bot.send_message = lambda chat_id, text: self.messages.append(text)
+        slack_bot.send_file_or_path = lambda chat_id, path, caption=None, as_video=False: (
+            self.sent_files.append(str(path))
+        )
+        slack_bot.download_slack_file = lambda doc, dest: Path(dest).write_bytes(b"png-bytes")
+        slack_bot.x_thread_adapter.load_x_thread = lambda job_dir: self.payload
+        slack_bot.x_thread_adapter.save_x_thread = lambda job_dir, data: self.saved.append(data)
+        slack_bot.x_photo_card.normalize_thread_photo = lambda src, dest: Path(dest)
+
+    def tearDown(self):
+        (slack_bot.work_dir, slack_bot.send_message, slack_bot.send_file_or_path,
+         slack_bot.download_slack_file, slack_bot.x_thread_adapter.load_x_thread,
+         slack_bot.x_thread_adapter.save_x_thread,
+         slack_bot.x_photo_card.normalize_thread_photo) = self._originals
+        self._tmp.cleanup()
+
+    def _armed_job(self):
+        job = {"job_id": "J1"}
+        slack_bot.request_x_photo("C1", job)
+        return job
+
+    def _image(self, name="card.png", size=1024):
+        return {"id": "F1", "name": name, "size": size}
+
+    def test_request_arms_and_shows_the_lead_tweet(self):
+        job = self._armed_job()
+        self.assertTrue(job["x_photo_target"].endswith(slack_bot.x_photo_card.PHOTO_FILENAME))
+        self.assertIn("첫 트윗입니다", self.messages[-1])
+
+    def test_request_is_skipped_for_an_already_posted_thread(self):
+        self.payload = {"tweets": [{"text": "a"}], "posted": True}
+        job = {"job_id": "J1"}
+        self.assertFalse(slack_bot.request_x_photo("C1", job))
+        self.assertNotIn("x_photo_target", job)
+
+    def test_unarmed_upload_is_not_consumed(self):
+        job = {"job_id": "J1"}
+        consumed = slack_bot.apply_x_photo_message("C1", job, {"document": self._image()})
+        self.assertFalse(consumed)
+        self.assertEqual(self.saved, [])
+
+    def test_text_while_armed_falls_through_to_commands(self):
+        job = self._armed_job()
+        self.assertFalse(slack_bot.apply_x_photo_message("C1", job, {"text": "/app_status"}))
+        # Still armed: a typed command must not cancel the pending request.
+        self.assertIn("x_photo_target", job)
+
+    def test_image_is_saved_and_recorded_on_the_thread(self):
+        job = self._armed_job()
+        self.assertTrue(slack_bot.apply_x_photo_message("C1", job, {"document": self._image()}))
+        self.assertEqual(len(self.saved), 1)
+        self.assertTrue(self.saved[0]["photo_path"].endswith(slack_bot.x_photo_card.PHOTO_FILENAME))
+        self.assertNotIn("x_photo_target", job)
+        self.assertTrue(self.sent_files)
+
+    def test_wrong_file_type_is_rejected_and_stays_armed(self):
+        job = self._armed_job()
+        self.assertTrue(
+            slack_bot.apply_x_photo_message("C1", job, {"document": self._image("notes.pdf")})
+        )
+        self.assertEqual(self.saved, [])
+        self.assertIn("x_photo_target", job)
+        self.assertIn("이미지 파일만", self.messages[-1])
+
+    def test_oversized_image_is_rejected_and_stays_armed(self):
+        job = self._armed_job()
+        big = self._image(size=slack_bot.X_PHOTO_MAX_BYTES + 1)
+        self.assertTrue(slack_bot.apply_x_photo_message("C1", job, {"document": big}))
+        self.assertEqual(self.saved, [])
+        self.assertIn("x_photo_target", job)
+
+    def test_download_failure_is_reported_not_raised(self):
+        job = self._armed_job()
+        def boom(doc, dest):
+            raise RuntimeError("slack download 500")
+        slack_bot.download_slack_file = boom
+        self.assertTrue(slack_bot.apply_x_photo_message("C1", job, {"document": self._image()}))
+        self.assertEqual(self.saved, [])
+        self.assertIn("slack download 500", self.messages[-1])
+        self.assertIn("x_photo_target", job)
+
+    def test_posted_thread_refuses_a_replacement(self):
+        job = self._armed_job()
+        self.payload = {"tweets": [{"text": "a"}], "posted": True}
+        self.assertTrue(slack_bot.apply_x_photo_message("C1", job, {"document": self._image()}))
+        self.assertEqual(self.saved, [])
+        self.assertNotIn("x_photo_target", job)
+        self.assertIn("이미 게시된", self.messages[-1])
+
+
+class XPhotoPipelineHookTests(unittest.TestCase):
+    """The request has to fire off the x_thread stage finishing -- that is
+    what buys the operator the whole render window to make an image."""
+
+    def _events(self, ctx, job):
+        return _po._review_progress(ctx, "C1", job=job)
+
+    def test_x_thread_completion_requests_the_photo(self):
+        calls = []
+        ctx = types.SimpleNamespace(
+            send_message=lambda chat_id, text: None,
+            request_x_photo=lambda chat_id, job: calls.append(job),
+        )
+        job = {"job_id": "J1"}
+        self._events(ctx, job)("stage_done", {"stage": "x_thread", "reason": ""})
+        self.assertEqual(calls, [job])
+
+    def test_other_stages_do_not_request_a_photo(self):
+        calls = []
+        ctx = types.SimpleNamespace(
+            send_message=lambda chat_id, text: None,
+            request_x_photo=lambda chat_id, job: calls.append(job),
+        )
+        on_event = self._events(ctx, {"job_id": "J1"})
+        for stage in ("script", "tts", "render", "upload"):
+            on_event("stage_done", {"stage": stage, "reason": ""})
+        self.assertEqual(calls, [])
+
+    def test_bot_without_the_hook_is_unaffected(self):
+        """Telegram has no request_x_photo; the stage must still complete."""
+        ctx = types.SimpleNamespace(send_message=lambda chat_id, text: None)
+        self._events(ctx, {"job_id": "J1"})("stage_done", {"stage": "x_thread", "reason": ""})
 
 
 CANDIDATES = [

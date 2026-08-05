@@ -48,6 +48,21 @@ def no_card_render():
             sys.modules["card_render"] = saved
 
 
+@contextlib.contextmanager
+def no_pillow():
+    """Simulate a host without Pillow for normalize_thread_photo's own
+    `from PIL import Image` (separate seam from card_render's lazy import)."""
+    saved = sys.modules.get("PIL")
+    sys.modules["PIL"] = None
+    try:
+        yield
+    finally:
+        if saved is None:
+            sys.modules.pop("PIL", None)
+        else:
+            sys.modules["PIL"] = saved
+
+
 class BuildThreadPhotoTests(unittest.TestCase):
     def test_uses_hook_text_and_calls_render_card(self):
         calls = []
@@ -102,6 +117,50 @@ class BuildThreadPhotoTests(unittest.TestCase):
         # build and post the thread.
         with no_card_render(), tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(xpc.build_thread_photo({"hook": "훅"}, Path(tmp)))
+
+
+class NormalizeThreadPhotoTests(unittest.TestCase):
+    """An operator hands in whatever their image tool produced. Shape it to
+    the thread card here, so X's timeline doesn't crop it for us."""
+
+    def _with_pillow(self):
+        try:
+            from PIL import Image  # noqa: F401
+        except ImportError:
+            self.skipTest("Pillow가 없는 호스트")
+
+    def test_square_source_is_cropped_to_the_card_aspect(self):
+        self._with_pillow()
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "square.png"
+            Image.new("RGB", (1024, 1024), (10, 20, 30)).save(src)
+            out = xpc.normalize_thread_photo(src, Path(tmp) / xpc.PHOTO_FILENAME)
+            with Image.open(out) as result:
+                self.assertEqual(result.size, xpc.THREAD_PHOTO_SIZE)
+
+    def test_jpeg_source_is_re_encoded_as_png(self):
+        self._with_pillow()
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "photo.jpg"
+            Image.new("RGB", (1600, 900), (200, 100, 50)).save(src)
+            out = xpc.normalize_thread_photo(src, Path(tmp) / xpc.PHOTO_FILENAME)
+            self.assertEqual(out.suffix, ".png")
+            with Image.open(out) as result:
+                self.assertEqual(result.format, "PNG")
+
+    def test_without_pillow_the_file_is_kept_under_its_own_suffix(self):
+        # A correctly-uploaded but unshaped image beats no image at all --
+        # and x_poster reads the suffix to pick the upload content type.
+        with tempfile.TemporaryDirectory() as tmp, no_pillow():
+            src = Path(tmp) / "photo.jpg"
+            src.write_bytes(b"not-really-a-jpeg")
+            out = xpc.normalize_thread_photo(src, Path(tmp) / xpc.PHOTO_FILENAME)
+            self.assertEqual(out.suffix, ".jpg")
+            self.assertTrue(out.exists())
 
 
 if __name__ == "__main__":

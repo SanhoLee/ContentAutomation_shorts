@@ -37,6 +37,13 @@ MEDIA_ENDPOINT = "https://api.x.com/2/media/upload"
 POST_TIMEOUT_SEC = int(os.environ.get("X_POST_TIMEOUT_SEC", "20"))
 MEDIA_UPLOAD_TIMEOUT_SEC = int(os.environ.get("X_MEDIA_UPLOAD_TIMEOUT_SEC", "60"))
 
+# The lead photo is a rendered PNG on the generated path, but an operator
+# can hand in a JPEG/WebP over Slack, and declaring that as image/png gets
+# it rejected. Falls back to PNG for anything unrecognized.
+MEDIA_CONTENT_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+}
+
 
 def _thread_path(job_dir: Path) -> Path:
     return job_dir / "x_thread.json"
@@ -64,11 +71,12 @@ def _upload_media(image_path: Path, *, access_token: str) -> str:
     """
     import requests
 
+    content_type = MEDIA_CONTENT_TYPES.get(image_path.suffix.lower(), "image/png")
     with open(image_path, "rb") as handle:
         res = requests.post(
             MEDIA_ENDPOINT,
             headers={"Authorization": f"Bearer {access_token}"},
-            files={"media": (image_path.name, handle, "image/png")},
+            files={"media": (image_path.name, handle, content_type)},
             data={"media_category": "tweet_image"},
             timeout=MEDIA_UPLOAD_TIMEOUT_SEC,
         )

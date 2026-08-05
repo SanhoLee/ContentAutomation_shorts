@@ -307,6 +307,14 @@ def _review_progress(ctx, chat_id, job=None, remaining=None):
                 ctx.send_message(chat_id, f"{step} 중...{suffix}")
             else:
                 ctx.send_message(chat_id, f"{label} 진행 중...{suffix}")
+        elif kind == "stage_done" and name == "x_thread":
+            # The draft exists now and render/upload still have to run, so
+            # this is the widest window the operator will get to hand in a
+            # lead image. Optional on the transport: a bot without the hook
+            # (Telegram) just keeps the generated card, unchanged.
+            request_photo = getattr(ctx, "request_x_photo", None)
+            if request_photo is not None and job is not None:
+                request_photo(chat_id, job)
         elif kind == "guard_failed":
             ctx.send_message(chat_id, f"{label} 점검 실패: {payload.get('reason', '')}")
 

@@ -1,5 +1,9 @@
 """
-korean_grammar.py — Korean morphology heuristics for subtitle segmentation.
+korean_grammar.py — Korean morphology heuristics.
+
+Two callers, one table set: subtitle segmentation (where may a caption line
+break?) and the negation-placement check at the bottom (does this sentence
+put 안/못 somewhere Korean does not allow?).
 
 No dependencies and no morphological analyser: just curated tables that answer
 "is this 어절 boundary safe to break?".  Distilled from the reference work at
@@ -261,3 +265,56 @@ def verify_numbers_preserved(source: str, subtitles) -> bool:
     if isinstance(subtitles, str):
         subtitles = [subtitles]
     return _NUMBER.findall(source) == _NUMBER.findall("".join(subtitles))
+
+
+# ---------------------------------------------------------------------------
+# Negation placement
+# ---------------------------------------------------------------------------
+#
+# Short-form negation binds to the predicate immediately after it, so the next
+# 어절 has to BE that predicate.  A generated thread went live reading
+# "일이 안 손에 잡힐 땐": that puts 안 in front of a noun phrase, negating 손에
+# rather than 잡히다.  It should be "일이 손에 안 잡힐 땐".  Word order is
+# exactly the kind of thing a fluent-sounding generator gets wrong, and it is
+# glaring to a native reader, so it is worth one cheap table.
+
+NEGATION_ADVERBS = ("안", "못")
+
+# Particles that only ever attach to a noun, picked so that none of them is
+# also a possible verb/adjective ending.  The common ones are deliberately
+# absent: 을/를/이/가/은/는/도 all collide with real endings (먹을, 그런가,
+# 먹어도), 로 collides with 하므로, and 보다/와 are themselves verbs in
+# "안 보다"/"안 나와".  A checker that cries wolf gets ignored, so this trades
+# recall for precision on purpose.
+NOUN_ONLY_PARTICLES = (
+    "에서", "에게", "한테", "처럼", "까지", "부터", "마다", "조차", "밖에", "께", "에", "의",
+)
+
+# 안 is also a noun (inside; a proposal). "집 안에서" is one word so it never
+# reaches the check, but a mis-spaced "회의 안 에서" would -- these heads are
+# the ones that show up in this channel's vocabulary.
+_NEGATION_FALSE_FRIEND_HEADS = ("회의", "수정", "개정", "예산", "법", "원")
+
+
+def negation_placement_issues(text: str) -> list[tuple[str, str]]:
+    """Find 안/못 standing in front of a noun phrase instead of a predicate.
+
+    Returns (negation, following_word) pairs, empty when nothing is
+    suspicious.  Heuristic and conservative: it reports only what a
+    noun-only particle makes unambiguous, so a clean result means "this one
+    very visible error is absent", not "the Korean is correct".
+    """
+    issues: list[tuple[str, str]] = []
+    words = [strip_edges(word) for word in text.split()]
+    for i, word in enumerate(words[:-1]):
+        if word not in NEGATION_ADVERBS:
+            continue
+        if i and words[i - 1] in _NEGATION_FALSE_FRIEND_HEADS:
+            continue  # 안 here is the noun, not negation
+        following = words[i + 1]
+        # One-syllable words are all particle and no stem -- nothing to judge.
+        if len(following) < 2:
+            continue
+        if _ends_with_any(following, NOUN_ONLY_PARTICLES):
+            issues.append((word, following))
+    return issues

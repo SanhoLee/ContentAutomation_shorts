@@ -158,6 +158,34 @@ class LeadTitleTests(unittest.TestCase):
         self.assertNotIn("완치", tweets[0]["text"])
 
 
+class GrammarWarningTests(unittest.TestCase):
+    """Advisory only -- these never change the tweets, they just give the
+    approval screen something to point at."""
+
+    def test_misplaced_negation_is_reported_with_its_tweet_number(self):
+        payload = {"tweets": [
+            {"index": 1, "text": "일이 안 손에 잡힐 땐 의지 문제가 아니에요"},
+            {"index": 2, "text": "잠이 부족하면 기억이 정리되지 않아요"},
+        ]}
+        warnings = xta.grammar_warnings(payload)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("1번 트윗", warnings[0])
+        self.assertIn("안 손에", warnings[0])
+
+    def test_clean_thread_produces_no_warnings(self):
+        payload = {"tweets": [{"index": 1, "text": "일이 손에 안 잡힐 땐 뇌 문제예요"}]}
+        self.assertEqual(xta.grammar_warnings(payload), [])
+
+    def test_empty_payload_is_safe(self):
+        self.assertEqual(xta.grammar_warnings({}), [])
+
+    def test_warnings_do_not_alter_the_tweets(self):
+        tweets = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
+        before = [t["text"] for t in tweets]
+        xta.grammar_warnings({"tweets": tweets})
+        self.assertEqual([t["text"] for t in tweets], before)
+
+
 class SummaryTweetTests(unittest.TestCase):
     """The thread closes with a recap, not the script's CTA scene. Asking a
     reader who just finished the thread to go do one more thing reads as a

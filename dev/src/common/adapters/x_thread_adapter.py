@@ -59,11 +59,17 @@ from pathlib import Path
 from typing import Any
 
 COMMON_DIR = Path(__file__).resolve().parents[1]
-if str(COMMON_DIR) not in sys.path:
-    sys.path.insert(0, str(COMMON_DIR))
+# korean_grammar lives under youtube/ but is content-type agnostic (it is
+# curated morphology tables, no deps). Added explicitly rather than relying on
+# config.sh's PYTHONPATH, the same way x_photo_card reaches instagram/.
+YOUTUBE_DIR = COMMON_DIR.parent / "youtube"
+for _path in (COMMON_DIR, YOUTUBE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import claude_cost
 import content_package
+import korean_grammar
 import topic_score
 import x_photo_card
 from objective_planner import job_rng
@@ -576,6 +582,27 @@ def render_text(payload: dict[str, Any]) -> str:
     return "\n\n".join(f"[{t['index']}/{total}] {t['text']}" for t in payload["tweets"])
 
 
+def grammar_warnings(payload: dict[str, Any]) -> list[str]:
+    """Advisory notes to show next to a draft before a human approves it.
+
+    Nothing here blocks a post -- it flags, the operator decides. It exists
+    because a thread went live reading "일이 안 손에 잡힐 땐", and the
+    approval screen is the last place to catch that kind of word-order slip
+    before it is on the account. Absence of warnings is not a pass; the
+    check only knows the one error it knows.
+    """
+    warnings: list[str] = []
+    for tweet in payload.get("tweets") or ():
+        text = str((tweet or {}).get("text") or "")
+        for negation, following in korean_grammar.negation_placement_issues(text):
+            warnings.append(
+                f"[{(tweet or {}).get('index')}번 트윗] '{negation} {following}' — "
+                f"'{negation}'은 부정할 용언 바로 앞에 와야 합니다. "
+                f"'{following} {negation} ...' 어순이 맞는지 확인하세요."
+            )
+    return warnings
+
+
 def load_x_thread(job_dir: str | Path) -> dict[str, Any] | None:
     """Read an already-built x_thread.json without rebuilding it -- for a
     caller (e.g. the final_confirm gate) that wants to show a draft built
@@ -680,6 +707,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"x_thread.json 작성 완료: {job_dir / 'x_thread.json'} ({len(payload['tweets'])}개 트윗)")
     if args.print_output:
         print()
+        for warning in grammar_warnings(payload):
+            print(f"경고: {warning}", file=sys.stderr)
         print(render_text(payload))
         if payload.get("sources_text"):
             print()

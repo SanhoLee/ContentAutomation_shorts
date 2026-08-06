@@ -1861,11 +1861,14 @@ def _prompt_x_thread_approval(chat_id, job):
     photo_path = payload.get("photo_path")
     if photo_path and Path(photo_path).exists():
         send_file_or_path(chat_id, photo_path, "첫 트윗에 붙을 이미지입니다.")
+    warnings = x_thread_adapter.grammar_warnings(payload)
+    warning_text = ("\n\n⚠️ 어순 확인이 필요합니다:\n" + "\n".join(warnings)) if warnings else ""
     send_action_message(
         chat_id,
         f"YouTube 업로드는 끝났습니다. X 스레드는 게시하지 않고 대기 중입니다 ({job_id}).\n"
         "아래 내용을 읽어보고 게시 여부를 결정하세요. 어색한 문장이 있으면 "
-        "/x_thread 로 초안을 다시 만들 수 있습니다.\n\n"
+        "/x_thread 로 초안을 다시 만들 수 있습니다."
+        f"{warning_text}\n\n"
         f"{x_thread_adapter.render_text(payload)}"[:MAX_BLOCK_TEXT],
         [[button("X 스레드 게시 ▶", f"x_post:approve:{job_id}"),
           button("게시하지 않음", f"x_post:skip:{job_id}")]],
@@ -2784,9 +2787,12 @@ def handle_x_thread(chat_id, job):
     if payload is None:
         send_message(chat_id, "content_package.json이 없습니다. 먼저 스크립트 생성을 완료하세요.")
         return
+    warnings = x_thread_adapter.grammar_warnings(payload)
+    warning_text = ("⚠️ 어순 확인이 필요합니다:\n" + "\n".join(warnings) + "\n\n") if warnings else ""
     send_message(
         chat_id,
-        f"X 스레드 초안 {len(payload['tweets'])}개:\n\n{x_thread_adapter.render_text(payload)}\n\n"
+        f"X 스레드 초안 {len(payload['tweets'])}개:\n\n{warning_text}"
+        f"{x_thread_adapter.render_text(payload)}\n\n"
         "게시하려면 /x_post 를 입력하세요.",
     )
 

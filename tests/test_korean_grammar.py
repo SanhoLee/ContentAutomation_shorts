@@ -90,5 +90,59 @@ class NumberTests(unittest.TestCase):
         self.assertFalse(kg.verify_numbers_preserved("1.32배였고", ["1 32배였고"]))
 
 
+class NegationPlacementTests(unittest.TestCase):
+    """안/못 bind to the predicate right after them. The check is
+    deliberately conservative -- a checker that cries wolf gets ignored, so
+    the false-positive cases below matter more than the catches."""
+
+    def test_catches_the_sentence_that_shipped(self):
+        # Posted to the live account. 안 negates 손에 instead of 잡히다.
+        issues = kg.negation_placement_issues(
+            "일이 안 손에 잡힐 땐 의지 문제가 아니라 뇌 문제예요"
+        )
+        self.assertEqual(issues, [("안", "손에")])
+
+    def test_the_corrected_word_order_is_clean(self):
+        self.assertEqual(
+            kg.negation_placement_issues("일이 손에 안 잡힐 땐 의지 문제가 아니라 뇌 문제예요"), [],
+        )
+
+    def test_catches_other_noun_phrases_after_negation(self):
+        self.assertTrue(kg.negation_placement_issues("밥을 안 집에서 먹어요"))
+        self.assertTrue(kg.negation_placement_issues("못 학교에 갔어요"))
+
+    def test_endings_that_look_like_particles_are_not_flagged(self):
+        # Each of these ends in a syllable that is a particle elsewhere;
+        # none of them is a misplaced negation.
+        for text in (
+            "그건 안 먹을 거예요",       # 을 = adnominal ending
+            "안 그런가 싶어요",          # 가 = interrogative ending
+            "안 먹어도 괜찮아요",        # 도 = concessive ending
+            "바빠서 안 하므로 문제입니다",  # 로 inside 므로
+            "영화를 안 보다 말았어요",     # 보다 is the verb here
+            "물이 안 나와요",            # 와 inside 나와
+        ):
+            self.assertEqual(kg.negation_placement_issues(text), [], text)
+
+    def test_ordinary_negation_is_clean(self):
+        for text in (
+            "집에서 밥을 안 먹어요",
+            "학교에 못 갔어요",
+            "잠이 안 오면 뇌가 쉬지 못해요",
+            "진도가 안 나간다면 나태함 때문이 아니에요",
+        ):
+            self.assertEqual(kg.negation_placement_issues(text), [], text)
+
+    def test_noun_sense_of_an_is_not_treated_as_negation(self):
+        self.assertEqual(kg.negation_placement_issues("회의 안 에서 정했습니다"), [])
+
+    def test_trailing_negation_and_short_words_are_ignored(self):
+        self.assertEqual(kg.negation_placement_issues("그건 잘 모르겠어요 안"), [])
+        self.assertEqual(kg.negation_placement_issues("안 에"), [])
+
+    def test_empty_text_is_clean(self):
+        self.assertEqual(kg.negation_placement_issues(""), [])
+
+
 if __name__ == "__main__":
     unittest.main()

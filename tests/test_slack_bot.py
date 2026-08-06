@@ -677,6 +677,28 @@ class XApprovalGateTests(unittest.TestCase):
         self.assertIn("x_post:skip:J1", buttons)
         self.assertIn("첫 트윗", prompts[-1][0])
 
+    def test_word_order_warning_rides_on_the_approval_screen(self):
+        """The whole point of the gate: surface the slip where the human
+        making the call will actually see it."""
+        existing = {"tweets": [{"index": 1, "text": "일이 안 손에 잡힐 땐 뇌 문제예요"}]}
+        calls, messages, prompts = self._patch(existing=existing)
+        try:
+            slack_bot._prompt_x_thread_approval("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore()
+        self.assertEqual(calls, [])
+        self.assertIn("어순 확인이 필요합니다", prompts[-1][0])
+        self.assertIn("안 손에", prompts[-1][0])
+
+    def test_clean_thread_gets_no_warning_banner(self):
+        existing = {"tweets": [{"index": 1, "text": "일이 손에 안 잡힐 땐 뇌 문제예요"}]}
+        calls, messages, prompts = self._patch(existing=existing)
+        try:
+            slack_bot._prompt_x_thread_approval("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore()
+        self.assertNotIn("어순 확인이 필요합니다", prompts[-1][0])
+
     def test_skips_when_job_not_done(self):
         calls, messages, prompts = self._patch()
         try:

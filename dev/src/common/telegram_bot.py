@@ -1569,9 +1569,12 @@ def handle_x_thread(chat_id, job):
     if payload is None:
         send_message(chat_id, "content_package.json이 없습니다. 먼저 스크립트 생성을 완료하세요.")
         return
+    warnings = x_thread_adapter.grammar_warnings(payload)
+    warning_text = ("⚠️ 어순 확인이 필요합니다:\n" + "\n".join(warnings) + "\n\n") if warnings else ""
     send_message(
         chat_id,
-        f"X 스레드 초안 {len(payload['tweets'])}개:\n\n{x_thread_adapter.render_text(payload)}\n\n"
+        f"X 스레드 초안 {len(payload['tweets'])}개:\n\n{warning_text}"
+        f"{x_thread_adapter.render_text(payload)}\n\n"
         "게시하려면 /x_post 를 입력하세요.",
     )
 

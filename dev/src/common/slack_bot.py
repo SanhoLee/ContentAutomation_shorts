@@ -296,6 +296,8 @@ def action_request_label(data):
         "back:": "이전 단계로 이동",
         "render:": "선택한 설정으로 렌더링",
         "rerun:": "현재 산출물 재생성",
+        "x_post:approve:": "X 스레드 게시 승인",
+        "x_post:skip:": "X 스레드 게시 보류",
         "review_mode:": "검수 후 최종 컨펌으로 진행",
         "rewind:": "지정 단계부터 다시 실행",
     }
@@ -1242,7 +1244,8 @@ def send_final_confirm(chat_id, job_id):
         except json.JSONDecodeError:
             meta = {}
     text = (
-        "최종 확인 단계입니다. 승인하면 YouTube에 비공개 업로드하고, 이어서 X 스레드도 자동 게시합니다.\n\n"
+        "최종 확인 단계입니다. 승인하면 YouTube에 비공개 업로드합니다. "
+        "X 스레드는 자동 게시하지 않고, 업로드 후 따로 게시 여부를 여쭤봅니다.\n\n"
         f"제목: {meta.get('title', '')}\n\n"
         f"해시태그: {meta.get('hashtags', '')}\n\n"
         f"설명:\n{meta.get('description', '')}"
@@ -1252,7 +1255,7 @@ def send_final_confirm(chat_id, job_id):
     if x_payload and x_payload.get("tweets"):
         send_message(
             chat_id,
-            f"X 스레드 초안 ({len(x_payload['tweets'])}개, 승인 시 업로드 직후 자동 게시):\n\n"
+            f"X 스레드 초안 ({len(x_payload['tweets'])}개, 게시는 업로드 후 별도 승인):\n\n"
             + x_thread_adapter.render_text(x_payload),
         )
         # The photo goes out with the lead tweet, so it belongs in the same
@@ -1754,28 +1757,86 @@ def _maybe_send_x_sources_dm(job_dir):
     return True
 
 
-def _maybe_post_x_thread(chat_id, job):
-    """After a job reaches "done" (YouTube upload succeeded), report its X
-    thread -- posting it now if the pipeline's own x_post stage hasn't
-    already done so.
+def _guarded(chat_id, target, *args):
+    """Run a detached worker so nothing it raises kills the thread silently."""
+    try:
+        target(*args)
+    except Exception as exc:  # noqa: BLE001 - last line of defence for a daemon thread
+        log_event("ERROR", "slack_detached_task_failed", channel=chat_id, error=str(exc))
+        try:
+            send_message(chat_id, f"처리 중 오류가 발생했습니다: {exc}")
+        except Exception:
+            pass
 
-    Called from every "done"-reaching path (the two-gate flow, full auto,
-    and the legacy step-by-step flow), but only run_next_stage's legacy path
-    ever needs this to actually post: review/auto already ran the x_post
-    stage inside pipeline_flow.advance(). Checking `posted` first, instead
-    of calling post_thread() unconditionally, is what keeps that overlap
-    from reading as a failure -- post_thread() raises on an already-posted
-    thread, and that raise is not "X failed", it's "X already succeeded
-    elsewhere."
 
-    No x_thread.json at all (Claude budget guard, no PubMed evidence, etc.)
-    is not a failure either -- the x_thread stage is downstream-only and
-    always exits 0, so silently having nothing to post is expected.
+def post_x_thread_now(chat_id, job_id):
+    """Post one approved thread, working only from its job directory.
 
-    A genuine posting failure never surfaces past this function. The upload
-    already succeeded, which is the part that matters; X is a downstream
-    bonus, so its failures are reported rather than raised and cannot mask
-    the pipeline's completion message.
+    Takes a job_id rather than the chat's current job on purpose: approval
+    can arrive long after the Shorts pipeline moved on to another job, and
+    posting must neither depend on nor block whatever it is doing now. All
+    the state this needs already lives in that job's x_thread.json.
+
+    Never raises. The YouTube upload is long finished by this point, so a
+    posting failure is reported and left for /x_post to retry.
+    """
+    job_dir = work_dir(job_id)
+    try:
+        payload = x_poster.post_thread(job_dir)
+    except Exception as exc:
+        send_message(chat_id, f"X 게시 실패 ({job_id}): {exc}\n확인 후 /x_post 로 다시 시도할 수 있습니다.")
+        return False
+    send_message(
+        chat_id,
+        f"X 스레드 게시 완료 ({job_id}): {payload.get('thread_url')} "
+        f"({len(payload.get('tweet_ids') or [])}개 트윗)",
+    )
+    _maybe_send_x_sources_dm(job_dir)
+    return True
+
+
+def skip_x_thread(chat_id, job_id):
+    """Record that the operator decided not to post this thread.
+
+    Persisted to x_thread.json rather than held in chat state so the job
+    does not get prompted again, and so a later reader can tell "declined"
+    apart from "never asked".
+    """
+    job_dir = work_dir(job_id)
+    payload = x_thread_adapter.load_x_thread(job_dir)
+    if payload is None:
+        send_message(chat_id, f"X 스레드 초안을 찾지 못했습니다 ({job_id}).")
+        return False
+    payload["post_declined"] = True
+    try:
+        x_thread_adapter.save_x_thread(job_dir, payload)
+    except OSError as exc:
+        send_message(chat_id, f"상태를 기록하지 못했습니다: {exc}")
+        return False
+    send_message(
+        chat_id,
+        f"X 스레드를 게시하지 않았습니다 ({job_id}). 초안은 그대로 있으니 "
+        "마음이 바뀌면 /x_post 로 게시할 수 있습니다.",
+    )
+    return True
+
+
+def _prompt_x_thread_approval(chat_id, job):
+    """After a job reaches "done" (YouTube upload succeeded), show the X
+    thread and wait for an explicit go-ahead.
+
+    Nothing here posts. X used to go out automatically off the back of the
+    final_confirm approval, but approving a video is not the same as having
+    read the tweets -- and machine-written Korean gets word order subtly
+    wrong often enough that a human has to see the actual text first.
+
+    This runs after the Shorts pipeline has already finished, and posts
+    nothing itself, so the two are independent: the video ships on the
+    pipeline's schedule whether or not the thread is ever approved.
+
+    No x_thread.json at all (Claude budget guard, no evidence, etc.) is not
+    a failure -- the x_thread stage is downstream-only, so having nothing
+    to offer is expected and silent.
     """
     if job.get("stage") != "done":
         return
@@ -1783,28 +1844,32 @@ def _maybe_post_x_thread(chat_id, job):
     if not job_id:
         return
     job_dir = work_dir(job_id)
-    existing = x_thread_adapter.load_x_thread(job_dir)
-    if existing is None:
+    payload = x_thread_adapter.load_x_thread(job_dir)
+    if payload is None or not payload.get("tweets"):
         return
-    if existing.get("posted"):
+    if payload.get("posted"):
         send_message(
             chat_id,
-            f"X 스레드 게시 완료: {existing.get('thread_url')} "
-            f"({len(existing.get('tweet_ids') or [])}개 트윗)",
+            f"X 스레드 게시 완료: {payload.get('thread_url')} "
+            f"({len(payload.get('tweet_ids') or [])}개 트윗)",
         )
         _maybe_send_x_sources_dm(job_dir)
         return
-    try:
-        payload = x_poster.post_thread(job_dir)
-    except Exception as exc:
-        send_message(chat_id, f"X 스레드 자동 게시 실패: {exc}\n확인 후 /x_post 로 이어서 게시할 수 있습니다.")
+    if payload.get("post_declined"):
         return
-    send_message(
+
+    photo_path = payload.get("photo_path")
+    if photo_path and Path(photo_path).exists():
+        send_file_or_path(chat_id, photo_path, "첫 트윗에 붙을 이미지입니다.")
+    send_action_message(
         chat_id,
-        f"X 스레드 게시 완료: {payload.get('thread_url')} "
-        f"({len(payload.get('tweet_ids') or [])}개 트윗)",
+        f"YouTube 업로드는 끝났습니다. X 스레드는 게시하지 않고 대기 중입니다 ({job_id}).\n"
+        "아래 내용을 읽어보고 게시 여부를 결정하세요. 어색한 문장이 있으면 "
+        "/x_thread 로 초안을 다시 만들 수 있습니다.\n\n"
+        f"{x_thread_adapter.render_text(payload)}"[:MAX_BLOCK_TEXT],
+        [[button("X 스레드 게시 ▶", f"x_post:approve:{job_id}"),
+          button("게시하지 않음", f"x_post:skip:{job_id}")]],
     )
-    _maybe_send_x_sources_dm(job_dir)
 
 
 def run_next_stage(chat_id, job):
@@ -1812,13 +1877,13 @@ def run_next_stage(chat_id, job):
         sys.modules[__name__], chat_id, job,
         final_message=lambda job, default_text: workflow_status_text(job, default_text),
     )
-    _maybe_post_x_thread(chat_id, job)
+    _prompt_x_thread_approval(chat_id, job)
     return result
 
 
 def run_review_pipeline(chat_id, job):
     result = _po.run_review_pipeline(sys.modules[__name__], chat_id, job)
-    _maybe_post_x_thread(chat_id, job)
+    _prompt_x_thread_approval(chat_id, job)
     return result
 
 
@@ -1895,7 +1960,7 @@ def run_remaining_to_upload(chat_id, job):
             final_message=lambda job, default_text: workflow_status_text(job, default_text),
             running_stage="running_after_review",
         )
-        _maybe_post_x_thread(chat_id, job)
+        _prompt_x_thread_approval(chat_id, job)
         return result
     finally:
         job.pop("auto_from_stage", None)
@@ -2473,6 +2538,19 @@ def handle_callback(state, callback):
                                       lambda: approve_review_gate(chat_id, job))
             else:
                 start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
+        elif data.startswith("x_post:"):
+            # Keyed by the job id carried in the button, not the chat's
+            # current job: the pipeline may already be on the next video by
+            # the time this is clicked, and X approval must stay independent
+            # of it. Runs off-thread without touching job["busy"] so it can
+            # never block a Shorts run either.
+            _, action, target_job = data.split(":", 2)
+            worker = post_x_thread_now if action == "approve" else skip_x_thread
+            if action == "approve":
+                send_message(chat_id, f"X 스레드를 게시합니다 ({target_job}).")
+            threading.Thread(
+                target=lambda: _guarded(chat_id, worker, chat_id, target_job), daemon=True,
+            ).start()
         elif data.startswith("review_mode:"):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:

@@ -53,7 +53,6 @@ STAGE_PROGRESS_LABELS = {
     "broll": "B-roll 수집",
     "render": "렌더링",
     "upload": "YouTube 비공개 업로드",
-    "x_post": "X 게시",
 }
 
 

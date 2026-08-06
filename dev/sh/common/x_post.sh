@@ -1,8 +1,12 @@
 #!/bin/bash
-# Best-effort: this must never fail the whole job -- by this point the
-# YouTube video is already uploaded, which is the primary deliverable. A
-# posting failure (billing, X API outage, token issue) should surface as a
-# warning the operator can act on with /x_post, not as a pipeline failure.
+# Manual only. This is NOT a pipeline stage any more -- posting to X needs a
+# human who has read the thread, so it is driven from the bot's approval
+# prompt (or /x_post), never from pipeline_flow. Kept as the CLI path for
+# posting a job's thread by hand on the server.
+#
+# Still exits 0 on failure: the YouTube video is already uploaded by the
+# time anyone runs this, so a posting failure (billing, X API outage, token
+# issue) is a warning to act on, not a reason to fail a shell chain.
 source "$(dirname "$0")/../../config.sh"
 
 echo "X 게시 중..."

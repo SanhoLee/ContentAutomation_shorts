@@ -517,19 +517,20 @@ class SlackBotTests(unittest.TestCase):
                     setattr(module, name, original)
 
     def test_auto_finish_can_resume_from_every_review_stage(self):
-        # dev's slack_bot drives this through pipeline_flow.STAGES, which now
-        # includes x_thread (right after script) and x_post (right after
-        # upload). prod/src/slack_bot.py has its own hardcoded
-        # run_remaining_to_upload, wholly independent of pipeline_flow, and
-        # was not touched -- it still expects the pre-X-posting sequence.
+        # dev's slack_bot drives this through pipeline_flow.STAGES, which
+        # includes x_thread (right after script) but deliberately stops at
+        # the YouTube upload -- posting to X needs a human who has read the
+        # thread, so it is not a stage. prod/src/slack_bot.py has its own
+        # hardcoded run_remaining_to_upload, wholly independent of
+        # pipeline_flow, and was not touched.
         dev_expected_commands = {
-            "await_script_approval": ["x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
-            "await_tts_approval": ["1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
-            "await_caption_approval": ["1_broll.sh", "3_upload.sh", "x_post.sh"],
-            "await_broll_approval": ["3_upload.sh", "x_post.sh"],
-            "await_render_config": ["3_upload.sh", "x_post.sh"],
-            "await_render_approval": ["3_upload.sh", "x_post.sh"],
-            "await_upload_meta_approval": ["3_upload.sh", "x_post.sh"],
+            "await_script_approval": ["x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh"],
+            "await_tts_approval": ["1_caption.sh", "1_broll.sh", "3_upload.sh"],
+            "await_caption_approval": ["1_broll.sh", "3_upload.sh"],
+            "await_broll_approval": ["3_upload.sh"],
+            "await_render_config": ["3_upload.sh"],
+            "await_render_approval": ["3_upload.sh"],
+            "await_upload_meta_approval": ["3_upload.sh"],
         }
         prod_expected_commands = {
             "await_script_approval": ["1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh"],
@@ -624,21 +625,25 @@ class SlackBotTests(unittest.TestCase):
                 module.save_state = old_save_state
 
 
-class MaybePostXThreadTests(unittest.TestCase):
-    """Auto-posting after upload must never mask the pipeline's own result.
+class XApprovalGateTests(unittest.TestCase):
+    """X posting requires an explicit go-ahead and never happens on its own.
 
-    review/auto already run the x_post pipeline stage inside
-    pipeline_flow.advance() before the job reaches "done", so this hook must
-    check what's already on disk before calling post_thread() again --
-    otherwise the "already posted" raise that guards against double-posting
-    reads as an auto-post *failure* on every ordinary successful run.
+    Approving a finished video is not the same as having read the tweets --
+    machine-written Korean gets word order subtly wrong often enough that a
+    human has to see the actual text first. The gate also has to stay clear
+    of the Shorts pipeline: it runs after the job is done and posts nothing
+    itself, so a video ships whether or not its thread is ever approved.
     """
 
     def _patch(self, existing=None, post_result=None, post_error=None):
         calls = []
-        old_load = slack_bot.x_thread_adapter.load_x_thread
-        old_post = slack_bot.x_poster.post_thread
-        old_send_message = slack_bot.send_message
+        messages = []
+        prompts = []
+        self._saved = (
+            slack_bot.x_thread_adapter.load_x_thread, slack_bot.x_poster.post_thread,
+            slack_bot.send_message, slack_bot.send_action_message,
+            slack_bot.send_file_or_path,
+        )
 
         def fake_post(job_dir):
             calls.append(job_dir)
@@ -646,105 +651,122 @@ class MaybePostXThreadTests(unittest.TestCase):
                 raise post_error
             return post_result
 
-        messages = []
         slack_bot.x_thread_adapter.load_x_thread = lambda job_dir: existing
         slack_bot.x_poster.post_thread = fake_post
         slack_bot.send_message = lambda channel_id, text: messages.append(text)
-        return calls, messages, old_load, old_post, old_send_message
+        slack_bot.send_action_message = lambda channel_id, text, rows: prompts.append((text, rows))
+        slack_bot.send_file_or_path = lambda *a, **k: None
+        return calls, messages, prompts
 
-    def _restore(self, old_load, old_post, old_send_message):
-        slack_bot.x_thread_adapter.load_x_thread = old_load
-        slack_bot.x_poster.post_thread = old_post
-        slack_bot.send_message = old_send_message
+    def _restore(self):
+        (slack_bot.x_thread_adapter.load_x_thread, slack_bot.x_poster.post_thread,
+         slack_bot.send_message, slack_bot.send_action_message,
+         slack_bot.send_file_or_path) = self._saved
+
+    def test_a_finished_job_is_offered_never_posted(self):
+        existing = {"tweets": [{"index": 1, "text": "첫 트윗"}]}
+        calls, messages, prompts = self._patch(existing=existing)
+        try:
+            slack_bot._prompt_x_thread_approval("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore()
+        self.assertEqual(calls, [], "승인 없이 게시하면 안 됩니다")
+        self.assertTrue(prompts)
+        buttons = [b["callback_data"] for row in prompts[-1][1] for b in row]
+        self.assertIn("x_post:approve:J1", buttons)
+        self.assertIn("x_post:skip:J1", buttons)
+        self.assertIn("첫 트윗", prompts[-1][0])
 
     def test_skips_when_job_not_done(self):
-        calls, messages, old_load, old_post, old_send = self._patch()
+        calls, messages, prompts = self._patch()
         try:
-            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "await_render_approval"})
+            slack_bot._prompt_x_thread_approval("C1", {"job_id": "J1", "stage": "await_render_approval"})
         finally:
-            self._restore(old_load, old_post, old_send)
-        self.assertEqual(calls, [])
-        self.assertEqual(messages, [])
+            self._restore()
+        self.assertEqual((calls, messages, prompts), ([], [], []))
 
     def test_skips_when_no_job_id(self):
-        calls, messages, old_load, old_post, old_send = self._patch()
+        calls, messages, prompts = self._patch()
         try:
-            slack_bot._maybe_post_x_thread("C1", {"stage": "done"})
+            slack_bot._prompt_x_thread_approval("C1", {"stage": "done"})
         finally:
-            self._restore(old_load, old_post, old_send)
-        self.assertEqual(calls, [])
-        self.assertEqual(messages, [])
+            self._restore()
+        self.assertEqual((calls, messages, prompts), ([], [], []))
 
     def test_skips_silently_when_no_thread_was_built(self):
         """No x_thread.json (Claude budget guard, no evidence, etc.) is not a
         failure -- the x_thread stage is downstream-only and always exits 0."""
-        calls, messages, old_load, old_post, old_send = self._patch(existing=None)
+        calls, messages, prompts = self._patch(existing=None)
         try:
-            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+            slack_bot._prompt_x_thread_approval("C1", {"job_id": "J1", "stage": "done"})
         finally:
-            self._restore(old_load, old_post, old_send)
-        self.assertEqual(calls, [])
-        self.assertEqual(messages, [])
+            self._restore()
+        self.assertEqual((calls, messages, prompts), ([], [], []))
 
-    def test_already_posted_by_pipeline_stage_reports_success_without_reposting(self):
-        """This is the review/auto path: the pipeline's own x_post stage
-        already posted the thread before the job reached "done". Calling
-        post_thread() again would raise "already posted" -- that must not
-        turn a successful run into a reported failure."""
+    def test_declined_thread_is_not_offered_again(self):
+        existing = {"tweets": [{"text": "a"}], "post_declined": True}
+        calls, messages, prompts = self._patch(existing=existing)
+        try:
+            slack_bot._prompt_x_thread_approval("C1", {"job_id": "J1", "stage": "done"})
+        finally:
+            self._restore()
+        self.assertEqual(prompts, [])
+        self.assertEqual(calls, [])
+
+    def test_already_posted_reports_without_reposting(self):
         existing = {
-            "posted": True,
-            "tweet_ids": ["1", "2", "3"],
+            "tweets": [{"text": "a"}], "posted": True, "tweet_ids": ["1", "2", "3"],
             "thread_url": "https://x.com/i/web/status/1",
         }
-        calls, messages, old_load, old_post, old_send = self._patch(existing=existing)
+        calls, messages, prompts = self._patch(existing=existing)
         try:
-            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+            slack_bot._prompt_x_thread_approval("C1", {"job_id": "J1", "stage": "done"})
         finally:
-            self._restore(old_load, old_post, old_send)
+            self._restore()
         self.assertEqual(calls, [])
+        self.assertEqual(prompts, [])
         self.assertIn("게시 완료", messages[-1])
-        self.assertIn("https://x.com/i/web/status/1", messages[-1])
-        self.assertIn("3개", messages[-1])
 
-    def test_success_reports_thread_url_and_tweet_count(self):
-        """This is the legacy full-gate path (run_next_stage): x_post never
-        ran as a pipeline stage, so a built-but-unposted thread is actually
-        posted here."""
+    def test_approval_posts_the_named_job_not_the_current_one(self):
+        """The pipeline may already be on the next video; approval works off
+        the job id in the button, so the two stay independent."""
         existing = {"tweets": [{"text": "a"}]}
         result = {"tweet_ids": ["1", "2", "3"], "thread_url": "https://x.com/i/web/status/1"}
-        calls, messages, old_load, old_post, old_send = self._patch(existing=existing, post_result=result)
+        calls, messages, prompts = self._patch(existing=existing, post_result=result)
         try:
-            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+            slack_bot.post_x_thread_now("C1", "J-OLD")
         finally:
-            self._restore(old_load, old_post, old_send)
+            self._restore()
         self.assertEqual(len(calls), 1)
+        self.assertTrue(str(calls[0]).endswith("J-OLD"))
         self.assertIn("게시 완료", messages[-1])
         self.assertIn("https://x.com/i/web/status/1", messages[-1])
-        self.assertIn("3개", messages[-1])
 
-    def test_failure_is_reported_not_raised_and_points_at_x_post(self):
+    def test_posting_failure_is_reported_not_raised(self):
         existing = {"tweets": [{"text": "a"}]}
-        calls, messages, old_load, old_post, old_send = self._patch(
+        calls, messages, prompts = self._patch(
             existing=existing, post_error=RuntimeError("2/4개 게시 후 실패: 429"),
         )
         try:
-            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+            self.assertFalse(slack_bot.post_x_thread_now("C1", "J1"))
         finally:
-            self._restore(old_load, old_post, old_send)
-        self.assertIn("자동 게시 실패", messages[-1])
+            self._restore()
         self.assertIn("429", messages[-1])
         self.assertIn("/x_post", messages[-1])
 
-    def test_unexpected_exception_does_not_escape(self):
+    def test_skip_records_the_decision_so_it_is_not_re_asked(self):
         existing = {"tweets": [{"text": "a"}]}
-        calls, messages, old_load, old_post, old_send = self._patch(
-            existing=existing, post_error=ValueError("boom"),
-        )
+        saved = []
+        calls, messages, prompts = self._patch(existing=existing)
+        old_save = slack_bot.x_thread_adapter.save_x_thread
+        slack_bot.x_thread_adapter.save_x_thread = lambda job_dir, data: saved.append(data)
         try:
-            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+            self.assertTrue(slack_bot.skip_x_thread("C1", "J1"))
         finally:
-            self._restore(old_load, old_post, old_send)
-        self.assertIn("boom", messages[-1])
+            slack_bot.x_thread_adapter.save_x_thread = old_save
+            self._restore()
+        self.assertTrue(saved[0]["post_declined"])
+        self.assertEqual(calls, [])
 
 
 class XSourcesDmTests(unittest.TestCase):
@@ -820,18 +842,21 @@ class XSourcesDmTests(unittest.TestCase):
         self.assertEqual(saved, [])
         self.assertIn("no DM channel", err.getvalue())
 
-    def test_posting_path_triggers_the_sources_dm(self):
+    def test_approved_posting_triggers_the_sources_dm(self):
         payload = {
             "posted": True, "tweet_ids": ["1"], "thread_url": "https://x.com/i/web/status/1",
             "sources_text": "출처\n- 근거",
         }
         dms, saved, originals = self._patch(payload)
         old_send_message = slack_bot.send_message
+        old_post = slack_bot.x_poster.post_thread
         slack_bot.send_message = lambda channel_id, text: None
+        slack_bot.x_poster.post_thread = lambda job_dir: payload
         try:
-            slack_bot._maybe_post_x_thread("C1", {"job_id": "J1", "stage": "done"})
+            slack_bot.post_x_thread_now("C1", "J1")
         finally:
             slack_bot.send_message = old_send_message
+            slack_bot.x_poster.post_thread = old_post
             self._restore(originals)
         self.assertEqual(len(dms), 1)
 

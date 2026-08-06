@@ -92,16 +92,14 @@ STAGES = (
         name="upload",
         command=("sh/youtube/3_upload.sh",),
     ),
-    Stage(
-        # Runs immediately after the YouTube upload, no gate: the operator
-        # already approved this thread's content at final_confirm. Also
-        # always exits 0 -- a posting failure (e.g. billing, X API outage)
-        # must not mark the whole job failed when the video itself is
-        # already safely uploaded; the standalone /x_post command remains
-        # available to retry.
-        name="x_post",
-        command=("sh/common/x_post.sh",),
-    ),
+    # There is deliberately no x_post stage. Posting to X is not part of the
+    # Shorts pipeline any more: it needs a human to read the thread first,
+    # and machine-written Korean gets word order subtly wrong often enough
+    # (misplaced 안 negation, for one) that "the operator approved the
+    # content at final_confirm" was not the same as "the operator read the
+    # tweets". The pipeline still ends at the YouTube upload, unchanged;
+    # the thread waits for an explicit approval outside this graph (see
+    # slack_bot._prompt_x_thread_approval and the /x_post command).
 )
 
 STAGE_NAMES = tuple(stage.name for stage in STAGES)

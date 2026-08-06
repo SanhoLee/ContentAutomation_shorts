@@ -543,7 +543,8 @@ def send_final_confirm(chat_id, job_id):
         except json.JSONDecodeError:
             meta = {}
     text = (
-        "최종 확인 단계입니다. 승인하면 YouTube에 비공개 업로드하고, 이어서 X 스레드도 자동 게시합니다.\n\n"
+        "최종 확인 단계입니다. 승인하면 YouTube에 비공개 업로드합니다. "
+        "X 스레드는 자동 게시하지 않고, 업로드 후 따로 게시 여부를 여쭤봅니다.\n\n"
         f"제목: {meta.get('title', '')}\n\n"
         f"해시태그: {meta.get('hashtags', '')}\n\n"
         f"설명:\n{meta.get('description', '')}"
@@ -553,7 +554,7 @@ def send_final_confirm(chat_id, job_id):
     if x_payload and x_payload.get("tweets"):
         send_message(
             chat_id,
-            f"X 스레드 초안 ({len(x_payload['tweets'])}개, 승인 시 업로드 직후 자동 게시):\n\n"
+            f"X 스레드 초안 ({len(x_payload['tweets'])}개, 게시는 업로드 후 별도 승인):\n\n"
             + x_thread_adapter.render_text(x_payload),
         )
     else:

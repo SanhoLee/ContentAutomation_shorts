@@ -493,13 +493,30 @@ python3 -c "import content_package as cp; cp.build_content_package('dev/data/wor
 python3 dev/src/common/adapters/x_thread_adapter.py --job-id J0001 --print
 ```
 
-### X(Twitter) 업로드 후 자동 게시 (슬랙 연동)
+### X(Twitter) 게시 (승인 필수, 쇼츠 파이프라인과 분리)
 
-`x_thread` 파이프라인 단계가 초안을 만들어 두면, 슬랙 봇으로 실행한 job이
-업로드까지 완료(`stage == done`)되는 시점에 `x_poster.post_thread()`가 그
-초안을 자동으로 게시하고 결과를 슬랙으로 알립니다
-(`slack_bot._maybe_post_x_thread`). 텔레그램 경로와 `/x_post` 수동 명령은
-그대로 남아 있습니다.
+**X 게시는 자동으로 일어나지 않습니다.** 반드시 사람이 스레드를 읽고 승인해야
+나갑니다. 기계가 쓴 한국어는 어순이 미묘하게 틀리는 일이 있고("일이 **안 손에**
+잡힐 땐" 같은 `안` 부정 위치 오류), 영상을 승인한 것과 트윗을 읽은 것은 다르기
+때문입니다.
+
+쇼츠 파이프라인과는 **완전히 독립적으로** 돌아갑니다:
+
+- `pipeline_flow.STAGES`에는 X 게시 단계가 없습니다. 파이프라인은 예전처럼
+  YouTube 업로드에서 끝납니다. X 승인 여부와 무관하게 영상은 그대로 나갑니다.
+- 업로드가 끝나면(`stage == done`) 봇이 스레드 전문과 이미지를 보여주고
+  `X 스레드 게시 ▶` / `게시하지 않음` 버튼을 띄웁니다
+  (`slack_bot._prompt_x_thread_approval`).
+- 승인 버튼은 **버튼에 박힌 job_id로 동작**합니다. 승인이 늦어져 그 사이 다음 편
+  제작이 시작됐더라도 그 job에 영향을 주지 않고, `job["busy"]`도 건드리지 않아
+  쇼츠 진행을 막지 않습니다.
+- `게시하지 않음`을 누르면 `x_thread.json`에 `post_declined`가 기록되어 다시
+  묻지 않습니다. 초안은 그대로 남아 있어 나중에 `/x_post`로 게시할 수 있습니다.
+- 어색한 문장이 보이면 `/x_thread`로 초안을 다시 만든 뒤 `/x_post`로 게시하면
+  됩니다.
+
+`sh/common/x_post.sh`는 파이프라인 단계가 아니라 서버에서 손으로 게시할 때 쓰는
+CLI 경로로만 남아 있습니다.
 
 - **트윗 구성**: 첫 트윗(X 전용 타이틀 + 첫 메시지 본문 + 사진) → 핵심 포인트
   → 요약. 타이틀은 쇼츠 제목과 같을 필요가 없고 X 타임라인 기준으로만
@@ -566,7 +583,7 @@ python3 dev/src/common/adapters/x_thread_adapter.py --job-id J0001 --print
 - **실패 처리**: 스레드 중간 실패는 재시도하지 않고(중복 게시 방지) 그때까지의
   진행 상황을 `x_thread.json`에 기록합니다. `/x_post`로 다시 실행하면 아직
   올라가지 않은 트윗부터 이어서 게시하며, 이미 완료된 스레드는 재게시를
-  거부합니다. 자동 게시 실패는 슬랙으로 알리기만 하고 job은 성공으로 둡니다 —
+  거부합니다. 게시 실패는 슬랙으로 알리기만 하고 job은 성공으로 둡니다 —
   YouTube 업로드는 이미 끝났기 때문입니다.
 
 인증은 `x_auth.py`의 OAuth 2.0 경로를 씁니다(`X_CLIENT_ID`/`X_CLIENT_SECRET`

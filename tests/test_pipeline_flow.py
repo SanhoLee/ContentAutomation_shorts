@@ -70,14 +70,20 @@ class GraphTests(unittest.TestCase):
     def test_stage_order_is_the_pipeline_order(self):
         self.assertEqual(
             pipeline_flow.STAGE_NAMES,
-            ("script", "x_thread", "tts", "caption", "broll", "render", "upload", "x_post"),
+            ("script", "x_thread", "tts", "caption", "broll", "render", "upload"),
         )
 
-    def test_x_thread_and_x_post_have_no_gates(self):
-        # Both are best-effort, downstream-only artifacts: they must never
-        # introduce a third approval stop, or block on their own failure.
+    def test_pipeline_never_posts_to_x(self):
+        # Posting needs a human who has read the thread, so it lives outside
+        # the graph entirely (bot approval prompt / /x_post). The Shorts
+        # pipeline must end at the YouTube upload.
+        self.assertNotIn("x_post", pipeline_flow.STAGE_NAMES)
+        self.assertEqual(pipeline_flow.STAGE_NAMES[-1], "upload")
+
+    def test_x_thread_has_no_gate(self):
+        # Building the draft is a best-effort, downstream-only artifact: it
+        # must never introduce a third approval stop or block on failure.
         self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_thread"].gates, ())
-        self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_post"].gates, ())
 
     def test_review_mode_honours_exactly_two_gates(self):
         gates = pipeline_flow.gates_for_mode(job_state.MODE_REVIEW)
@@ -154,8 +160,9 @@ class ReviewModeTests(PipelineFlowTestCase):
         pipeline_flow.approve(self.work_dir)
         result = self.advance(runner, job_state.MODE_REVIEW)
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
-        # x_post (no gate) runs immediately after upload in the same pass.
-        self.assertEqual(runner.stages[-2:], ["upload", "x_post"])
+        # The run ends at the YouTube upload; X posting is not part of it.
+        self.assertEqual(runner.stages[-1], "upload")
+        self.assertNotIn("x_post", runner.stages)
 
     def test_a_human_intervenes_exactly_twice(self):
         runner = FakeRunner()

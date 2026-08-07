@@ -9,17 +9,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "dev" / "src" / "common"))
 
 import topic_candidate_pipeline as pipeline
+import topic_domain
 import topic_score
 import topic_seed_pool as tsp
 
 VOCAB = ("치매", "기억", "뇌", "수면", "운동", "예방")
 
 RULES = {
-    "threshold": 60,
+    "threshold": 45,
     "eligible_top_k": 3,
     "weights": {
-        "niche_relevance": 30, "search_intent_fit": 20, "evidence_potential": 20,
-        "novelty_vs_history": 20, "safety_tone": 10,
+        "domain_relevance": 30, "niche_relevance": 15, "search_intent_fit": 15,
+        "evidence_potential": 20, "novelty_vs_history": 15, "safety_tone": 5,
     },
     "intent_patterns": {
         "question": ["할까", "증상", "원인", "차이", "방법"],
@@ -94,12 +95,53 @@ class BatchExpandTests(unittest.TestCase):
         self.assertTrue(reports[0]["ok"])
         self.assertTrue(all("duplicate" in c for c in candidates))
 
+    def test_anchored_seed_falls_back_to_bare_seed_when_probe_drifts(self):
+        """`치매 고혈압` is a compound query -- suggest can return too little to
+        clear MIN_KEPT. Falling back beats emptying the queue."""
+        seeds = [tsp.SeedItem(
+            seed="치매 고혈압", origin="research_categories", category_id="chronic_disease",
+            base_seed="고혈압", anchor="치매",
+        )]
+        calls: list[str] = []
+
+        def fetch(url, params):
+            calls.append(params["q"])
+            if params["q"] == "치매 고혈압":
+                return ["seed", ["치매 고혈압 노래", "치매 고혈압 드라마"]]
+            return ["seed", ["고혈압 치매 위험도", "고혈압 기억력 저하", "고혈압 뇌 손상 예방"]]
+
+        candidates, reports = pipeline.batch_expand(seeds, VOCAB, sleep_ms=0, fetch=fetch, include_youtube=False)
+        # The anchored seed is tried across the whole language ladder first; the
+        # bare seed is only reached once every rung has failed.
+        self.assertEqual(list(dict.fromkeys(calls)), ["치매 고혈압", "고혈압"])
+        self.assertEqual(calls[-1], "고혈압")
+        self.assertTrue(reports[0]["fell_back"])
+        self.assertEqual(reports[0]["anchor"], "치매")
+        self.assertEqual(len(candidates), 3)
+        # `seed` records what was actually probed, so the run file stays honest.
+        self.assertTrue(all(c["seed"] == "고혈압" for c in candidates))
+
+    def test_anchored_seed_that_passes_does_not_fall_back(self):
+        seeds = [tsp.SeedItem(
+            seed="치매 고혈압", origin="research_categories", category_id="chronic_disease",
+            base_seed="고혈압", anchor="치매",
+        )]
+        calls: list[str] = []
+
+        def fetch(url, params):
+            calls.append(params["q"])
+            return ["seed", ["치매 고혈압 위험도", "치매 고혈압 기억력", "치매 고혈압 예방 운동"]]
+
+        _, reports = pipeline.batch_expand(seeds, VOCAB, sleep_ms=0, fetch=fetch, include_youtube=False)
+        self.assertEqual(calls, ["치매 고혈압"])
+        self.assertFalse(reports[0]["fell_back"])
+
 
 class ScoreAndRankTests(unittest.TestCase):
     def test_below_threshold_and_banned_are_rejected_not_eligible(self):
         candidates = [
             {"title_hint": "치매 초기증상 건망증 차이는 무엇일까", "seed": "치매", "duplicate": False},
-            {"title_hint": "완전히 무관한 요리 레시피 이야기", "seed": "치매", "duplicate": False},
+            {"title_hint": "건망증 그냥 잡담", "seed": "치매", "duplicate": False},
             {"title_hint": "치매 완치 보장 100% 즉시 효과", "seed": "치매", "duplicate": False},
         ]
         eligible, rejected = pipeline.score_and_rank(candidates, vocabulary=VOCAB, recent_titles=[], rules=RULES)
@@ -107,6 +149,45 @@ class ScoreAndRankTests(unittest.TestCase):
         reasons = {r["reject_reason"] for r in rejected}
         self.assertIn("below_threshold", reasons)
         self.assertIn("ban_keyword", reasons)
+
+    def test_off_domain_candidate_is_rejected_regardless_of_score(self):
+        """The bug this gate exists for: `심혈관질환 증상` used to out-score
+        `뇌 건강 식단` on search-intent points alone."""
+        candidates = [
+            {"title_hint": "심혈관질환 전조증상", "seed": "심혈관", "duplicate": False},
+            {"title_hint": "고혈압 증상 원인 차이", "seed": "고혈압", "duplicate": False},
+        ]
+        eligible, rejected = pipeline.score_and_rank(candidates, vocabulary=VOCAB, recent_titles=[], rules=RULES)
+        self.assertEqual(eligible, [])
+        self.assertEqual({r["reject_reason"] for r in rejected}, {"no_domain_anchor"})
+        self.assertTrue(all(r["matched_anchors"] == [] for r in rejected))
+
+    def test_reject_reason_priority_runs_duplicate_ban_anchor_threshold(self):
+        candidates = [
+            {"title_hint": "심혈관질환 전조증상", "seed": "심혈관", "duplicate": True},
+            {"title_hint": "심혈관 완치 보장 100%", "seed": "심혈관", "duplicate": False},
+        ]
+        _, rejected = pipeline.score_and_rank(candidates, vocabulary=VOCAB, recent_titles=[], rules=RULES)
+        by_title = {r["title_hint"]: r["reject_reason"] for r in rejected}
+        self.assertEqual(by_title["심혈관질환 전조증상"], "duplicate")
+        self.assertEqual(by_title["심혈관 완치 보장 100%"], "ban_keyword")
+
+    def test_anchor_gate_is_off_when_domain_does_not_require_it(self):
+        permissive = topic_domain.load_domain()
+        permissive = topic_domain.Domain(
+            domain_id=permissive.domain_id, label_ko=permissive.label_ko,
+            require_anchor=False, anchor_terms=permissive.anchor_terms,
+            seed_anchors=permissive.seed_anchors,
+            max_anchor_variants=permissive.max_anchor_variants,
+            category_roles=permissive.category_roles, default_role=permissive.default_role,
+        )
+        candidates = [{"title_hint": "고혈압 증상 원인 차이 비교", "seed": "고혈압", "duplicate": False}]
+        eligible, rejected = pipeline.score_and_rank(
+            candidates, vocabulary=VOCAB, recent_titles=[], rules=RULES, domain=permissive,
+        )
+        reasons = {r["reject_reason"] for r in rejected}
+        self.assertNotIn("no_domain_anchor", reasons)
+        self.assertEqual(len(eligible) + len(rejected), 1)
 
     def test_duplicate_flag_wins_over_score(self):
         candidates = [

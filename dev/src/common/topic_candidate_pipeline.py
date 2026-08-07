@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import story_types
+import topic_domain
 import topic_score
 import topic_seed_pool
 import trend_probe
@@ -58,6 +59,7 @@ STATUS_SELECTED = "selected"
 DEFAULT_TOP_N = 3
 
 SCORE_LABELS = {
+    "domain_relevance": "뇌 관련성",
     "niche_relevance": "채널 적합",
     "search_intent_fit": "검색 의도",
     "evidence_potential": "근거 가능성",
@@ -105,18 +107,28 @@ def _slugify(text: str, max_len: int = 40) -> str:
     return (text or "topic")[:max_len]
 
 
-def _normalize_candidate(keyword: str, seed_item: topic_seed_pool.SeedItem, vocabulary: Iterable[str]) -> dict[str, Any] | None:
+def _normalize_candidate(
+    keyword: str,
+    seed_item: topic_seed_pool.SeedItem,
+    vocabulary: Iterable[str],
+    probe_seed: str | None = None,
+) -> dict[str, Any] | None:
+    """`probe_seed` is what was actually sent to suggest, which differs from
+    `seed_item.seed` on the bare-seed fallback path."""
+    probe_seed = probe_seed or seed_item.seed
     text = " ".join(str(keyword).split()).strip()
     if not (MIN_CANDIDATE_LEN <= len(text) <= MAX_CANDIDATE_LEN):
         return None
-    if text.lower() == seed_item.seed.lower():
+    if text.lower() == probe_seed.lower():
         # The suggestion is just the seed echoed back -- no added information.
         return None
     return {
         "title_hint": text,
-        "seed": seed_item.seed,
+        "seed": probe_seed,
         "seed_origin": seed_item.origin,
         "category_id": seed_item.category_id,
+        "anchor": seed_item.anchor,
+        "base_seed": seed_item.base_seed,
         "matched_terms": _matched(text, vocabulary),
     }
 
@@ -151,22 +163,38 @@ def batch_expand(
     fetch: Callable[..., Any] | None = None,
     include_youtube: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Run trend_probe.probe() per seed. Returns (candidates, seed_reports)."""
+    """Run trend_probe.probe() per seed. Returns (candidates, seed_reports).
+
+    An anchored seed that comes back `off_topic` is retried bare once. Compound
+    queries like `치매 고혈압` can return too few suggestions to clear
+    trend_probe's MIN_KEPT sample-size gate, and an empty queue is worse than a
+    wide one — the bare seed's off-domain suggestions get caught downstream by
+    the `no_domain_anchor` rejection instead.
+    """
     vocabulary = tuple(vocabulary)
     candidates: list[dict[str, Any]] = []
     seed_reports: list[dict[str, Any]] = []
 
     for index, seed_item in enumerate(seeds):
-        result = trend_probe.probe(seed_item.seed, vocabulary, include_youtube=include_youtube, fetch=fetch)
+        probe_seed = seed_item.seed
+        result = trend_probe.probe(probe_seed, vocabulary, include_youtube=include_youtube, fetch=fetch)
+
+        fell_back = False
+        if not result.ok and seed_item.anchored and seed_item.base_seed:
+            fell_back = True
+            probe_seed = seed_item.base_seed
+            result = trend_probe.probe(probe_seed, vocabulary, include_youtube=include_youtube, fetch=fetch)
+
         seed_reports.append({
             "seed": seed_item.seed, "origin": seed_item.origin, "ok": result.ok,
             "language": result.language, "status": result.status,
             "keyword_count": len(result.keywords),
+            "anchor": seed_item.anchor, "fell_back": fell_back,
         })
         if result.ok:
             source = f"suggest_{result.language}"
             for keyword in result.keywords:
-                candidate = _normalize_candidate(keyword, seed_item, vocabulary)
+                candidate = _normalize_candidate(keyword, seed_item, vocabulary, probe_seed=probe_seed)
                 if candidate is None:
                     continue
                 candidate["language"] = result.language
@@ -201,26 +229,36 @@ def score_and_rank(
     vocabulary: Iterable[str],
     recent_titles: list[str],
     rules: dict[str, Any],
+    domain: topic_domain.Domain | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Returns (eligible, rejected), both sorted by score descending.
 
     `eligible` holds every candidate that cleared the threshold and is not a
-    duplicate/banned -- callers apply eligible_top_k at write time.
+    duplicate/banned/off-domain -- callers apply eligible_top_k at write time.
+
+    `no_domain_anchor` is checked before the threshold on purpose: a candidate
+    outside the channel's base domain is not a low-scoring topic, it is the
+    wrong topic, and no amount of search-intent points should rescue it.
     """
-    threshold = rules.get("threshold", 60)
+    domain = domain or topic_domain.load_domain()
+    threshold = rules.get("threshold", topic_score.DEFAULT_RULES["threshold"])
     scored: list[dict[str, Any]] = []
     for candidate in candidates:
         result = topic_score.score_candidate(
-            candidate["title_hint"], vocabulary=vocabulary, recent_titles=recent_titles, rules=rules,
+            candidate["title_hint"], vocabulary=vocabulary, recent_titles=recent_titles,
+            rules=rules, domain=domain,
         )
         record = dict(candidate)
         record["score"] = result.total
         record["score_breakdown"] = result.breakdown
+        record["matched_anchors"] = list(result.matched_anchors)
         record["matched_terms"] = list(dict.fromkeys(list(candidate.get("matched_terms", ())) + list(result.matched_terms)))
         if candidate.get("duplicate"):
             record["reject_reason"] = "duplicate"
         elif result.banned:
             record["reject_reason"] = "ban_keyword"
+        elif result.missing_anchor:
+            record["reject_reason"] = "no_domain_anchor"
         elif result.total < threshold:
             record["reject_reason"] = "below_threshold"
         scored.append(record)
@@ -235,7 +273,10 @@ def score_and_rank(
 # [E] Write queues
 # ---------------------------------------------------------------------------
 
-def _build_topic_payload(record: dict[str, Any], topic_id: str, created_at: str, status: str) -> dict[str, Any]:
+def _build_topic_payload(
+    record: dict[str, Any], topic_id: str, created_at: str, status: str,
+    domain_id: str = "",
+) -> dict[str, Any]:
     return {
         "topic_id": topic_id,
         "title_hint": record["title_hint"],
@@ -246,8 +287,14 @@ def _build_topic_payload(record: dict[str, Any], topic_id: str, created_at: str,
         "score_breakdown": record["score_breakdown"],
         "language": record.get("language", ""),
         "domain_match": record.get("domain_match", 0.0),
+        "domain_id": domain_id,
+        "matched_anchors": record.get("matched_anchors", []),
         "matched_terms": record.get("matched_terms", []),
-        "raw_signals": {"seed_origin": record.get("seed_origin", "")},
+        "raw_signals": {
+            "seed_origin": record.get("seed_origin", ""),
+            "anchor": record.get("anchor"),
+            "base_seed": record.get("base_seed"),
+        },
         # A hint for the story_type picker, not a decision: story_type stays
         # null until objective_planner consumes this candidate and spends a
         # slot of the configured mix on it (design spec §2.4).
@@ -266,6 +313,7 @@ def write_queues(
     *,
     base_dir: str | Path | None = None,
     eligible_top_k: int = 15,
+    domain_id: str = "",
 ) -> dict[str, Any]:
     base = Path(base_dir) if base_dir else DATA_TOPICS_DIR
     raw_dir, eligible_dir, rejected_dir = base / "raw", base / "eligible", base / "rejected"
@@ -281,7 +329,7 @@ def write_queues(
     written_eligible: list[Path] = []
     for rank, record in enumerate(top, start=1):
         topic_id = f"{date_str}_{rank:02d}_{_slugify(record['title_hint'])}"
-        payload = _build_topic_payload(record, topic_id, created_at, status="eligible")
+        payload = _build_topic_payload(record, topic_id, created_at, status="eligible", domain_id=domain_id)
         path = eligible_dir / f"{topic_id}.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         written_eligible.append(path)
@@ -289,7 +337,7 @@ def write_queues(
     written_rejected: list[Path] = []
     for rank, record in enumerate(rejected, start=1):
         topic_id = f"{date_str}_{rank:02d}_{_slugify(record['title_hint'])}"
-        payload = _build_topic_payload(record, topic_id, created_at, status="rejected")
+        payload = _build_topic_payload(record, topic_id, created_at, status="rejected", domain_id=domain_id)
         payload["reject_reason"] = record.get("reject_reason", "below_threshold")
         path = rejected_dir / f"{topic_id}.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -326,11 +374,13 @@ def run_refresh(
     base_dir: str | Path | None = None,
     dry_run: bool = False,
     limit: int | None = None,
+    domain: topic_domain.Domain | None = None,
 ) -> dict[str, Any]:
     """`conn` defaults to a real youtube_feedback.db connection. Pass conn=None
     explicitly (as tests do) to run with no database at all."""
     pipeline_config = pipeline_config or load_pipeline_config()
     score_rules = score_rules or topic_score.load_rules()
+    domain = domain or topic_domain.load_domain()
 
     owns_conn = conn is _UNSET
     if owns_conn:
@@ -345,6 +395,7 @@ def run_refresh(
             max_seeds_per_category=pipeline_config["max_seeds_per_category"],
             min_seed_len=pipeline_config["min_seed_len"],
             max_seed_len=pipeline_config["max_seed_len"],
+            domain=domain,
         )
 
         candidates, seed_reports = batch_expand(
@@ -354,7 +405,10 @@ def run_refresh(
         lookback_days = score_rules.get("novelty", {}).get("lookback_days", 60)
         recent_titles = _recent_titles(conn, lookback_days)
 
-        eligible, rejected = score_and_rank(candidates, vocabulary=vocabulary, recent_titles=recent_titles, rules=score_rules)
+        eligible, rejected = score_and_rank(
+            candidates, vocabulary=vocabulary, recent_titles=recent_titles,
+            rules=score_rules, domain=domain,
+        )
     finally:
         if owns_conn and conn is not None:
             conn.close()
@@ -367,13 +421,21 @@ def run_refresh(
         "seed_count": len(seeds),
         "seed_origins": {origin: sum(1 for s in seeds if s.origin == origin) for origin in ("research_categories", "keywords_db", "extra")},
         "candidate_count": len(candidates),
+        "domain_id": domain.domain_id,
+        # If anchor_fallback_count approaches anchored_seed_count, anchoring is
+        # starving the probe and seed_anchors needs a more common phrasing.
+        "anchored_seed_count": sum(1 for s in seeds if s.anchored),
+        "anchor_fallback_count": sum(1 for r in seed_reports if r.get("fell_back")),
         "seed_reports": seed_reports,
     }
 
     if dry_run:
         return {"eligible": eligible[:top_k], "rejected": rejected, "run_meta": run_meta, "written": None}
 
-    written = write_queues(eligible, rejected, run_meta, base_dir=base_dir, eligible_top_k=top_k)
+    written = write_queues(
+        eligible, rejected, run_meta, base_dir=base_dir, eligible_top_k=top_k,
+        domain_id=domain.domain_id,
+    )
     return {"eligible": eligible[:top_k], "rejected": rejected, "run_meta": run_meta, "written": written}
 
 
@@ -506,6 +568,46 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_score_text(args: argparse.Namespace) -> int:
+    """Score one arbitrary string with no network and no queue writes.
+
+    This is how the threshold gets calibrated after a weight change, and how an
+    operator answers "why did that get rejected" later on.
+    """
+    domain = topic_domain.load_domain()
+    rules = topic_score.load_rules()
+    conn = _default_conn()
+    try:
+        vocabulary = trend_probe.build_channel_vocabulary(conn)
+        recent_titles = _recent_titles(conn, rules.get("novelty", {}).get("lookback_days", 60))
+    finally:
+        if conn is not None:
+            conn.close()
+
+    result = topic_score.score_candidate(
+        args.score_text, vocabulary=vocabulary, recent_titles=recent_titles,
+        rules=rules, domain=domain,
+    )
+    threshold = rules.get("threshold", topic_score.DEFAULT_RULES["threshold"])
+    if result.missing_anchor:
+        verdict = "탈락 (no_domain_anchor)"
+    elif result.banned:
+        verdict = "탈락 (ban_keyword)"
+    elif result.total < threshold:
+        verdict = f"탈락 (below_threshold, 임계값 {threshold})"
+    else:
+        verdict = f"통과 (임계값 {threshold})"
+
+    print(f"베이스 분야: {topic_domain.describe(domain)}")
+    print(f"후보: {args.score_text}")
+    print(f"점수 {result.total} → {verdict}")
+    for key, value in result.breakdown.items():
+        print(f"  {SCORE_LABELS.get(key, key):<8} {value:>6}  (가중치 {rules.get('weights', {}).get(key, '-')})")
+    print(f"앵커 매칭: {', '.join(result.matched_anchors) or '없음'}")
+    print(f"어휘 매칭: {', '.join(result.matched_terms) or '없음'}")
+    return 0
+
+
 def cmd_list_eligible(args: argparse.Namespace) -> int:
     items = list_eligible(base_dir=args.base_dir)
     if not items:
@@ -577,6 +679,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--select", metavar="TOPIC_ID", help="topic_id로 주제 선택 기록")
     mode.add_argument("--select-rank", type=int, metavar="N", help="--top 목록의 N번을 선택 기록")
     mode.add_argument("--selected", action="store_true", help="현재 선택된 주제 조회")
+    mode.add_argument("--score-text", metavar="TEXT",
+                      help="임의 문장의 점수·앵커 매칭 출력 (네트워크 호출 없음, 큐 미변경)")
     parser.add_argument("--limit", type=int, default=20, help="--dry-run 출력 개수")
     return parser.parse_args(argv)
 
@@ -587,6 +691,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_refresh(args)
     if args.dry_run:
         return cmd_dry_run(args)
+    if args.score_text:
+        return cmd_score_text(args)
     if args.top is not None:
         return cmd_top(args)
     if args.select or args.select_rank is not None:

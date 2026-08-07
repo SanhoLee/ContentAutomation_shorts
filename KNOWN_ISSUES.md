@@ -1,6 +1,6 @@
 # Known Issues and Risk Register
 
-Last updated: 2026-08-02
+Last updated: 2026-08-07
 Current base branch: `main`
 
 ## Active / Watch Items
@@ -182,6 +182,29 @@ Status: new, verify against real credentials before relying on it.
 Not blocking: every failure mode here degrades rather than breaks. No Pillow → no card (`x_photo_card` imports `card_render` lazily so the thread stage and both bots still import cleanly). Rejected image → text-only thread. Mid-thread failure → progress persisted, resumable with `/x_post`, and an already-posted thread refuses to repost.
 
 **Action**: after the first real auto-post, confirm the lead tweet actually shows the card. If `media.write` turns out not to be granted, the log line is `사진 업로드 실패, 텍스트만 게시합니다` and the fix is a scope change in the X Developer Portal, not a code change.
+
+### 21. Seed anchoring can thin out the autocomplete pool (2026-08-07)
+
+Status: new, mitigated by a fallback; watch the counters on the first few live refreshes.
+
+Risk-factor seeds are now probed anchored — `고혈압` becomes `치매 고혈압` (`dev/config/topic_domain.json`, `seed_anchors`) — so the suggestion pool is shaped toward brain health instead of returning straight cardiology. The cost is that a two-word query gets less autocomplete traffic than a one-word one, and `trend_probe.probe()` drops any language rung that returns fewer than `MIN_KEPT = 3` on-domain suggestions. If every rung fails for every anchored seed, the eligible queue thins out or empties.
+
+Mitigation already in place: `batch_expand()` retries an `off_topic` anchored seed once with its bare seed, and the resulting off-domain candidates are caught by the `no_domain_anchor` rejection instead of reaching the queue. So the failure mode is wasted suggest calls, not a wrong topic.
+
+**Action**: after a live `--refresh`, read `data/topics/raw/{stamp}_run.json`:
+
+- `anchored_seed_count` — how many seeds carried an anchor
+- `anchor_fallback_count` — how many of those had to fall back
+
+If the fallback count exceeds roughly half the anchored count, the anchors are too rare a phrasing. Change `seed_anchors` in `topic_domain.json` to something people actually type, or raise `max_anchor_variants` to 2 so a second anchor gets a turn (note: that also raises the suggest call count, bounded by `max_seeds_total`).
+
+### 22. `threshold` is calibrated against the current weights, not independent of them (2026-08-07)
+
+Status: new, informational.
+
+`topic_score`'s weights were rebalanced to make room for `domain_relevance` (30), and `threshold` was lowered 60 → 45 to match. The two numbers are not independently meaningful: with the anchor gate in place, the *minimum possible* score for an in-domain candidate is 40 (`domain_relevance` 20 + `novelty` 15 + `safety_tone` 5), so 45 asks for roughly one further signal beyond the anchor. Measured separation at the time of the change (novelty penalty applied): in-domain samples 48–78, off-domain samples all gated out before scoring.
+
+**Action**: if any weight in `dev/config/topic_score_rules.json` changes, re-derive `threshold` rather than carrying 45 over. `topic_candidate_pipeline.py --score-text "..."` prints a full breakdown with no network call, and `tests/test_topic_score.py::ShippedConfigCalibrationTests` asserts the separation against the committed config — it will fail if a weight edit breaks it.
 
 ## Bugs To Watch For In Next Testing Session
 

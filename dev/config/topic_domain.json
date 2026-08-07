@@ -1,0 +1,46 @@
+{
+  "_meta": {
+    "description": "채널의 '베이스 분야' 정의. 주제 후보는 이 범위 안에서만 선정된다. research_categories.json은 PubMed 스냅샷이라 손대지 않고, 분야 판정에 필요한 값만 여기 모은다.",
+    "how_to_change": "다른 분야로 채널을 돌리려면 anchor_terms / seed_anchors / category_roles 세 개만 바꾸면 된다. 코드 수정은 필요 없다."
+  },
+  "domain_id": "brain_health",
+  "label_ko": "뇌 건강",
+  "require_anchor": true,
+  "anchor_terms": [
+    "뇌",
+    "뇌 건강",
+    "뇌건강",
+    "인지",
+    "인지기능",
+    "기억",
+    "기억력",
+    "건망증",
+    "치매",
+    "알츠하이머",
+    "집중력",
+    "판단력",
+    "신경",
+    "brain",
+    "cognition",
+    "cognitive",
+    "memory",
+    "dementia",
+    "alzheimer"
+  ],
+  "seed_anchors": ["치매", "뇌"],
+  "seed_anchors_latin": ["dementia", "brain"],
+  "max_anchor_variants": 1,
+  "category_roles": {
+    "chronic_disease": "risk_factor",
+    "hearing_vision": "risk_factor",
+    "stress_cortisol": "risk_factor",
+    "late_life_depression": "risk_factor",
+    "social_isolation": "risk_factor",
+    "diet_nutrition": "risk_factor",
+    "exercise_cognition": "risk_factor",
+    "sleep_cognition": "core",
+    "mindfulness_meditation": "core",
+    "memory_cognition": "core"
+  },
+  "default_role": "core"
+}

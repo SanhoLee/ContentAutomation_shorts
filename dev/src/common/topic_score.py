@@ -5,14 +5,23 @@ Claude never makes the final numeric call here — this module is pure Python
 and every function is a straight string/set computation, so a score is always
 reproducible from its inputs alone.
 
-Five weighted components (default weights sum to 100, configurable via
+Six weighted components (default weights sum to 100, configurable via
 topic_pipeline's topic_score_rules.json):
 
+    domain_relevance    — does the text sit inside the channel's base domain
     niche_relevance     — channel vocabulary hits in the candidate text
     search_intent_fit   — does the text look like a real search query
     evidence_potential  — does it point at researchable claims
     novelty_vs_history  — how different is it from recently published titles
     safety_tone         — absence of fear/cure-guarantee marketing language
+
+`domain_relevance` is the newest and the heaviest, and it is backed by a hard
+gate rather than points alone. `niche_relevance` scores the channel's whole
+vocabulary, which includes risk factors like `심혈관` and `고혈압` — that is
+correct for "does this channel talk about this word" and useless for "is this
+about brains". Weighted scoring alone let `심혈관질환 증상` (60) beat
+`뇌 건강 식단` (57), so anything with no anchor term is now rejected outright
+(`missing_anchor`), regardless of total.
 """
 
 from __future__ import annotations
@@ -23,17 +32,20 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+import topic_domain
+
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "config" / "topic_score_rules.json"
 
 DEFAULT_RULES: dict[str, Any] = {
-    "threshold": 60,
+    "threshold": 45,
     "eligible_top_k": 15,
     "weights": {
-        "niche_relevance": 30,
-        "search_intent_fit": 20,
+        "domain_relevance": 30,
+        "niche_relevance": 15,
+        "search_intent_fit": 15,
         "evidence_potential": 20,
-        "novelty_vs_history": 20,
-        "safety_tone": 10,
+        "novelty_vs_history": 15,
+        "safety_tone": 5,
     },
     "intent_patterns": {
         "question": ["할까", "이란", "증상", "원인", "차이", "방법", "언제"],
@@ -72,6 +84,17 @@ def _matched(text: str, terms: Iterable[str]) -> list[str]:
     return out
 
 
+def score_domain_relevance(
+    text: str, domain: topic_domain.Domain, weight: float,
+) -> tuple[float, list[str]]:
+    """Graded, not binary: one anchor term is inside the domain, two is squarely
+    inside it. Zero scores nothing and also trips `missing_anchor` below."""
+    hits = topic_domain.matched_anchors(text, domain)
+    if not hits:
+        return 0.0, []
+    return round(weight * min(1.0, (len(hits) + 1) / 3), 2), hits
+
+
 def score_niche_relevance(text: str, vocabulary: Iterable[str], weight: float) -> tuple[float, list[str]]:
     hits = _matched(text, vocabulary)
     return round(weight * min(1.0, len(hits) / 3), 2), hits
@@ -105,6 +128,8 @@ class ScoreResult:
     breakdown: dict[str, float]
     matched_terms: tuple[str, ...]
     banned: bool
+    matched_anchors: tuple[str, ...] = ()
+    missing_anchor: bool = False
 
 
 def score_candidate(
@@ -113,17 +138,21 @@ def score_candidate(
     vocabulary: Iterable[str] = (),
     recent_titles: Sequence[str] = (),
     rules: dict[str, Any] | None = None,
+    domain: topic_domain.Domain | None = None,
 ) -> ScoreResult:
     rules = rules or load_rules()
+    domain = domain or topic_domain.load_domain()
     weights = rules.get("weights", DEFAULT_RULES["weights"])
 
-    niche, matched = score_niche_relevance(text, vocabulary, weights.get("niche_relevance", 30))
-    intent = score_search_intent_fit(text, rules.get("intent_patterns", {}), weights.get("search_intent_fit", 20))
+    domain_score, anchors = score_domain_relevance(text, domain, weights.get("domain_relevance", 30))
+    niche, matched = score_niche_relevance(text, vocabulary, weights.get("niche_relevance", 15))
+    intent = score_search_intent_fit(text, rules.get("intent_patterns", {}), weights.get("search_intent_fit", 15))
     evidence = score_evidence_potential(text, rules.get("evidence_hints", ()), weights.get("evidence_potential", 20))
-    novelty = score_novelty_vs_history(text, recent_titles, weights.get("novelty_vs_history", 20))
-    safety, banned = score_safety_tone(text, rules.get("ban_keywords", ()), weights.get("safety_tone", 10))
+    novelty = score_novelty_vs_history(text, recent_titles, weights.get("novelty_vs_history", 15))
+    safety, banned = score_safety_tone(text, rules.get("ban_keywords", ()), weights.get("safety_tone", 5))
 
     breakdown = {
+        "domain_relevance": domain_score,
         "niche_relevance": niche,
         "search_intent_fit": intent,
         "evidence_potential": evidence,
@@ -131,4 +160,8 @@ def score_candidate(
         "safety_tone": safety,
     }
     total = int(round(sum(breakdown.values())))
-    return ScoreResult(total=total, breakdown=breakdown, matched_terms=tuple(matched), banned=banned)
+    return ScoreResult(
+        total=total, breakdown=breakdown, matched_terms=tuple(matched), banned=banned,
+        matched_anchors=tuple(anchors),
+        missing_anchor=bool(domain.require_anchor and not anchors),
+    )

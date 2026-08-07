@@ -157,6 +157,7 @@ brain50/
 │   │   │   ├── objective_planner.py
 │   │   │   ├── evidence_probe.py  # PubMed 근거 확인 쿼리 사다리
 │   │   │   ├── trend_probe.py     # 다국어 트렌드 신호 + drift 필터
+│   │   │   ├── topic_domain.py          # 베이스 분야(뇌 건강) 정의·앵커 판정 (Phase 1)
 │   │   │   ├── topic_seed_pool.py       # 시드 없이 시드 풀 구성 (Phase 1)
 │   │   │   ├── topic_score.py           # 주제 후보 결정론적 점수 (Phase 1)
 │   │   │   ├── topic_candidate_pipeline.py  # 시드→probe→점수→eligible 큐 (Phase 1)
@@ -182,6 +183,7 @@ brain50/
 │   ├── sh/                     # Shell wrapper (common/youtube 하위 구조 동일)
 │   ├── config/                 # Pareto 5-Phase 설정 (JSON/YAML/MD, 코드와 분리)
 │   │   ├── creative_dna.md          # 채널 톤·문체 (Phase 2)
+│   │   ├── topic_domain.json        # 베이스 분야 앵커·카테고리 역할 (Phase 1)
 │   │   ├── topic_score_rules.json   # 주제 후보 점수 가중치·임계값 (Phase 1)
 │   │   ├── topic_pipeline.json      # 시드 풀 상한·eligible_top_k (Phase 1)
 │   │   ├── schedules.yaml           # 플랫폼별 시간대·일일 한도 (Phase 5)
@@ -428,9 +430,16 @@ Python이 결정론적으로 점수 매겨 선택합니다. 무인 실행 루프
 
 사람이 시드 키워드를 떠올릴 필요가 없습니다. `research_categories.json`과 발행
 키워드 이력에서 시드 풀을 자동으로 구성하고, 기존 `trend_probe`(en→ja→ko 사다리,
-상업어·drift 필터 그대로 유지)로 확장한 뒤, 결정론적 점수(니치 적합·검색의도·근거
-가능성·최근 주제와의 중복 여부·안전한 톤)로 줄 세워 `dev/data/topics/eligible/`에
-저장합니다. **이 경로에서 Claude 호출은 0회**입니다.
+상업어·drift 필터 그대로 유지)로 확장한 뒤, 결정론적 점수(뇌 관련성·니치 적합·검색
+의도·근거 가능성·최근 주제와의 중복 여부·안전한 톤)로 줄 세워
+`dev/data/topics/eligible/`에 저장합니다. **이 경로에서 Claude 호출은 0회**입니다.
+
+후보는 **베이스 분야(`dev/config/topic_domain.json`) 안에서만** 선정됩니다.
+`chronic_disease` 같은 위험인자 카테고리는 시드에 앵커를 붙여
+(`고혈압` → `치매 고혈압`) 자동완성을 치고, 앵커 단어가 하나도 없는 후보는 점수와
+무관하게 `rejected/`로 보냅니다(`no_domain_anchor`). 이 장치가 없을 때는
+`심혈관질환 증상`이 검색어 문형 점수만으로 `뇌 건강 식단`을 앞질러 후보에
+올라왔습니다.
 
 ```bash
 # 매일/매 실행 시: eligible 큐 갱신
@@ -442,15 +451,21 @@ python3 dev/src/common/topic_candidate_pipeline.py --dry-run --limit 20
 # 현재 eligible 큐 확인
 python3 dev/src/common/topic_candidate_pipeline.py --list-eligible
 
+# 임의 문장이 왜 통과/탈락하는지 확인 (네트워크 호출 없음)
+python3 dev/src/common/topic_candidate_pipeline.py --score-text "심혈관질환 증상"
+
 # 운영자는 목록에서 골라 그대로 주제로 쓰거나, 최고점 1건을 자동 소비
 python3 dev/src/common/0_topic_plan.py plan --objective balanced --from-eligible
 python3 dev/src/common/run_pipeline.py --job-id J advance --mode review --from-eligible
 ```
 
+베이스 분야(앵커 단어·시드 앵커·카테고리 역할)는 `dev/config/topic_domain.json`,
 통과 기준(`threshold`)과 상위 개수(`eligible_top_k`)는
-`dev/config/topic_score_rules.json`에서, 시드 풀 상한과 추가 시드는
-`dev/config/topic_pipeline.json`에서 조정합니다. 기존 직접 입력·`topic.json`
-경로는 그대로 동작합니다 — `--from-eligible`을 켜지 않으면 아무 영향이 없습니다.
+`dev/config/topic_score_rules.json`, 시드 풀 상한과 추가 시드는
+`dev/config/topic_pipeline.json`에서 조정합니다. 채널을 다른 분야로 돌리려면
+`topic_domain.json`의 세 목록만 바꾸면 되고 코드 수정은 필요 없습니다. 기존 직접
+입력·`topic.json` 경로는 그대로 동작합니다 — `--from-eligible`을 켜지 않으면 아무
+영향이 없습니다.
 
 ### 트렌드 기반 주제 선택
 

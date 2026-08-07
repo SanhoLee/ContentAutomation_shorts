@@ -1,12 +1,13 @@
 {
-  "threshold": 60,
+  "threshold": 45,
   "eligible_top_k": 15,
   "weights": {
-    "niche_relevance": 30,
-    "search_intent_fit": 20,
+    "domain_relevance": 30,
+    "niche_relevance": 15,
+    "search_intent_fit": 15,
     "evidence_potential": 20,
-    "novelty_vs_history": 20,
-    "safety_tone": 10
+    "novelty_vs_history": 15,
+    "safety_tone": 5
   },
   "intent_patterns": {
     "question": ["할까", "이란", "증상", "원인", "차이", "방법", "언제"],

@@ -75,6 +75,8 @@ Long-running work runs in background threads. While a stage is running, other in
 
 Selection **records only**; it does not start production. The pick lands in `data/topics/selected.json`, which is the seam for wiring this into `0_topic_plan.py` / `run_pipeline.py` later. `status: "selected"` (a human picked it) is deliberately separate from `consumed` (the pipeline spent it) so `pick_top_eligible()`'s existing auto-path behavior is unchanged.
 
+Candidates are constrained to the channel's **base domain**, defined by the operator in `dev/config/topic_domain.json` and enforced by `topic_domain.py` in two places: risk-factor category seeds are probed anchored (`고혈압` → `치매 고혈압`), and any candidate with no anchor term is rejected as `no_domain_anchor` regardless of score. Without this, `research_categories.json`'s risk-factor keywords reached the suggest API stripped of the `AND cognitive decline` half of their PubMed query, and `심혈관질환 증상` out-scored `뇌 건강 식단` on search-query shape alone. Read `docs/usage/topic-scheduling.md#베이스-분야-설정` before changing weights — `threshold` is calibrated against them (see `KNOWN_ISSUES.md` items 21–22).
+
 The refresh is not registered with any timer yet — systemd timer and crontab recipes are in `docs/usage/topic-scheduling.md`, to be enabled on the server when ready.
 
 ## Topic and Script Generation

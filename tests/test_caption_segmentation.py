@@ -127,5 +127,52 @@ class KoreanGrammarBoundaryTests(unittest.TestCase):
         self.assertEqual(caption2._block_level(tokens, 3), caption2.BLOCK_HARD)
 
 
+def words_for(text, step=0.5):
+    """Synthetic Whisper output: one word per token, `step` seconds apart."""
+    return [
+        {"word": token, "start": round(i * step, 3), "end": round((i + 1) * step, 3)}
+        for i, token in enumerate(text.split())
+    ]
+
+
+class SceneTimingTests(unittest.TestCase):
+    """scenes.json can outlive the script it was written for — 승인 게이트에서
+    본문만 고치면 voice.wav는 새 본문, scenes.json은 옛 대본이 된다."""
+
+    SCENES = [
+        {"text": "스스로 의지를 가지고 일할 때와 억지로 할 때 뇌는 다릅니다"},
+        {"text": "뇌의 의지적 명령이 척수를 통해 내려가면 신경세포들이 순서대로 켜집니다"},
+        {"text": "마음이 먼저고 몸은 그다음입니다"},
+    ]
+
+    def assert_well_formed(self, scenes, words):
+        previous_start = -1.0
+        for scene in scenes:
+            self.assertLessEqual(scene["start"], scene["end"])
+            self.assertGreaterEqual(scene["start"], previous_start)
+            previous_start = scene["start"]
+        self.assertEqual(scenes[-1]["end"], words[-1]["end"])
+
+    def test_scenes_longer_than_the_audio_do_not_run_off_the_word_list(self):
+        # The failure that took down job review_20260808_134830: the operator
+        # shortened the body, so the words ran out before the last scene.
+        words = words_for("의지로 일할 때 뇌는 다릅니다 마음이 먼저고 몸은 그다음입니다")
+        scenes = caption2.calc_scene_timing([dict(s) for s in self.SCENES], words)
+        self.assert_well_formed(scenes, words)
+
+    def test_scenes_shorter_than_the_audio_still_span_it(self):
+        words = words_for(" ".join(s["text"] for s in self.SCENES) + " " + " ".join(["덧붙임"] * 40))
+        scenes = caption2.calc_scene_timing([dict(s) for s in self.SCENES], words)
+        self.assert_well_formed(scenes, words)
+
+    def test_render_windows_tile_the_whole_voice_track(self):
+        words = words_for(" ".join(s["text"] for s in self.SCENES))
+        scenes = caption2.calc_scene_timing([dict(s) for s in self.SCENES], words)
+        self.assertEqual(scenes[0]["render_start"], 0.0)
+        self.assertEqual(scenes[-1]["render_end"], round(words[-1]["end"], 2))
+        for earlier, later in zip(scenes, scenes[1:]):
+            self.assertEqual(earlier["render_end"], later["render_start"])
+
+
 if __name__ == "__main__":
     unittest.main()

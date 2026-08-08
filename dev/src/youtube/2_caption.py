@@ -485,11 +485,20 @@ def calc_scene_timing(scenes: list[dict], words: list[dict]) -> list[dict]:
     def syl(text):
         return _syllables(text)
 
+    # scenes.json은 스크립트 생성 시점 그대로 남는다 — 승인 게이트에서 본문을
+    # 고치면 voice.wav/자막만 새 본문 기준으로 다시 만들어지고 씬 텍스트는 옛
+    # 대본이다. 절대 음절수로 단어를 소비하면 그 차이만큼 타임라인이 밀리거나
+    # 단어가 동나므로, align_lines_to_timestamps와 같은 방식으로 씬 전체 대비
+    # 실제 발화 음절 비율을 곱해 비례 배분한다.
+    total_scene_syl = sum(syl(s["text"]) for s in scenes) or 1.0
+    total_word_syl  = sum(syl(w["word"]) for w in words) or total_scene_syl
+    syl_ratio       = total_word_syl / total_scene_syl
+
     word_idx = 0
     for scene in scenes:
-        sc_syl  = syl(scene["text"])
+        sc_syl  = syl(scene["text"]) * syl_ratio
         acc     = 0.0
-        st_idx  = word_idx
+        st_idx  = min(word_idx, len(words) - 1)
 
         while word_idx < len(words) and acc < sc_syl:
             acc      += syl(words[word_idx]["word"])

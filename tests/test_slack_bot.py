@@ -911,6 +911,34 @@ class XPhotoIntakeTests(unittest.TestCase):
         self.assertNotIn("x_photo_target", job)
         self.assertIn("이미 게시된", self.messages[-1])
 
+    def _handle(self, job, message):
+        state = {"chats": {"C1": job}}
+        original = slack_bot.save_state
+        slack_bot.save_state = lambda _state: None
+        try:
+            slack_bot.handle_message(state, message)
+        finally:
+            slack_bot.save_state = original
+
+    def test_busy_job_still_takes_the_upload_it_asked_for(self):
+        # request_x_photo fires off the x_thread stage, but on the auto path the
+        # job stays busy through render and upload. The busy gate used to bounce
+        # the attachment before the intake ever saw it, so the operator's image
+        # was silently dropped while the bot claimed to be waiting for it.
+        job = self._armed_job()
+        job["busy"] = "끝까지 자동 처리"
+        self._handle(job, {"chat": {"id": "C1"}, "document": self._image()})
+        self.assertEqual(len(self.saved), 1)
+        self.assertNotIn("x_photo_target", job)
+        self.assertFalse([m for m in self.messages if "진행 중입니다" in m])
+
+    def test_busy_job_still_bounces_plain_text(self):
+        job = self._armed_job()
+        job["busy"] = "끝까지 자동 처리"
+        self._handle(job, {"chat": {"id": "C1"}, "text": "이거 언제 끝나?"})
+        self.assertEqual(self.saved, [])
+        self.assertIn("진행 중입니다", self.messages[-1])
+
 
 class XPhotoPipelineHookTests(unittest.TestCase):
     """The request has to fire off the x_thread stage finishing -- that is

@@ -2769,6 +2769,16 @@ def handle_message(state, message):
         if (job.get("goal_draft") or {}).get("awaiting_seed") and text and not text.startswith("/"):
             capture_goal_seed(chat_id, job, text)
             return
+        # The armed photo intake needs the same carve-out. request_x_photo()
+        # fires as soon as the x_thread draft exists and tells the operator the
+        # image can arrive any time before final approval -- but on the auto
+        # path the job stays busy through render and upload, so the busy gate
+        # below would bounce the very upload the bot just asked for. Still ahead
+        # of apply_edit_message: an uploaded image is never the answer to a
+        # script.txt edit prompt.
+        if apply_x_photo_message(chat_id, job, message):
+            save_state(state)
+            return
         if is_busy(job) and not (
             text.startswith("/app_status") or text.startswith("/cancel")
             or text.startswith("/goal_status") or text.startswith("/goal_report")
@@ -2789,12 +2799,6 @@ def handle_message(state, message):
             save_state(state)
             return
         if apply_title_edit_message(chat_id, job, message):
-            return
-        # Before apply_edit_message: an armed text-artifact edit and an armed
-        # photo intake can overlap, and an uploaded image is never the answer
-        # to a script.txt edit prompt.
-        if apply_x_photo_message(chat_id, job, message):
-            save_state(state)
             return
         if apply_edit_message(chat_id, job, message):
             return

@@ -27,7 +27,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 DEFAULT_DOMAIN_PATH = Path(__file__).resolve().parents[2] / "config" / "topic_domain.json"
 

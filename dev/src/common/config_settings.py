@@ -65,10 +65,7 @@ def positive_int(value, name):
 
 def signed_int(value, name):
     text = str(value).strip()
-    if text.startswith("-"):
-        digits = text[1:]
-    else:
-        digits = text
+    digits = text[1:] if text.startswith("-") else text
     if not digits.isdigit():
         raise ValueError(f"{name}은 정수로 입력하세요: {value}")
     return text
@@ -93,7 +90,7 @@ def positive_number(value, name):
     try:
         number = float(text)
     except ValueError:
-        raise ValueError(f"{name}은 양수로 입력하세요: {value}")
+        raise ValueError(f"{name}은 양수로 입력하세요: {value}") from None
     if number <= 0:
         raise ValueError(f"{name}은 양수로 입력하세요: {value}")
     return text

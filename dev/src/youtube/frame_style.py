@@ -200,8 +200,6 @@ def resolve_top(data):
         subtitle_line_count,
     )
     gap = top_line_gap(title_size, subtitle_size)
-    subtitle_h = subtitle_block_height(subtitle_size, subtitle_line_count)
-    total_text_h = title_size + subtitle_h + gap
     title_y = margin_top
     subtitle_y = title_y + title_size + gap
     x_expr = f"{margin_x}+((w-{margin_x * 2})-text_w)/2" if margin_x else "(w-text_w)/2"

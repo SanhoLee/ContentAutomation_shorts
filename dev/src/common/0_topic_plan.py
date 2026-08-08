@@ -224,7 +224,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     plan.add_argument("--no-trends", action="store_true")
     plan.add_argument("--allow-stale", action="store_true")
     plan.add_argument("--require-runnable", action="store_true")
-    status = subparsers.add_parser("status", help="최근 목표 기획 상태")
+    subparsers.add_parser("status", help="최근 목표 기획 상태")
     report = subparsers.add_parser("report", help="목표 기획·가설 보고서")
     report.add_argument("--limit", type=int, default=15)
     report.add_argument("--output")

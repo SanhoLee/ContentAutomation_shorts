@@ -13,6 +13,7 @@ them without needing a formal adapter class.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from pathlib import Path
 
@@ -84,10 +85,8 @@ def render_progress_ratio(progress_path, duration):
     seconds = None
     for line in lines:
         if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
-            try:
+            with contextlib.suppress(ValueError):
                 seconds = int(line.split("=", 1)[1]) / 1_000_000
-            except ValueError:
-                pass
         elif line.startswith("out_time="):
             value = line.split("=", 1)[1]
             try:

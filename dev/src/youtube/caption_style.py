@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Build ffmpeg/libass subtitle styles and optional positioned ASS files from presets."""
 import argparse
-import html
 import json
 import os
 import re
@@ -102,7 +101,7 @@ def _int_value(style: dict, key: str, default: int) -> int:
     try:
         return int(float(style.get(key, default)))
     except ValueError:
-        raise SystemExit(f"{key} must be numeric: {style.get(key)}")
+        raise SystemExit(f"{key} must be numeric: {style.get(key)}") from None
 
 
 def position_override(style: dict) -> str:

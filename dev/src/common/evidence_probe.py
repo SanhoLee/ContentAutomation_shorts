@@ -25,12 +25,13 @@ Two invariants, both learned from real failures:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import statistics
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Callable, Sequence
+from typing import Any, Callable
 
 EUROPE_PMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 PUBMED_ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
@@ -195,14 +196,10 @@ def search_europe_pmc(query: str, fetch: Callable[..., Any] | None = None) -> di
     cutoff = date.today().year - RECENT_YEARS
     years, citations = [], []
     for item in results:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             years.append(int(item.get("pubYear")))
-        except (TypeError, ValueError):
-            pass
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             citations.append(int(item.get("citedByCount") or 0))
-        except (TypeError, ValueError):
-            pass
     hit_count = int((payload or {}).get("hitCount") or 0)
     recent_share = (sum(1 for y in years if y >= cutoff) / len(years)) if years else 0.0
     return {

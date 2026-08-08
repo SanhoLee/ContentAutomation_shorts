@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -468,10 +469,8 @@ def chunks(values: Sequence[str], size: int = 50) -> Iterable[Sequence[str]]:
 def _save_token(token: Path, creds) -> None:
     token.parent.mkdir(parents=True, exist_ok=True)
     token.write_text(creds.to_json(), encoding="utf-8")
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(token, 0o600)
-    except OSError:
-        pass
 
 
 def load_credentials():
@@ -607,7 +606,7 @@ def _merge_analytics_response(target: dict[str, dict[str, Any]], response: dict[
     if "video" not in headers:
         return
     for values in response.get("rows") or []:
-        row = dict(zip(headers, values))
+        row = dict(zip(headers, values, strict=False))
         video_id = row.pop("video", None)
         if video_id:
             target.setdefault(str(video_id), {}).update(row)
@@ -669,7 +668,7 @@ def fetch_shorts_feed_analytics(
         response = analytics.reports().query(**parameters).execute()
         headers = [header.get("name") for header in response.get("columnHeaders") or []]
         for values in response.get("rows") or []:
-            row = dict(zip(headers, values))
+            row = dict(zip(headers, values, strict=False))
             if row.get("insightTrafficSourceType") != "SHORTS" or not row.get("video"):
                 continue
             result[str(row["video"])] = {
@@ -972,7 +971,7 @@ def _fetch_video_window_metrics(analytics, video_id: str, start: str, end: str) 
             "RELATED_VIDEO": "suggestedViews", "EXT_URL": "externalViews",
         }
         for values in traffic.get("rows") or []:
-            row = dict(zip(headers, values))
+            row = dict(zip(headers, values, strict=False))
             destination = keys.get(str(row.get("insightTrafficSourceType")))
             if destination:
                 source[destination] = int(source.get(destination) or 0) + int(row.get("views") or 0)
@@ -1038,6 +1037,8 @@ def derive_video_metrics(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     if subscribers_gained is not None or subscribers_lost is not None:
         net_subscribers = (subscribers_gained or 0) - (subscribers_lost or 0)
     average_percentage = nullable_number(row["average_view_percentage"], float)
+    # row is a sqlite3.Row: `"x" in row` tests its *values*, not its column
+    # names, so `.keys()` below is required, not redundant (ignore SIM118).
     return {
         "initial_engagement_rate": initial_engagement_rate,
         "initial_engagement_source": initial_engagement_source,
@@ -1046,8 +1047,8 @@ def derive_video_metrics(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "average_view_percentage": average_percentage,
         "subscriber_conversion_rate": _ratio(subscribers_gained, views),
         "net_subscriber_conversion_rate": _ratio(net_subscribers, views),
-        "like_rate": _ratio(row["analytics_likes"] if "analytics_likes" in row.keys() else row["likes"], views),
-        "comment_rate": _ratio(row["analytics_comments"] if "analytics_comments" in row.keys() else row["comments"], views),
+        "like_rate": _ratio(row["analytics_likes"] if "analytics_likes" in row.keys() else row["likes"], views),  # noqa: SIM118
+        "comment_rate": _ratio(row["analytics_comments"] if "analytics_comments" in row.keys() else row["comments"], views),  # noqa: SIM118
         "share_rate": _ratio(row["shares"], views),
         "replay_lift": max(float(average_percentage or 0) - 100.0, 0.0),
     }

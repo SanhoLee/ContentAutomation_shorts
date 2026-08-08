@@ -22,6 +22,7 @@ source of truth when they disagree — see the design spec §3.
 from __future__ import annotations
 
 import json
+import contextlib
 import os
 from collections import Counter
 from pathlib import Path
@@ -180,10 +181,8 @@ def _normalize_mix(raw) -> dict[str, float]:
 def _coerce_config(raw: Mapping) -> dict:
     config = dict(DEFAULT_CONFIG)
     config["story_type_mix"] = _normalize_mix(raw.get("story_type_mix"))
-    try:
+    with contextlib.suppress(TypeError, ValueError):
         config["lookback_jobs"] = max(1, int(raw.get("lookback_jobs", DEFAULT_CONFIG["lookback_jobs"])))
-    except (TypeError, ValueError):
-        pass
     for flag in ("enforce_on_auto", "enforce_on_manual"):
         if flag in raw:
             config[flag] = bool(raw[flag])
@@ -399,7 +398,7 @@ def _weighted_choice(pool: Sequence[str], weights: Sequence[float], rng) -> str:
         return pool[0]
     threshold = rng.random() * total
     running = 0.0
-    for story_type, weight in zip(pool, weights):
+    for story_type, weight in zip(pool, weights, strict=False):
         running += weight
         if running >= threshold:
             return story_type
@@ -447,7 +446,7 @@ def distribution(recent: Sequence[str]) -> dict[str, float]:
     """Observed share per genre; used by tests and the ops report."""
     total = len(recent)
     if not total:
-        return {story_type: 0.0 for story_type in STORY_TYPES}
+        return dict.fromkeys(STORY_TYPES, 0.0)
     counts = Counter(recent)
     return {story_type: counts[story_type] / total for story_type in STORY_TYPES}
 

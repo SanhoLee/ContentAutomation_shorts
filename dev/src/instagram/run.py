@@ -48,7 +48,7 @@ def main() -> None:
 
     cards = [
         {"index": i + 1, "text": text, "image_path": str(path) if path else None}
-        for i, (text, path) in enumerate(zip(texts, image_paths))
+        for i, (text, path) in enumerate(zip(texts, image_paths, strict=False))
     ]
     payload = {
         "job_id": args.job_id,

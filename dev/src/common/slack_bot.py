@@ -21,8 +21,6 @@ from config_settings import (
     effective_setting_value,
     env_value,
     positive_int,
-    positive_number,
-    resolve_model_alias,
     safe_caption_style,
     safe_choice,
     set_config_value,
@@ -35,7 +33,6 @@ import pipeline_orchestrator as _po
 import pipeline_flow
 import script_review
 import topic_candidate_pipeline
-from script_runtime import speech_pace_profile
 
 ADAPTERS_DIR = Path(__file__).resolve().parent / "adapters"
 if str(ADAPTERS_DIR) not in sys.path:
@@ -1840,7 +1837,6 @@ def handle_run_review(chat_id, job, text):
 
 def run_remaining_to_upload(chat_id, job):
     job_id = job.get("job_id")
-    topic = job.get("topic")
     if not job_id:
         send_message(chat_id, "진행 중인 작업이 없습니다.")
         return
@@ -2100,7 +2096,6 @@ def handle_pick(chat_id, job, text):
         send_message(chat_id, "사용법: /pick 1")
         return
     choice = parts[1]
-    job_id = job["job_id"]
     send_message(chat_id, f"선택 후보로 스크립트 생성 시작: {choice}")
     run_script_generation(chat_id, job, [str(BASE_DIR / "sh" / "common" / "0_script.sh"), "--trend-choice", choice])
 
@@ -2457,13 +2452,7 @@ def handle_callback(state, callback):
                 return
             start_background_task(state, chat_id, job, f"{target_stage} 단계부터 재실행",
                                   lambda: rewind_review(chat_id, job, target_stage))
-        elif data.startswith("edit:"):
-            expected_stage = data.split(":", 1)[1]
-            if job.get("stage") != expected_stage:
-                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
-                return
-            handle_edit(chat_id, job)
-        elif data.startswith("edit_body:"):
+        elif data.startswith("edit:") or data.startswith("edit_body:"):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
@@ -2809,9 +2798,7 @@ def handle_message(state, message):
             return
         if apply_edit_message(chat_id, job, message):
             return
-        if not text:
-            send_home_screen(chat_id)
-        elif text.startswith("/start") or text.startswith("/help"):
+        if not text or text.startswith("/start") or text.startswith("/help"):
             send_home_screen(chat_id)
         elif text.startswith("/set_all") or text.startswith("/setall"):
             job.pop("config_edit_key", None)

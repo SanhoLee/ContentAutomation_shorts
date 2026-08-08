@@ -50,6 +50,7 @@ phrasing that wasn't in the original.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -217,10 +218,8 @@ def _humanize_with_claude(raw_texts: list[str], *, topic: str, title: str) -> di
     except Exception:
         return None
 
-    try:
+    with contextlib.suppress(Exception):
         claude_cost.record_usage("x_thread_humanize", X_THREAD_HUMANIZE_MODEL, data)
-    except Exception:
-        pass
 
     text = "".join(block.get("text", "") for block in data.get("content") or [] if block.get("type") == "text")
     match = JSON_OBJECT.search(text)
@@ -256,6 +255,17 @@ def _apply_safety_filter(text: str, ban_keywords: list[str]) -> str:
     lowered = text.lower()
     if any(bad.lower() in lowered for bad in ban_keywords if bad):
         return ""
+    return text
+
+
+def _sanitize(value: Any, ban_keywords: list[str], max_chars: int | None = None) -> str:
+    """Every text field posted to X goes through the same three steps --
+    strip hashtags/URLs, drop it if it trips a ban keyword, optionally
+    truncate at a boundary. Every call site below wants this exact
+    sequence, just with a different (or no) max_chars."""
+    text = _apply_safety_filter(_strip_banned_markup(str(value or "").strip()), ban_keywords)
+    if text and max_chars is not None:
+        text = _truncate_at_boundary(text, max_chars)
     return text
 
 
@@ -397,10 +407,9 @@ def _fallback_title(package: dict[str, Any], ban_keywords: list[str]) -> str:
         package.get("topic"),
     )
     for candidate in candidates:
-        text = _strip_banned_markup(str(candidate or "").strip())
-        text = _apply_safety_filter(text, ban_keywords)
+        text = _sanitize(candidate, ban_keywords, X_TITLE_MAX_CHARS)
         if text:
-            return _truncate_at_boundary(text, X_TITLE_MAX_CHARS)
+            return text
     return ""
 
 
@@ -441,8 +450,7 @@ def _pick_summary_lead(package: dict[str, Any], job_id: str, ban_keywords: list[
     pool = [str(phrase).strip() for phrase in pool if str(phrase).strip()]
     if not pool:
         return ""
-    lead = _apply_safety_filter(_strip_banned_markup(job_rng(job_id).choice(pool)), ban_keywords)
-    return _truncate_at_boundary(lead, SUMMARY_LEAD_MAX_CHARS) if lead else ""
+    return _sanitize(job_rng(job_id).choice(pool), ban_keywords, SUMMARY_LEAD_MAX_CHARS)
 
 
 def _summary_lines(
@@ -455,12 +463,8 @@ def _summary_lines(
     fallback for a recap that has to stand alone in one line.
     """
     raw = list(claude_summary or []) or [package.get("core_message")]
-    lines: list[str] = []
-    for value in raw[:SUMMARY_MAX_LINES]:
-        text = _apply_safety_filter(_strip_banned_markup(str(value or "").strip()), ban_keywords)
-        if text:
-            lines.append(_truncate_at_boundary(text, SUMMARY_LINE_MAX_CHARS))
-    return lines
+    lines = [_sanitize(value, ban_keywords, SUMMARY_LINE_MAX_CHARS) for value in raw[:SUMMARY_MAX_LINES]]
+    return [line for line in lines if line]
 
 
 def _render_summary_tweet(lead: str, lines: list[str], *, prefix_reserve: int) -> str:
@@ -496,15 +500,12 @@ def build_tweets(
     ban_keywords = ban_keywords if ban_keywords is not None else _ban_keywords()
     raw_texts: list[str] = []
 
-    def clean(value: Any) -> str:
-        return _apply_safety_filter(_strip_banned_markup(str(value or "").strip()), ban_keywords)
-
-    hook = clean(package.get("hook"))
+    hook = _sanitize(package.get("hook"), ban_keywords)
     if hook:
         raw_texts.append(hook)
 
     for point in package.get("key_points") or ():
-        text = clean((point or {}).get("text"))
+        text = _sanitize((point or {}).get("text"), ban_keywords)
         if text:
             raw_texts.append(text)
 
@@ -524,7 +525,7 @@ def build_tweets(
             raw_texts, topic=topic, title=str(source.get("title") or "").strip(),
         )
         if rewritten:
-            filtered = [clean(text) for text in rewritten["texts"]]
+            filtered = [_sanitize(text, ban_keywords) for text in rewritten["texts"]]
             # Only adopt the rewrite if it didn't collapse a sentence to
             # empty -- a partial ban-keyword hit here means the rewrite
             # drifted into risky phrasing the original text never had, so
@@ -533,12 +534,10 @@ def build_tweets(
             # from the one call, so a body we distrust taints them too.
             if all(filtered):
                 raw_texts = filtered
-                rewritten_title = clean(rewritten["title"])
-                if rewritten_title:
-                    title = _truncate_at_boundary(rewritten_title, X_TITLE_MAX_CHARS)
-                rewritten_lead = clean(rewritten["summary_lead"])
-                if rewritten_lead:
-                    summary_lead = _truncate_at_boundary(rewritten_lead, SUMMARY_LEAD_MAX_CHARS)
+                title = _sanitize(rewritten["title"], ban_keywords, X_TITLE_MAX_CHARS) or title
+                summary_lead = _sanitize(
+                    rewritten["summary_lead"], ban_keywords, SUMMARY_LEAD_MAX_CHARS,
+                ) or summary_lead
                 summary_source = rewritten["summary"] or None
 
     prefix_reserve = _PREFIX_RESERVE_WIDTH if number_prefix else 0

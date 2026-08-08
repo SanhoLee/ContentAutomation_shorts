@@ -837,7 +837,7 @@ def validate_seed_interpretation(
         for mode, values in raw_queries.items():
             if not isinstance(values, list):
                 continue
-            for topic, query in zip(raw_topics.get(mode) or (), values):
+            for topic, query in zip(raw_topics.get(mode) or (), values, strict=False):
                 topic = " ".join(str(topic or "").split()).strip()
                 query = " ".join(str(query or "").split()).strip()
                 if topic and query and not re.search(r"[가-힣]", query):

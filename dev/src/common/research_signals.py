@@ -15,7 +15,6 @@ periodically (see docs/usage) and stored in research_categories.json.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path

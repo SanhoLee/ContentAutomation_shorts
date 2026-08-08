@@ -855,7 +855,7 @@ def bounded_research_context(abstracts="", web_research="", limit=3000):
 
 def cleanup_comparison_target(piece):
     piece = normalize_keyword(piece)
-    piece = re.split(r"\b(?:비교|차이|중에|중에서|어느|뭐가|무엇이|더|추천|나을까|좋을까)\b", piece, 1)[0]
+    piece = re.split(r"\b(?:비교|차이|중에|중에서|어느|뭐가|무엇이|더|추천|나을까|좋을까)\b", piece, maxsplit=1)[0]
     piece = re.sub(r"^(?:추천|비교|차이|건강|50대|이상)\s+", "", piece).strip()
     piece = re.sub(r"\s+(?:추천|비교|차이|효능|효과|위험|부작용|건강|50대|이상)$", "", piece).strip()
     return piece.strip(" ,./-_|:;()[]{}")
@@ -1687,7 +1687,7 @@ def parse_claude_json(response, raw_filename="raw_response.txt"):
         except json.JSONDecodeError:
             pass
         print("===== Claude Raw ====="); print(raw); print("======================")
-        raise Exception(f"JSON 파싱 실패: {e}")
+        raise Exception(f"JSON 파싱 실패: {e}") from e
 
 
 # ─────────────────────────────────────────────

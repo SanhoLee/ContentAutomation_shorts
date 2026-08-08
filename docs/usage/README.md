@@ -10,7 +10,6 @@
 - [JOB_ID 함께 사용하기](with-job-id.md)
 - [개발/운영 환경 구분](environment.md)
 - [트렌드 조사 스케줄링 + 주제 선택](topic-scheduling.md)
-- [텔레그램 승인형 실행](telegram-bot.md)
 - [YouTube 피드백 기능 사용법](youtube-feedback.md)
 
 ## 목적

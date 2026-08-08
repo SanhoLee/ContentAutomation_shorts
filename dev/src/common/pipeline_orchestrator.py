@@ -1,4 +1,4 @@
-"""Shared render/stage-advance orchestration for telegram_bot.py and slack_bot.py.
+"""Render/stage-advance orchestration for slack_bot.py and the CLI driver.
 
 Both bots wrap the same pipeline stages (TTS -> caption -> B-roll -> render ->
 upload) with identical or near-identical orchestration code; only the
@@ -310,8 +310,8 @@ def _review_progress(ctx, chat_id, job=None, remaining=None):
         elif kind == "stage_done" and name == "x_thread":
             # The draft exists now and render/upload still have to run, so
             # this is the widest window the operator will get to hand in a
-            # lead image. Optional on the transport: a bot without the hook
-            # (Telegram) just keeps the generated card, unchanged.
+            # lead image. Optional on the transport: a driver without the
+            # hook (the CLI) just keeps the generated card, unchanged.
             request_photo = getattr(ctx, "request_x_photo", None)
             if request_photo is not None and job is not None:
                 request_photo(chat_id, job)

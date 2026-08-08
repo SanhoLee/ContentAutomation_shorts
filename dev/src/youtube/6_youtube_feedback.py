@@ -892,14 +892,6 @@ def store_performance_snapshot(conn: sqlite3.Connection, snapshot: dict[str, Any
     ))
 
 
-def store_performance_snapshots(
-    conn: sqlite3.Connection,
-    snapshots: Sequence[dict[str, Any]],
-) -> None:
-    for snapshot in snapshots:
-        store_performance_snapshot(conn, snapshot)
-
-
 def _snapshot_from_api_row(
     video_id: str,
     window_name: str,

@@ -1,7 +1,7 @@
 # 🧠 Brain50 Shorts 자동화 파이프라인
 
 > **50대 이후 뇌 건강 정보를 전달하는 YouTube Shorts 콘텐츠를 AI로 자동 제작합니다.**  
-> AWS Lightsail에서 동작하며, Telegram으로 단계별 승인·개입이 가능한 하이브리드 자동화 시스템입니다.
+> AWS Lightsail에서 동작하며, Slack으로 단계별 승인·개입이 가능한 하이브리드 자동화 시스템입니다.
 
 ---
 
@@ -170,7 +170,6 @@ brain50/
 │   │   │   ├── run_pipeline.py    # 봇 없이 CLI로 잡 진행
 │   │   │   ├── stage_guard.py     # 단계별 결정론적 자동 점검
 │   │   │   ├── script_runtime.py  # Stage 0 런타임 설정 중앙화 + Creative DNA 로더
-│   │   │   ├── telegram_bot.py
 │   │   │   └── slack_bot.py
 │   │   ├── youtube/              # YouTube 전용 렌더 파이프라인
 │   │   │   ├── 1_tts.py
@@ -178,7 +177,6 @@ brain50/
 │   │   │   ├── 3_broll.py
 │   │   │   ├── 4_upload.py
 │   │   │   ├── 6_youtube_feedback.py
-│   │   │   └── classify_uploads_by_category.py  # 업로드 영상을 research_categories로 분류
 │   │   └── instagram/            # Instagram 카드 콘텐츠 (스켈레톤)
 │   ├── sh/                     # Shell wrapper (common/youtube 하위 구조 동일)
 │   ├── config/                 # Pareto 5-Phase 설정 (JSON/YAML/MD, 코드와 분리)
@@ -204,14 +202,12 @@ brain50/
 │           ├── voice.wav       # TTS 음성
 │           ├── subs.srt        # 자막 파일
 │           └── scenes_timed.json # 장면별 타임스탬프
-├── prod/                       # 운영 환경 (동일 구조)
 ├── deploy/
 │   ├── systemd/                # systemd 서비스 파일
 │   └── lightsail/              # 서버 관리 스크립트
 ├── docs/usage/                 # 상세 사용 가이드
 │   ├── basic-usage.md
 │   ├── environment.md
-│   ├── telegram-bot.md
 │   └── with-job-id.md
 └── data/
     └── assets/                 # BGM, 공유 자원
@@ -644,7 +640,6 @@ python 0_script.py "다음 주제"
 |------|------|
 | `ANTHROPIC_API_KEY` | Claude API 키 (필수) |
 | `PEXELS_API_KEY` | Pexels B-roll 검색 키 |
-| `TELEGRAM_BOT_TOKEN` | Telegram 봇 토큰 |
 | `SLACK_BOT_TOKEN` | Slack Bot User OAuth Token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Slack Socket Mode App Token (`xapp-...`) |
 | `SLACK_CHANNEL_ID` | Slack 봇 허용 채널 ID (권장) |
@@ -707,17 +702,17 @@ python 0_script.py "다음 주제"
 | `CAPTION_MARGIN_V` | `60` | 렌더 스크립트 기본 자막 수직 위치 |
 | `CAPTION_MARGIN_H` | 환경별 기본값 | 렌더 스크립트 기본 자막 좌우 여백 |
 | `CAPTION_STYLE` | `default` | `caption_styles.yaml`에서 선택할 자막 스타일 프리셋 |
-| `CAPTION_STYLE_FILE` | `{dev|prod}/caption_styles.yaml` | 사용자 조정 가능한 자막 스타일 프리셋 파일 |
+| `CAPTION_STYLE_FILE` | `dev/caption_styles.yaml` | 사용자 조정 가능한 자막 스타일 프리셋 파일 |
 | `CAPTION_OFFSET_X` / `CAPTION_OFFSET_Y` | 프리셋 값 | 중앙 위치 프리셋의 화면 중앙 기준 좌우/상하 보정값 |
 | `FRAME_MODE` | `full` | 최종 렌더 프레임 모드. `full`은 기존 전체 화면, `framed`는 상하 검정 safe-zone 프레임 |
-| `FRAME_TOP_STYLE_FILE` / `FRAME_BOTTOM_STYLE_FILE` | `{dev|prod}/frame_*_styles.yaml` | 상단/하단 safe-zone 프레임 프리셋 파일 |
+| `FRAME_TOP_STYLE_FILE` / `FRAME_BOTTOM_STYLE_FILE` | `dev/frame_*_styles.yaml` | 상단/하단 safe-zone 프레임 프리셋 파일 |
 | `FRAME_TOP_PRESET` / `FRAME_BOTTOM_PRESET` | `default` | 상단/하단 safe-zone 프레임 프리셋 이름 |
 | `FRAME_TOP_MARGIN_PCT` | 프리셋 값 | 헤더 높이를 유지하면서 주제목 위 여백을 조정하는 비율. 값이 클수록 제목 묶음이 아래로 이동 |
 | `BROLL_FIT_MODE` | `cover` | 프레임 내부 B-roll 배치 방식. `cover`, `contain`, `blur-contain` |
-| `TELEGRAM_DEFAULT_CAPTION_FONT_SIZE` | `62` | 텔레그램 실행 기본 자막 폰트 크기 |
-| `TELEGRAM_DEFAULT_CAPTION_MARGIN_V` | `60` | 텔레그램 실행 기본 자막 수직 위치 |
-| `TELEGRAM_DEFAULT_CAPTION_STYLE` | `default` | 텔레그램 실행 기본 자막 스타일 프리셋 |
-| `TELEGRAM_DEFAULT_WEB_RESEARCH` | `true` | 텔레그램 실행 기본 web_search 사용 여부 |
+| `SLACK_DEFAULT_CAPTION_FONT_SIZE` | `62` | Slack 실행 기본 자막 폰트 크기 |
+| `SLACK_DEFAULT_CAPTION_MARGIN_V` | `60` | Slack 실행 기본 자막 수직 위치 |
+| `SLACK_DEFAULT_CAPTION_STYLE` | `default` | Slack 실행 기본 자막 스타일 프리셋 |
+| `SLACK_DEFAULT_WEB_RESEARCH` | `true` | Slack 실행 기본 web_search 사용 여부 |
 
 ### 프레임 헤더 자동 생성
 
@@ -787,7 +782,6 @@ python 0_script.py "다음 주제"
 | 문서 | 내용 |
 |------|------|
 | [docs/usage/basic-usage.md](docs/usage/basic-usage.md) | 기본 실행 가이드 |
-| [docs/usage/telegram-bot.md](docs/usage/telegram-bot.md) | Telegram 봇 상세 |
 | [docs/usage/slack-bot.md](docs/usage/slack-bot.md) | Slack 봇 설치·권한·운영 |
 | [docs/usage/environment.md](docs/usage/environment.md) | 환경 설정 |
 | [docs/usage/with-job-id.md](docs/usage/with-job-id.md) | JOB_ID 활용법 |

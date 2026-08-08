@@ -2,8 +2,8 @@
 
 Job state used to live only inside each bot's in-memory chat dict (and its
 `state.json`), which meant nothing except that bot process could tell where a
-job stood.  An unattended loop needs the opposite: any driver -- the Telegram
-bot, the Slack bot, a cron-launched CLI -- must be able to pick up a job,
+job stood.  An unattended loop needs the opposite: any driver -- the Slack
+bot, a cron-launched CLI -- must be able to pick up a job,
 see which stage it reached, whether it is parked at a human gate, and resume.
 
 So the state lives in the job's own work directory as `job_state.json`.  This

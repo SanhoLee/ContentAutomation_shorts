@@ -7,26 +7,18 @@ config/*/secrets*.sh
 
 # Generated / Temporary data
 # Running the suite from tests/ leaves bot state and job_state fixtures here:
-# telegram_bot/slack_bot default BASE_DIR to the cwd. The rules below are
-# anchored to the repo root, so tests/data needs its own entry.
+# slack_bot defaults BASE_DIR to the cwd. The rules below are anchored to the
+# repo root, so tests/data needs its own entry.
 tests/data/
 data/work/
 data/output/
 data/backups/
 data/topics/
 data/ops/
-/dev/data/telegram_state.json
-/dev/data/telegram_state.json.tmp
 /dev/data/slack_state.json
 /dev/data/slack_state.json.tmp
-/prod/data/slack_state.json
-/prod/data/slack_state.json.tmp
 /data/slack_state.json
 /data/slack_state.json.tmp
-/prod/data/telegram_state.json
-/prod/data/telegram_state.json.tmp
-/data/telegram_state.json
-/data/telegram_state.json.tmp
 /dev/data/youtube_feedback.db
 /dev/data/youtube_feedback.db-*
 /dev/data/youtube_report.md

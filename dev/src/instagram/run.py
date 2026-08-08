@@ -2,7 +2,7 @@
 
 Standalone by design: reads `video_meta.json`/`scenes.json` from an existing
 job's WORK_DIR and produces card images + a metadata JSON. Not wired into
-`telegram_bot.py`/`slack_bot.py` orchestration, so it can never block or slow
+`slack_bot.py` orchestration, so it can never block or slow
 the YouTube pipeline — run it manually against any JOB_ID.
 """
 

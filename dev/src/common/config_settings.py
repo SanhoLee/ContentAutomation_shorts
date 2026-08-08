@@ -1,10 +1,9 @@
-"""Shared /set-style runtime config settings for telegram_bot.py and slack_bot.py.
+"""/set-style runtime config settings for slack_bot.py.
 
-Both bots expose the same set of per-job runtime overrides (models, research
-toggles, TTS/caption/frame knobs). This module holds the single copy of that
-table and its validation logic; each bot builds its own CONFIG_SETTINGS via
-build_config_settings() because a handful of defaults come from bot-specific
-env vars (TELEGRAM_DEFAULT_* vs SLACK_DEFAULT_*).
+The bot exposes per-job runtime overrides (models, research toggles,
+TTS/caption/frame knobs). This module holds the table and its validation
+logic, kept separate from the bot so the settings surface can be tested and
+changed without touching transport code.
 """
 
 from __future__ import annotations
@@ -145,20 +144,18 @@ def _env_bool(value):
     return str(value).strip().lower() not in ("off", "0", "false", "no")
 
 
-def build_config_settings(
-    *,
-    default_web_research,
-    default_caption_font_size,
-    default_caption_margin_v,
-    default_caption_margin_h,
-    default_caption_style,
-):
-    """Build a bot's CONFIG_SETTINGS table.
+def build_config_settings():
+    """Build the bot's CONFIG_SETTINGS table.
 
-    The handful of settings whose default comes from a bot-specific env var
-    (TELEGRAM_DEFAULT_* vs SLACK_DEFAULT_*) are passed in explicitly; the
-    caller (each bot module) already resolves those from its own env prefix.
+    A handful of settings take their default from a SLACK_DEFAULT_* env var,
+    resolved here so the table has exactly one definition.
     """
+    default_caption_font_size = os.environ.get("SLACK_DEFAULT_CAPTION_FONT_SIZE", "62")
+    default_caption_margin_v = os.environ.get("SLACK_DEFAULT_CAPTION_MARGIN_V", "60")
+    default_caption_margin_h = os.environ.get("SLACK_DEFAULT_CAPTION_MARGIN_H", "10")
+    default_caption_style = os.environ.get("SLACK_DEFAULT_CAPTION_STYLE", os.environ.get("CAPTION_STYLE", "default"))
+    default_web_research = _env_bool(os.environ.get("SLACK_DEFAULT_WEB_RESEARCH", "true"))
+
     settings = {}
     settings.update({
         "script_model": {"category": "models", "label": "스크립트 모델", "job_key": "claude_script_model", "env": "CLAUDE_SCRIPT_MODEL", "default": lambda job: env_value("CLAUDE_MODEL", "claude-sonnet-4-6"), "kind": "model", "choices": MODEL_CHOICES},

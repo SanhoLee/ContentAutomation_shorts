@@ -1,21 +1,12 @@
-# 개발/운영 환경 구분
+# 환경 구성
 
-현재 파이프라인은 `dev`와 `prod`를 같은 실행 인터페이스로 유지하되, 소스와 산출물 위치를 환경별로 분리합니다.
+현재 파이프라인은 `dev` 하나로 운영합니다. 소스와 산출물은 `dev/` 아래에 모여 있습니다.
 
 ## 기본 배치
 
 ```text
 ~/brain50/
   dev/
-    config.sh
-    config.yaml
-    src/
-    sh/
-    data/
-      assets/
-      work/{JOB_ID}/
-      output/output_{JOB_ID}.mp4
-  prod/
     config.sh
     config.yaml
     src/
@@ -31,7 +22,7 @@
 각 환경의 `config.yaml`에서 경로와 실행 파라미터를 관리합니다.
 
 - `PROJECT_ROOT`: 기본 프로젝트 루트 (`/home/ubuntu/brain50`)
-- `BASE_DIR`: 환경별 루트 (`${PROJECT_ROOT}/dev`, `${PROJECT_ROOT}/prod`)
+- `BASE_DIR`: 실행 루트 (`${PROJECT_ROOT}/dev`)
 - `SRC_DIR`: Python 소스 위치
 - `ASSETS_DIR`: BGM, 설명 템플릿 등 assets 위치
 - `WORK_DIR_BASE`: JOB_ID별 중간 산출물 위치
@@ -49,7 +40,7 @@ which supertonic
 ls ~/.local/bin/supertonic
 ```
 
-설치되어 있지만 다른 위치에 있다면 `dev/secrets.sh` 또는 `prod/secrets.sh`에 절대 경로를 지정하세요.
+설치되어 있지만 다른 위치에 있다면 `dev/secrets.sh`에 절대 경로를 지정하세요.
 
 ```bash
 export TTS_BIN=/home/ubuntu/.local/bin/supertonic
@@ -64,13 +55,6 @@ export TTS_BIN=/home/ubuntu/.local/bin/supertonic
 ```bash
 cd ~/brain50/dev
 ./run.sh "테스트 주제" test_job_001
-```
-
-운영 콘텐츠 제작:
-
-```bash
-cd ~/brain50/prod
-./run.sh "실제 업로드할 주제" prod_20250621_001
 ```
 
 ## 수동 확인 워크플로우
@@ -97,7 +81,7 @@ source ./config.sh
 이미 만들어진 `data/work/{JOB_ID}`의 `voice.wav`, `subs.srt`, `broll.mp4`를 그대로 써서 자막 스타일만 10초 테스트하려면 스크립트 생성부터 다시 돌리지 말고 같은 `JOB_ID`로 렌더 단계만 실행합니다.
 
 ```bash
-cd ~/brain50/prod
+cd ~/brain50/dev
 export JOB_ID=이미_존재하는_JOB_ID
 source ./config.sh
 
@@ -248,23 +232,11 @@ source ./config.sh
 ./sh/2_render.sh
 ```
 
-운영 환경도 같은 방식입니다.
-
-```bash
-cd ~/brain50/prod
-export JOB_ID=prod_20250621_001
-source ./config.sh
-./sh/1_tts.sh
-./sh/1_caption.sh
-./sh/1_broll.sh
-./sh/2_render.sh
-```
-
 각 단계는 필요한 입력 파일을 `data/work/{JOB_ID}/`에서 읽습니다. 따라서 `script.txt`, `subs.srt`, `scenes_timed.json`을 사람이 수정한 뒤 다음 단계만 이어서 실행할 수 있습니다. 개별 단계 재실행 시 해당 단계가 생성하는 파일만 백업하고, 다른 단계의 수동 수정 파일은 건드리지 않습니다.
 
 ## 주제 입력 옵션
 
-텔레그램 명령 연동을 염두에 두고 `0_script.sh`는 두 가지 방식으로 사용할 수 있습니다.
+봇 명령 연동을 염두에 두고 `0_script.sh`는 두 가지 방식으로 사용할 수 있습니다.
 
 옵션 1: 아이디어를 그대로 대본화합니다.
 

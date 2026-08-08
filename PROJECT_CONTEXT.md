@@ -7,7 +7,7 @@ Primary deployment target: AWS Lightsail, expected path `~/brain50`
 
 ## Purpose
 
-This repository creates Korean YouTube Shorts through a staged AI pipeline, driven interactively today from Telegram or Slack. The product direction is stability first: production should keep moving and recover from non-critical failures without losing the whole job. The longer-term direction is a fully unattended, scheduled content loop (see `CLAUDE.md` "North star") — the goal-driven planner below is the piece that removes the human topic-selection step, but end-to-end scheduling is not wired up yet.
+This repository creates Korean YouTube Shorts through a staged AI pipeline, driven interactively today from Slack. The product direction is stability first: production should keep moving and recover from non-critical failures without losing the whole job. The longer-term direction is a fully unattended, scheduled content loop (see `CLAUDE.md` "North star") — the goal-driven planner below is the piece that removes the human topic-selection step, but end-to-end scheduling is not wired up yet.
 
 The content target is older Korean viewers, often 50+. Generated scripts should avoid stiff expert language, explain medical/technical terms in plain Korean, and keep claims cautious when direct PubMed evidence is weak.
 
@@ -15,7 +15,7 @@ The X(Twitter) thread adapter is the one deliberate exception to that audience: 
 
 ## High-Level Pipeline
 
-The pipeline is split into `dev` and `prod` environments with the same shape. `dev/src` is further split into `common/` (content-type-agnostic), `youtube/` (render pipeline), and `instagram/` (card-content skeleton, not yet in production); `prod/src` has not been reorganized this way yet — mirror only when the split is validated and explicitly requested.
+The pipeline runs from a single `dev` environment. `dev/src` is split into `common/` (content-type-agnostic), `youtube/` (render pipeline), and `instagram/` (card-content skeleton, not yet in production). A parallel `prod/` tree was deleted on 2026-08-08 after it fell behind this layout and stopped running jobs.
 
 1. Topic selection: direct topic string, `topic.json`, trend mode, or `run_goal.sh` → `src/common/0_topic_plan.py` (goal-driven auto planner, no human pick).
 2. Script generation: `sh/common/0_script.sh` → `src/common/0_script.py` (2-stage: Haiku strategy, Sonnet script).
@@ -24,15 +24,15 @@ The pipeline is split into `dev` and `prod` environments with the same shape. `d
 5. B-roll: `sh/youtube/1_broll.sh` → `src/youtube/3_broll*.py`.
 6. Render: `sh/youtube/2_render.sh`.
 7. YouTube upload: `sh/youtube/3_upload.sh` → `src/youtube/4_upload.py`.
-8. Approval workflow: `src/common/telegram_bot.py` and `src/common/slack_bot.py`.
+8. Approval workflow: `src/common/slack_bot.py`.
 
 Stage order is defined once in `src/common/pipeline_flow.py` (`STAGES`); execution mode (`full_gate` / `review` / `auto`) is purely which gates it stops at, not a different code path. Between stages, `src/common/stage_guard.py` runs a deterministic, Claude-free check and allows one bounded retry before stopping and surfacing the reason to a human — no infinite retries.
 
-Outputs are job-scoped under `dev/data/work/{JOB_ID}/` and `prod/data/work/{JOB_ID}/`. Final videos go to each environment's configured output directory.
+Outputs are job-scoped under `dev/data/work/{JOB_ID}/`. Final videos go to the configured output directory.
 
 ## Current Stabilization State
 
-- Pipeline stage order is centralized (`pipeline_flow.py`); Telegram/Slack orchestration was deduplicated against it.
+- Pipeline stage order is centralized (`pipeline_flow.py`); Slack orchestration is driven from it.
 - Dev Stage 0 runtime config is centralized in `src/common/script_runtime.py` — avoid scattered `os.environ` parsing in `0_script.py`.
 - Goal-driven planner's decision/confidence gates are computed per-job from an observed-history percentile instead of stale fixed thresholds (`docs/design/objective-driven-content-planner.md`).
 - `evidence_probe.py` / `trend_probe.py` guard PubMed and trend queries against silent Hangul-collapse and query poisoning before they reach script generation.
@@ -43,9 +43,9 @@ Outputs are job-scoped under `dev/data/work/{JOB_ID}/` and `prod/data/work/{JOB_
 
 See `HANDOFF.md` "Recent Major Work" for the commit-level breakdown; `git log --oneline` has the full history (~130 commits since 2026-07-02, not individually listed here).
 
-## Telegram / Slack Bot Workflow
+## Slack Bot Workflow
 
-Both bots support approval-first and automatic workflows with equivalent commands (Slack uses interactive buttons/home tab; see `docs/usage/slack-bot.md`).
+The bot supports approval-first and automatic workflows, driven by interactive buttons/home tab as well as slash commands (see `docs/usage/slack-bot.md`).
 
 Useful commands:
 
@@ -115,23 +115,17 @@ Expected server path:
 Service helpers:
 
 ```bash
-./deploy/lightsail/install_telegram_service.sh dev
-./deploy/lightsail/restart_telegram_service.sh dev
-./deploy/lightsail/logs_telegram_service.sh dev
-./deploy/lightsail/stop_telegram_service.sh dev
-./deploy/lightsail/install_slack_service.sh dev
-./deploy/lightsail/restart_slack_service.sh dev
-./deploy/lightsail/logs_slack_service.sh dev
-./deploy/lightsail/stop_slack_service.sh dev
+./deploy/lightsail/install_slack_service.sh
+./deploy/lightsail/restart_slack_service.sh
+./deploy/lightsail/logs_slack_service.sh
+./deploy/lightsail/stop_slack_service.sh
 ```
 
-Secrets are expected in `dev/secrets.sh` and/or `prod/secrets.sh`. Do not commit secrets.
+Secrets are expected in `dev/secrets.sh`. Do not commit secrets.
 
 Typical variables:
 
 ```bash
-export TELEGRAM_BOT_TOKEN="..."
-export TELEGRAM_CHAT_ID="..."
 export SLACK_BOT_TOKEN="..."
 export SLACK_APP_TOKEN="..."
 export ANTHROPIC_API_KEY="..."
@@ -149,7 +143,7 @@ Expected on Lightsail:
 - `ffprobe`
 - `supertonic` CLI, usually `/home/ubuntu/.local/bin/supertonic`
 - faster-whisper dependencies for caption timestamp extraction
-- network access to Telegram Bot API, Slack API, Anthropic API, PubMed/Europe PMC, Google/YouTube suggestion endpoints, Pexels, YouTube upload APIs
+- network access to Slack API, Anthropic API, PubMed/Europe PMC, Google/YouTube suggestion endpoints, Pexels, YouTube upload APIs
 
 ## Key Files To Read First In A New Cloud Thread
 
@@ -157,8 +151,8 @@ Expected on Lightsail:
 2. `KNOWN_ISSUES.md`
 3. `docs/design/objective-driven-content-planner.md` (if touching topic selection/planning)
 4. `README.md`
-5. `docs/usage/telegram-bot.md` / `docs/usage/slack-bot.md`
-6. `dev/src/common/telegram_bot.py` / `dev/src/common/slack_bot.py`
+5. `docs/usage/slack-bot.md`
+6. `dev/src/common/slack_bot.py`
 7. `dev/src/common/0_script.py`
 8. `dev/src/common/script_runtime.py`
 9. `dev/src/youtube/2_caption.py`

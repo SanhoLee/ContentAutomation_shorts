@@ -17,7 +17,7 @@ import pipeline_orchestrator as po
 
 
 class FakeBot:
-    """Stands in for telegram_bot/slack_bot: only the primitives ctx needs."""
+    """Stands in for slack_bot: only the primitives ctx needs."""
 
     def __init__(self, work_root, fail_stages=()):
         self.BASE_DIR = Path("/base")

@@ -70,8 +70,19 @@ class GraphTests(unittest.TestCase):
     def test_stage_order_is_the_pipeline_order(self):
         self.assertEqual(
             pipeline_flow.STAGE_NAMES,
-            ("script", "x_thread", "tts", "caption", "broll", "render", "upload", "x_post"),
+            ("script", "scene_visuals", "x_thread", "tts", "caption", "broll", "render",
+             "upload", "x_post"),
         )
+
+    def test_scene_visuals_sits_behind_the_script_gate_with_no_gate_of_its_own(self):
+        # advance() parks *after* a stage, so placing it next to script is what
+        # guarantees it reads the text the operator approved -- and it must not
+        # add a stop of its own between that approval and the render.
+        self.assertEqual(
+            pipeline_flow.next_stage_after("script"),
+            pipeline_flow.STAGES_BY_NAME["scene_visuals"],
+        )
+        self.assertEqual(pipeline_flow.STAGES_BY_NAME["scene_visuals"].gates, ())
 
     def test_x_thread_and_x_post_have_no_gates(self):
         # Both are best-effort, downstream-only artifacts: they must never
@@ -140,9 +151,13 @@ class ReviewModeTests(PipelineFlowTestCase):
         result = self.advance(runner, job_state.MODE_REVIEW)
         self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
         self.assertEqual(result.gate, "final_confirm")
-        # x_thread runs right after script (no gate of its own) so its draft
+        # scene_visuals and x_thread run right after the script gate (neither has
+        # a gate of its own), so both see the approved text and the thread draft
         # already exists by the time final_confirm shows it alongside the video.
-        self.assertEqual(runner.stages, ["script", "x_thread", "tts", "caption", "broll", "render"])
+        self.assertEqual(
+            runner.stages,
+            ["script", "scene_visuals", "x_thread", "tts", "caption", "broll", "render"],
+        )
 
     def test_upload_only_happens_after_the_final_confirmation(self):
         runner = FakeRunner()

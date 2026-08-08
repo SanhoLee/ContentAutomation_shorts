@@ -1584,8 +1584,9 @@ def request_x_photo(chat_id, job):
     available to make an image and send it back, and it is still in hand
     by the time final_confirm asks for approval.
 
-    Nothing blocks on this. No image by posting time simply means the
-    generated text card goes out, exactly as before.
+    The pipeline never blocks on it: the YouTube upload runs to completion
+    either way. Only the X thread waits, and only because a live tweet's
+    media cannot be replaced afterwards.
     """
     job_id = job.get("job_id")
     if not job_id:
@@ -1598,8 +1599,9 @@ def request_x_photo(chat_id, job):
     send_message(
         chat_id,
         "X 스레드 첫 트윗에 붙일 이미지를 이 스레드에 첨부해 주세요.\n"
-        "지금 보내지 않으셔도 됩니다 — 최종 승인 전까지 언제든 올리면 반영되고, "
-        "안 올리시면 자동 생성한 글자 카드로 나갑니다.\n\n"
+        "언제 올리셔도 됩니다 — 영상 업로드와는 무관하게 진행되고, "
+        "이미지가 도착하면 그때 스레드가 게시됩니다. "
+        "이미지 없이 자동 생성 카드로 내보내려면 /x_post 를 입력하세요.\n\n"
         f"첫 트윗 내용:\n{lead}",
     )
     return True
@@ -1667,6 +1669,9 @@ def apply_x_photo_message(chat_id, job, message):
         staged.unlink(missing_ok=True)
 
     payload["photo_path"] = str(final_path)
+    # The thread waits for this flag -- x_poster holds an unposted thread
+    # until a human, not build_thread_photo, supplied the lead image.
+    payload["photo_source"] = x_poster.PHOTO_SOURCE_OPERATOR
     try:
         x_thread_adapter.save_x_thread(job_dir, payload)
     except OSError as exc:
@@ -1674,6 +1679,10 @@ def apply_x_photo_message(chat_id, job, message):
         return True
     job.pop("x_photo_target", None)
     send_file_or_path(chat_id, final_path, "첫 트윗에 붙일 이미지로 저장했습니다.")
+    # The image is the last thing the thread was waiting for. If the video
+    # is already up, this upload is the release trigger; if not, the
+    # pipeline's own x_post stage will find the flag set and post normally.
+    _maybe_post_x_thread(chat_id, job)
     return True
 
 
@@ -1763,6 +1772,9 @@ def _maybe_post_x_thread(chat_id, job):
         return
     try:
         payload = x_poster.post_thread(job_dir)
+    except x_poster.PhotoPending as exc:
+        send_message(chat_id, str(exc))
+        return
     except Exception as exc:
         send_message(chat_id, f"X 스레드 자동 게시 실패: {exc}\n확인 후 /x_post 로 이어서 게시할 수 있습니다.")
         return
@@ -1771,6 +1783,7 @@ def _maybe_post_x_thread(chat_id, job):
         f"X 스레드 게시 완료: {payload.get('thread_url')} "
         f"({len(payload.get('tweet_ids') or [])}개 트윗)",
     )
+    _maybe_send_x_sources_dm(job_dir)
     _maybe_send_x_sources_dm(job_dir)
 
 
@@ -2678,13 +2691,17 @@ def handle_x_post(chat_id, job):
         return
     job_dir = work_dir(job["job_id"])
     try:
-        payload = x_poster.post_thread(job_dir)
+        # Typing the command is the operator saying "post it now, as-is" --
+        # the only way past the lead-image hold.
+        payload = x_poster.post_thread(job_dir, force=True)
     except RuntimeError as exc:
         send_message(chat_id, f"X 게시 실패: {exc}")
         return
+    photo_error = payload.get("photo_upload_error")
     send_message(
         chat_id,
-        f"X 게시 완료: {payload.get('thread_url')} ({len(payload.get('tweet_ids') or [])}개 트윗)",
+        f"X 게시 완료: {payload.get('thread_url')} ({len(payload.get('tweet_ids') or [])}개 트윗)"
+        + (f"\n※ 이미지 없이 나갔습니다: {photo_error}" if photo_error else ""),
     )
     _maybe_send_x_sources_dm(job_dir)
 

@@ -590,7 +590,7 @@ def main():
 
     print("\n=== 장면 타이밍 ===")
     for i, s in enumerate(scenes):
-        print(f"  [{i:02d}] {s['start']:.2f}s~{s['end']:.2f}s ({s['duration']:.2f}s) {s['visual_query']}")
+        print(f"  [{i:02d}] {s['start']:.2f}s~{s['end']:.2f}s ({s['duration']:.2f}s) {s.get('visual_query', '-')}")
 
 
 if __name__ == "__main__":

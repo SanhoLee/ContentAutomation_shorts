@@ -44,6 +44,23 @@ MEDIA_CONTENT_TYPES = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
 }
 
+# x_thread.json photo_source values. The generated card is a placeholder the
+# adapter always produces; "operator" means a human actually handed one in.
+PHOTO_SOURCE_OPERATOR = "operator"
+
+# main() exit code for "held, not failed" -- x_post.sh reports it as a
+# notice rather than a posting failure.
+EXIT_PHOTO_PENDING = 2
+
+
+class PhotoPending(RuntimeError):
+    """The thread is ready but the operator's lead image has not arrived.
+
+    Not a failure: the thread is posted automatically the moment the image
+    lands (slack_bot.apply_x_photo_message), or immediately on an explicit
+    /x_post, which posts with whatever image is on hand.
+    """
+
 
 def _thread_path(job_dir: Path) -> Path:
     return job_dir / "x_thread.json"
@@ -111,7 +128,18 @@ def _post_one(
     return str(res.json()["data"]["id"])
 
 
-def post_thread(job_dir: str | Path, *, dry_run: bool = False) -> dict[str, Any]:
+def post_thread(
+    job_dir: str | Path, *, dry_run: bool = False, force: bool = False,
+) -> dict[str, Any]:
+    """Post the thread. `force` is the operator saying "now, as-is".
+
+    Without it the thread waits for the operator's lead image, and a
+    rejected image aborts before the first tweet goes out. Both exist for
+    the same reason: once tweet 1 is live its media can never be swapped,
+    so a thread that went out with the wrong picture -- or none -- can only
+    be fixed by deleting it. Holding costs nothing; posting early is
+    irreversible.
+    """
     job_dir = Path(job_dir)
     payload = _load_thread(job_dir)
     if payload is None:
@@ -138,6 +166,15 @@ def post_thread(job_dir: str | Path, *, dry_run: bool = False) -> dict[str, Any]
     if resume_from >= len(tweets):
         raise RuntimeError("게시할 트윗이 남아있지 않습니다 (tweets 목록이 비어있거나 이미 모두 게시됨).")
 
+    # Only the lead tweet carries an image, so only a fresh run can wait for
+    # one -- on a resume the lead is already live and holding would strand
+    # the replies.
+    if not force and resume_from == 0 and payload.get("photo_source") != PHOTO_SOURCE_OPERATOR:
+        raise PhotoPending(
+            "X 스레드 이미지를 아직 받지 못해 게시를 보류했습니다. "
+            "이미지를 첨부하면 자동으로 게시되고, 자동 생성 카드로 지금 내보내려면 /x_post 를 입력하세요."
+        )
+
     access_token = x_auth.get_valid_access_token()
     reply_to = posted_ids[-1] if posted_ids else None
 
@@ -150,8 +187,19 @@ def post_thread(job_dir: str | Path, *, dry_run: bool = False) -> dict[str, Any]
         try:
             media_id = _upload_media(Path(photo_path), access_token=access_token)
         except Exception as exc:
-            # Decoration, not content: a rejected image (scope, tier, size)
-            # must not cost us the thread.
+            # Nothing is live yet, so aborting here loses nothing and keeps
+            # the image attachable on a later /x_post. Posting text-only
+            # instead used to look like graceful degradation, but it is the
+            # one outcome that cannot be undone -- media on a live tweet is
+            # immutable. Under `force` the operator has already said
+            # "text-only is fine".
+            if not force:
+                raise RuntimeError(
+                    f"이미지 업로드에 실패해 게시하지 않았습니다: {exc}\n"
+                    "X 토큰에 media.write 스코프가 없으면 403이 납니다 — 재인증 후 /x_post 로 다시 시도하거나, "
+                    "이미지 없이 내보내려면 /x_post 를 그대로 입력하세요."
+                ) from exc
+            payload["photo_upload_error"] = str(exc)
             print(f"사진 업로드 실패, 텍스트만 게시합니다: {exc}", file=sys.stderr)
 
     for tweet in tweets[resume_from:]:
@@ -195,6 +243,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="x_thread.json -> 실제 X 게시")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--dry-run", action="store_true", help="실제 게시 없이 현재 상태만 출력")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="운영자 이미지를 기다리지 않고 지금 게시 (이미지 업로드 실패 시 텍스트만)",
+    )
     return parser.parse_args(argv)
 
 
@@ -202,7 +254,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     job_dir = resolve_work_dir(args.job_id)
     try:
-        payload = post_thread(job_dir, dry_run=args.dry_run)
+        payload = post_thread(job_dir, dry_run=args.dry_run, force=args.force)
+    except PhotoPending as exc:
+        print(str(exc))
+        return EXIT_PHOTO_PENDING
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1

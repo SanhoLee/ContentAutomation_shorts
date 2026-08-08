@@ -13,6 +13,8 @@ import content_package
 import evidence_probe
 import story_types
 from claude_cost import assert_budget, record_usage, web_search_total
+# Both live in scene_visuals because that stage runs without Stage 2's env.
+from scene_visuals import clip_at_word_boundary, positional_role
 from script_runtime import (
     load_creative_dna,
     load_runtime_settings,
@@ -1376,32 +1378,23 @@ def story_type_block(strategy):
 def scene_output_spec():
     """The `scenes[]` shape asked of Stage 2, and the rules for filling it.
 
-    With story types on, every scene additionally carries `role` (from the
-    genre's sequence) and `visual` (what the screen must actually show). The
-    English `visual_query` stays required either way — Pexels is searched in
-    English, so the Korean `visual.brief` cannot replace it.
+    Stage 2 writes words only. What each scene *shows* — `visual` and the
+    English `visual_query` — is planned by scene_visuals.py after the
+    approval gate, because asking for it here fixes the plan to a draft the
+    operator has not read yet, let alone edited.
+
+    With story types on the scene still carries `role`: the genre's beat is
+    an input to how the sentence is written, not a description of it.
     """
     # Braces are single here: these strings are interpolated *into* the prompt
     # f-string as values, so they are never re-parsed for placeholders.
     if not USE_STORY_TYPES:
-        return "", '{"text": "한국어 장면 텍스트", "visual_query": "english search keywords"}'
+        return "", '{"text": "한국어 장면 텍스트"}'
     rules = (
         "\n7. scenes[].role: 위 role 시퀀스의 이름을 그대로 쓰세요. hook으로 시작하고 cta로 끝나야 합니다.\n"
         "   - 분량 때문에 role을 건너뛰지 마세요. 나눠야 하면 같은 role 이름을 가진 Scene 두 개로 쪼개세요.\n"
-        "8. scenes[].visual: 이 Scene에서 화면에 무엇이 보여야 하는지입니다. 분위기용 배경이 아니라 "
-        "말하고 있는 대상 자체가 보여야 합니다.\n"
-        f"   - type: {' / '.join(story_types.VISUAL_TYPES)} 중 하나\n"
-        "   - brief: 한국어 한 줄 연출 지시. (예: \"식탁에 앉아 약통을 열다 멈추는 손\")\n"
-        "   - must_show: 화면에 반드시 보여야 할 요소 1~3개(한국어 배열)\n"
-        "   - 모든 Scene에 brief를 채우세요. 비워 두면 그 Scene은 실패로 처리됩니다.\n"
-        "   - 같은 brief를 두 Scene 이상에서 반복하지 마세요.\n"
     )
-    shape = (
-        '{"text": "한국어 장면 텍스트", "role": "hook", '
-        '"visual": {"type": "paradox", "brief": "한 줄 연출 지시", "must_show": ["요소1"]}, '
-        '"visual_query": "english search keywords"}'
-    )
-    return rules, shape
+    return rules, '{"text": "한국어 장면 텍스트", "role": "hook"}'
 
 
 def pace_instruction():
@@ -1574,15 +1567,7 @@ main_keyword       : {main_keyword}
 4. TTS 발음 최적화(매우 중요):
    - %, ~, 화살표 등 모든 기호는 한글 문장으로 완벽히 풀어 쓰세요. (예: 30% -> 30퍼센트, 3~5배 -> 3에서 5배)
    - 숫자 뒤의 단위는 공백 없이 붙여 쓰세요. 영어 약어(LDL, DNA 등)는 그대로 유지합니다.
-5. visual_query: 스톡 영상 검색어입니다. 장면 내용을 그대로 번역하지 말고, 스톡 사이트에 실제로 영상이 많이 존재하는 **일반적인 검색어**로 쓰세요. 영어 키워드 3~4개.
-   - 구성 규칙: 일반 키워드 2~3개 + 이 영상 주제와 연결되는 키워드 1개(최대 2개). 주제 키워드를 3개 이상 넣으면 검색 결과가 거의 없어 매번 같은 영상만 나옵니다.
-   - 반드시 사람이 실제 속도로 움직이는 장면을 고르세요. 정지된 풍경, 잔잔한 배경, 슬로우모션·타임랩스로 촬영된 영상은 화면이 늘어져 보입니다.
-   - 움직임 키워드 예: walking, cooking, stretching, talking, pouring, exercising, gardening, laughing, commuting
-   - "slow motion", "timelapse", "cinematic", "aerial", "drone", "calm", "peaceful", "serene", "background" 같은 단어는 넣지 마세요. 이런 단어는 느리고 정적인 영상만 검색됩니다.
-   - 장면마다 서로 다른 동작·장소를 쓰세요. 같은 검색어나 거의 같은 조합을 두 장면 이상에서 반복하지 마세요.
-   - 차가운 병원, MRI, 주사기 등 공포감을 주는 이미지는 절대 금지입니다.
-   - 좋은 예: "senior couple walking outdoors morning", "woman cooking kitchen healthy", "elderly man stretching living room"
-   - 나쁜 예: "deep sleep brain memory decline neuron"(주제어만 나열 → 검색 결과 없음), "calm peaceful background"(움직임 없음)
+5. 화면에 무엇이 보일지는 여기서 정하지 마세요. 대본이 확정된 뒤 별도 단계가 최종 문장을 보고 계획합니다.
 6. frame_header: 상단에 들어갈 2줄 훅. 영상 전체 훅 강도와 통일감을 갖도록 강하게 쓰세요.
    - title(대제목): 공백 포함 4~10자 권장. 무난한 명사형 나열 대신 임팩트 있는 단정형·경고형·지목형 어구를 우선하세요.
      예: "이거 하셨다면", "몰랐다면 위험", "매일 이러셨죠" (단, 근거 없는 질병 확정 표현은 금지)
@@ -1697,15 +1682,6 @@ def parse_claude_json(response, raw_filename="raw_response.txt"):
 def korean_char_count(text):
     return len(re.sub(r"[^\uAC00-\uD7A3]", "", text))
 
-def clip_at_word_boundary(text, limit):
-    """Trim to a word boundary. On-screen copy must never end mid-word."""
-    value = re.sub(r"\s+", " ", str(text or "")).strip()
-    if len(value) <= limit:
-        return value
-    head, _, _ = value[:limit].rstrip().rpartition(" ")
-    return (head or value[:limit]).rstrip(" ,·:-")
-
-
 def normalize_frame_header(result, strategy, thumbnail_items):
     raw = result.get("frame_header") or strategy.get("frame_header") or {}
     if not isinstance(raw, dict):
@@ -1772,31 +1748,17 @@ def unsupported_winner_claim(result, strategy):
     return decisive and not cautious
 
 
-def _fallback_visual_brief(scene):
-    """A directing line derived from what the scene already says.
-
-    Used only when Stage 2 omitted `visual.brief`. Backfilling deterministically
-    beats the two alternatives the spec offers: a second Claude call would
-    double the most expensive stage's cost, and failing the job would throw
-    away a finished script over a downstream-only field. The omission is
-    counted in script_quality.json so a model that keeps skipping it is
-    visible rather than silently patched over.
-    """
-    text = re.sub(r"\s+", " ", str(scene.get("text") or "")).strip()
-    if text:
-        return clip_at_word_boundary(text, 40)
-    return clip_at_word_boundary(str(scene.get("visual_query") or "") or "장면 화면", 40)
-
-
 def normalize_story_scenes(result, strategy):
-    """Return a copy of `result` with `role` and `visual` filled in on every scene.
+    """Return a copy of `result` with `role` filled in on every scene.
 
-    Stage 2 is asked for both, but a model that drops them must not produce a
-    scenes.json with a different shape from every other job's — 2_caption.py
-    carries these keys straight through to scenes_timed.json and B-roll reads
-    them. Roles come from the genre's sequence, stretched over however many
-    scenes were actually written (the middle roles repeat when there are more
-    scenes than roles, which is exactly what the template asks for).
+    Stage 2 is asked for it, but a model that drops it must not produce a
+    scenes.json with a different shape from every other job's. Roles come
+    from the genre's sequence, stretched over however many scenes were
+    actually written (the middle roles repeat when there are more scenes than
+    roles, which is exactly what the template asks for).
+
+    `visual` and `visual_query` are deliberately absent here — scene_visuals
+    plans them after the approval gate, on the text the operator kept.
     """
     if not USE_STORY_TYPES:
         return result
@@ -1808,57 +1770,17 @@ def normalize_story_scenes(result, strategy):
     story_type = strategy_story_type(strategy) or story_types.load_config()["default_story_type"]
     sequence = story_types.role_sequence(story_type)
     normalized = []
-    missing_brief = 0
     for index, raw in enumerate(scenes):
         scene = dict(raw) if isinstance(raw, dict) else {"text": str(raw)}
         role = str(scene.get("role") or "").strip()
         if role not in sequence:
-            role = _positional_role(index, len(scenes), sequence)
+            role = positional_role(index, len(scenes), sequence)
         scene["role"] = role
-
-        visual = scene.get("visual")
-        visual = dict(visual) if isinstance(visual, dict) else {}
-        visual_type = str(visual.get("type") or "").strip()
-        if visual_type not in story_types.VISUAL_TYPES:
-            visual_type = story_types.default_visual_type(role)
-        brief = re.sub(r"\s+", " ", str(visual.get("brief") or "")).strip()
-        if not brief:
-            missing_brief += 1
-            brief = _fallback_visual_brief(scene)
-        must_show = visual.get("must_show")
-        if not isinstance(must_show, list):
-            must_show = [must_show] if must_show else []
-        must_show = [str(item).strip() for item in must_show if str(item or "").strip()]
-        scene["visual"] = {"type": visual_type, "brief": brief, "must_show": must_show[:3]}
-        # 2_caption.py and 3_broll.py index scenes["visual_query"] directly, so a
-        # scene that arrived without one would KeyError mid-pipeline. The Korean
-        # brief cannot stand in — Pexels is searched in English.
-        if not str(scene.get("visual_query") or "").strip():
-            scene["visual_query"] = story_types.FALLBACK_VISUAL_QUERY
         normalized.append(scene)
 
     result["scenes"] = normalized
     result["story_type"] = story_type
-    if missing_brief:
-        print(f"⚠️  visual.brief가 없는 장면 {missing_brief}개를 대본 문장으로 채웠습니다.")
-    result["_visual_brief_backfilled"] = missing_brief
     return result
-
-
-def _positional_role(index, total, sequence):
-    """Map scene position onto the genre's role sequence.
-
-    hook and cta are pinned to the first and last scenes; the middle roles are
-    spread evenly over what remains, so a 10-scene script over a 7-role
-    sequence repeats middle roles rather than dropping any.
-    """
-    if index == 0 or total <= 1:
-        return sequence[0]
-    if index == total - 1:
-        return sequence[-1]
-    middle = sequence[1:-1] or sequence
-    span = max(1, total - 2)
-    return middle[min(len(middle) - 1, (index - 1) * len(middle) // span)]
 
 
 def quality_issue(code, message, level="error"):
@@ -1886,13 +1808,6 @@ def validate_script(result, strategy):
     if result.get("promise_fulfilled") is not True:
         warnings.append(quality_issue("promise_not_fulfilled", "제목과 질문의 약속 충족 여부를 확인해 주세요.", "warning"))
     if USE_STORY_TYPES and scenes:
-        backfilled = int(result.get("_visual_brief_backfilled") or 0)
-        if backfilled:
-            warnings.append(quality_issue(
-                "visual_brief_backfilled",
-                f"{backfilled}개 장면의 visual.brief가 비어 있어 대본 문장으로 채웠습니다.",
-                "warning",
-            ))
         roles = [str(scene.get("role") or "") for scene in scenes if isinstance(scene, dict)]
         expected = story_types.role_sequence(strategy_story_type(strategy))
         off_sequence = [role for role in roles if role not in expected]
@@ -1939,10 +1854,7 @@ def validate_script(result, strategy):
             "comparison_targets": strategy.get("comparison_targets", []),
             "final_answer_present": bool(final_answer),
             "story_type": strategy_story_type(strategy) if USE_STORY_TYPES else None,
-            "scenes_with_visual_brief": sum(
-                1 for scene in scenes
-                if isinstance(scene, dict) and str((scene.get("visual") or {}).get("brief") or "").strip()
-            ),
+            # scenes_with_visual_brief is added later, by scene_visuals.
         },
     }
 
@@ -1973,7 +1885,6 @@ def write_outputs(result, strategy, trend_context=None):
     scenes = trim_scenes(result["scenes"])
     # Bookkeeping from normalize_story_scenes; belongs in script_quality.json,
     # not in the scene file every downstream stage reads.
-    result = {key: value for key, value in result.items() if key != "_visual_brief_backfilled"}
     full_text = "\n\n".join(s["text"] for s in scenes)
     thumbnail_text = result.get("thumbnail_text", strategy.get("thumbnail_text", []))
     if isinstance(thumbnail_text, str):
@@ -2043,10 +1954,12 @@ def write_outputs(result, strategy, trend_context=None):
     print(f"해시태그  : {meta['hashtags']}")
     if USE_STORY_TYPES:
         print(f"스토리 타입: {meta.get('story_type')} / {meta.get('format_type')}")
-    print("\n=== 장면별 영상 검색어 ===")
+    # Search queries are not known yet -- scene_visuals prints them once the
+    # approved script has been planned.
+    print("\n=== 장면 구성 ===")
     for i, s in enumerate(scenes):
         role = f"[{s['role']}] " if s.get("role") else ""
-        print(f"{i}: {role}{s['visual_query']}")
+        print(f"{i}: {role}{clip_at_word_boundary(s.get('text'), 40)}")
 
 
 # ─────────────────────────────────────────────

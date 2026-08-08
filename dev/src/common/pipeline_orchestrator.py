@@ -48,6 +48,7 @@ BOT_STAGE_TO_FLOW = {
 
 STAGE_PROGRESS_LABELS = {
     "script": "스크립트 생성",
+    "scene_visuals": "씬 시각 계획",
     "x_thread": "X 스레드 초안 생성",
     "tts": "TTS 음성 생성",
     "caption": "자막 생성",
@@ -457,6 +458,12 @@ def run_next_stage(ctx, chat_id, job, *, final_message=None):
 
     extra_env = build_extra_env(job)
     if stage == "await_script_approval":
+        # This legacy chain bypasses pipeline_flow entirely, so the stage it
+        # inserted after `script` has to be repeated here -- without it the
+        # step-by-step path reaches 3_broll.py with no visual_query.
+        ctx.run_command(
+            [str(ctx.BASE_DIR / "sh" / "common" / "scene_visuals.sh")], job_id, topic, extra_env=extra_env,
+        )
         ctx.send_message(chat_id, "TTS 생성 시작")
         ctx.run_command([str(ctx.BASE_DIR / "sh" / "youtube" / "1_tts.sh")], job_id, topic, extra_env=extra_env)
         job["stage"] = "await_tts_approval"

@@ -18,6 +18,10 @@ def _write_thread(job_dir: Path, tweets, **extra):
         "tweets": [{"index": i + 1, "text": t} for i, t in enumerate(tweets)],
         "char_counts": [len(t) for t in tweets],
         "method": "rule_v1",
+        # Posting mechanics are what these tests are about, so default to a
+        # thread that has already cleared the lead-image hold; LeadPhotoHold
+        # tests below cover the hold itself.
+        "photo_source": xp.PHOTO_SOURCE_OPERATOR,
         **extra,
     }
     (job_dir / "x_thread.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -155,7 +159,26 @@ class ThreadPhotoTests(unittest.TestCase):
             self.assertEqual(bodies[0]["media"]["media_ids"], ["media-9"])
             self.assertNotIn("media", bodies[1])
 
-    def test_upload_failure_still_posts_the_thread_text_only(self):
+    def test_upload_failure_aborts_before_any_tweet_goes_out(self):
+        # Media on a live tweet cannot be swapped, so a thread that went out
+        # without its image is unfixable. Nothing is posted yet at this
+        # point, so aborting keeps the image attachable on a later /x_post.
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            photo = self._photo(job_dir)
+            _write_thread(job_dir, ["first", "second"], photo_path=str(photo))
+
+            with mock.patch.object(xp, "_upload_media", side_effect=RuntimeError("403 forbidden")):
+                with mock.patch("requests.post", side_effect=AssertionError("should not post")):
+                    with self.assertRaises(RuntimeError) as caught:
+                        xp.post_thread(job_dir)
+            self.assertIn("403 forbidden", str(caught.exception))
+
+            on_disk = json.loads((job_dir / "x_thread.json").read_text(encoding="utf-8"))
+            self.assertFalse(on_disk.get("posted", False))
+            self.assertFalse(on_disk.get("tweet_ids"))
+
+    def test_forced_post_falls_back_to_text_only_and_records_why(self):
         with tempfile.TemporaryDirectory() as tmp:
             job_dir = Path(tmp)
             photo = self._photo(job_dir)
@@ -164,9 +187,10 @@ class ThreadPhotoTests(unittest.TestCase):
             responses = self._tweet_responses(["id1", "id2"])
             with mock.patch.object(xp, "_upload_media", side_effect=RuntimeError("403 forbidden")):
                 with mock.patch("requests.post", side_effect=responses) as post:
-                    payload = xp.post_thread(job_dir)
+                    payload = xp.post_thread(job_dir, force=True)
 
             self.assertTrue(payload["posted"])
+            self.assertIn("403 forbidden", payload["photo_upload_error"])
             self.assertNotIn("media", post.call_args_list[0].kwargs["json"])
 
     def test_no_photo_path_means_no_upload_attempt(self):
@@ -200,6 +224,73 @@ class ThreadPhotoTests(unittest.TestCase):
 
             self.assertEqual(payload["tweet_ids"], ["id1", "id2"])
             self.assertNotIn("media", post.call_args_list[0].kwargs["json"])
+
+
+class LeadPhotoHoldTests(unittest.TestCase):
+    """The thread waits for the operator's image instead of going out with
+    the generated card -- posting is irreversible, waiting is not."""
+
+    def setUp(self):
+        self._token_patch = mock.patch("x_auth.get_valid_access_token", return_value="test-bearer")
+        self._token_patch.start()
+
+    def tearDown(self):
+        self._token_patch.stop()
+
+    def _response(self, tweet_id):
+        res = mock.Mock()
+        res.raise_for_status = mock.Mock()
+        res.json.return_value = {"data": {"id": tweet_id}}
+        return res
+
+    def test_generated_card_alone_holds_the_thread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            _write_thread(job_dir, ["first"], photo_source=None)
+            with mock.patch("requests.post", side_effect=AssertionError("should not post")):
+                with self.assertRaises(xp.PhotoPending):
+                    xp.post_thread(job_dir)
+
+    def test_force_posts_through_the_hold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            _write_thread(job_dir, ["first"], photo_source=None)
+            with mock.patch("requests.post", side_effect=[self._response("id1")]):
+                payload = xp.post_thread(job_dir, force=True)
+            self.assertTrue(payload["posted"])
+
+    def test_operator_photo_releases_the_hold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            _write_thread(job_dir, ["first"])
+            with mock.patch("requests.post", side_effect=[self._response("id1")]):
+                payload = xp.post_thread(job_dir)
+            self.assertTrue(payload["posted"])
+
+    def test_resume_is_never_held(self):
+        # The lead tweet is already live, so there is no image left to wait
+        # for -- holding here would strand the replies.
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            _write_thread(job_dir, ["first", "second"], photo_source=None, tweet_ids=["id1"])
+            with mock.patch("requests.post", side_effect=[self._response("id2")]):
+                payload = xp.post_thread(job_dir)
+            self.assertEqual(payload["tweet_ids"], ["id1", "id2"])
+
+    def test_dry_run_reports_without_being_held(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            _write_thread(job_dir, ["first"], photo_source=None)
+            with mock.patch("requests.post", side_effect=AssertionError("should not post")):
+                xp.post_thread(job_dir, dry_run=True)
+
+    def test_cli_reports_a_hold_as_its_own_exit_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            _write_thread(job_dir, ["first"], photo_source=None)
+            with mock.patch.object(xp, "resolve_work_dir", return_value=job_dir):
+                with mock.patch("requests.post", side_effect=AssertionError("should not post")):
+                    self.assertEqual(xp.main(["--job-id", "J001"]), xp.EXIT_PHOTO_PENDING)
 
 
 class UploadMediaTests(unittest.TestCase):

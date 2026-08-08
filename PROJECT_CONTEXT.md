@@ -1,6 +1,6 @@
 # Project Context - ContentAutomation_shorts
 
-Last updated: 2026-08-01
+Last updated: 2026-08-08
 Current base branch: `main`
 Repository: `SanhoLee/ContentAutomation_shorts`
 Primary deployment target: AWS Lightsail, expected path `~/brain50`
@@ -18,13 +18,14 @@ The X(Twitter) thread adapter is the one deliberate exception to that audience: 
 The pipeline runs from a single `dev` environment. `dev/src` is split into `common/` (content-type-agnostic), `youtube/` (render pipeline), and `instagram/` (card-content skeleton, not yet in production). A parallel `prod/` tree was deleted on 2026-08-08 after it fell behind this layout and stopped running jobs.
 
 1. Topic selection: direct topic string, `topic.json`, trend mode, or `run_goal.sh` → `src/common/0_topic_plan.py` (goal-driven auto planner, no human pick).
-2. Script generation: `sh/common/0_script.sh` → `src/common/0_script.py` (2-stage: Haiku strategy, Sonnet script).
-3. TTS: `sh/youtube/1_tts.sh` → `src/youtube/1_tts.py`.
-4. Caption: `sh/youtube/1_caption.sh` → `src/youtube/2_caption.py`.
-5. B-roll: `sh/youtube/1_broll.sh` → `src/youtube/3_broll*.py`.
-6. Render: `sh/youtube/2_render.sh`.
-7. YouTube upload: `sh/youtube/3_upload.sh` → `src/youtube/4_upload.py`.
-8. Approval workflow: `src/common/slack_bot.py`.
+2. Script generation: `sh/common/0_script.sh` → `src/common/0_script.py` (2-stage: Haiku strategy, Sonnet script). Words and `role` only.
+3. Scene visuals: `sh/common/scene_visuals.sh` → `src/common/scene_visuals.py`. Runs *after* the script gate on the approved text; re-syncs scene text to `script.txt`, plans `visual`/`visual_query` in one Haiku call, refreshes `content_package.json`.
+4. TTS: `sh/youtube/1_tts.sh` → `src/youtube/1_tts.py`.
+5. Caption: `sh/youtube/1_caption.sh` → `src/youtube/2_caption.py`.
+6. B-roll: `sh/youtube/1_broll.sh` → `src/youtube/3_broll*.py`.
+7. Render: `sh/youtube/2_render.sh`.
+8. YouTube upload: `sh/youtube/3_upload.sh` → `src/youtube/4_upload.py`.
+9. Approval workflow: `src/common/slack_bot.py`.
 
 Stage order is defined once in `src/common/pipeline_flow.py` (`STAGES`); execution mode (`full_gate` / `review` / `auto`) is purely which gates it stops at, not a different code path. Between stages, `src/common/stage_guard.py` runs a deterministic, Claude-free check and allows one bounded retry before stopping and surfacing the reason to a human — no infinite retries.
 
@@ -39,6 +40,8 @@ Outputs are job-scoped under `dev/data/work/{JOB_ID}/`. Final videos go to the c
 - Korean caption line-splitting is grammar-aware (particles/endings never separate from their word).
 - B-roll always plays at native speed; slow-motion/timelapse/static clips are filtered at selection, not sped up in render.
 - Stage 2 script prompt keeps the hook's tension open past Scene 1 instead of resolving it at Scene 2 (2026-08-01, driven by real retention-curve data).
+- Visual planning moved out of Stage 2 into the post-approval `scene_visuals` stage (2026-08-08), so an edited script body no longer leaves `scenes.json`, B-roll queries and the X thread describing the pre-edit text.
+- The X thread never auto-posts without an operator-supplied lead image (2026-08-08): `x_poster` holds it (`PhotoPending`) until the photo arrives in Slack, and `/x_post` is the explicit "send it as-is" escape. The stored X token still lacks the `media.write` scope — re-consent in the X Developer Portal is an outstanding operator action (`KNOWN_ISSUES.md` #11).
 - web_search is bounded and optional: failure/timeout logs and continues without retry.
 
 See `HANDOFF.md` "Recent Major Work" for the commit-level breakdown; `git log --oneline` has the full history (~130 commits since 2026-07-02, not individually listed here).

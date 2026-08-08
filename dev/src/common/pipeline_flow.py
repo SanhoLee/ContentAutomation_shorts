@@ -52,6 +52,16 @@ STAGES = (
         gates=("script_review",),
     ),
     Stage(
+        # Placed after script's gate on purpose: advance() parks *after* a
+        # stage completes, so by the time this runs script.txt is the text
+        # the operator approved. Planning visuals inside Stage 2 instead --
+        # before anyone could edit -- is what left scenes.json describing a
+        # script that no longer existed. Ahead of x_thread because that
+        # stage reads the content_package.json this one refreshes.
+        name="scene_visuals",
+        command=("sh/common/scene_visuals.sh",),
+    ),
+    Stage(
         # No gate of its own: the draft it writes is picked up and shown
         # alongside the video at render's final_confirm gate, so review of
         # both happens in that one decision instead of a third approval.

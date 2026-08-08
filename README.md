@@ -38,8 +38,16 @@
 │                                                         │
 │  Stage 2 [Sonnet, 품질 집중]  build_prompt()           │
 │ PubMed + web_search + YouTube 채널 상대성과 인사이트     │
-│    감정 여정 구조로 대본 작성                            │
+│    감정 여정 구조로 대본 작성 (문장 + role 까지)         │
 │    → script.txt / scenes.json / video_meta.json        │
+└─────────────────────────────────────────────────────────┘
+    │
+    ▼  (대본 승인 게이트 — 여기서 본문을 고칠 수 있음)
+┌─────────────────────────────────────────────────────────┐
+│  scene_visuals.py  ─  씬 시각 계획 (Haiku 1회)          │
+│  확정된 script.txt 기준으로 씬 텍스트 재동기화           │
+│  → 씬별 visual{type,brief,must_show} + visual_query     │
+│  → scenes.json 갱신 / content_package.json 재생성       │
 └─────────────────────────────────────────────────────────┘
     │
     ▼
@@ -153,6 +161,7 @@ brain50/
 │   ├── src/
 │   │   ├── common/              # 콘텐츠 유형에 무관한 로직
 │   │   │   ├── 0_script.py      # 대본 생성 (2단계 Claude)
+│   │   │   ├── scene_visuals.py # 승인된 대본 기준 씬 시각 계획
 │   │   │   ├── 0_topic_plan.py  # 목표 기반 자동 주제 기획 (objective_planner)
 │   │   │   ├── objective_planner.py
 │   │   │   ├── evidence_probe.py  # PubMed 근거 확인 쿼리 사다리
@@ -195,7 +204,7 @@ brain50/
 │           ├── strategy.json   # Stage 1 전략 결과
 │           ├── youtube_guidance.json # 채널 실데이터 분석
 │           ├── script.txt      # 생성된 대본 (TTS 입력)
-│           ├── scenes.json     # 장면별 텍스트 + visual_query
+│           ├── scenes.json     # 장면별 텍스트 + role (+ 승인 후 visual/visual_query)
 │           ├── video_meta.json # 제목·훅유형·해시태그 등
 │           ├── content_package.json # 멀티플랫폼 중간 산출물 (Phase 3)
 │           ├── x_thread.json / x_thread.txt # X 스레드 초안 (Phase 4)
@@ -271,6 +280,29 @@ PubMed 번역에 사용한 영어 쿼리를 재활용해 우선 출처에서 최
 
 ---
 
+### `scene_visuals.py` — 씬 시각 계획 (`claude-haiku`, 승인 후)
+
+`script.txt`는 `scenes.json`을 `"\n\n".join(scene["text"])`로 펼친 **같은 객체**입니다. 그래서 대본
+승인 게이트에서 본문을 고치면 `script.txt`만 바뀌고, 장면 텍스트·검색어는 수정 전 상태로 남습니다.
+Stage 2가 시각 계획까지 함께 만들던 구조에서는 TTS·자막은 새 본문을, B-roll·X 스레드는 지워진 문장을
+따라가는 어긋남이 생겼습니다. 그래서 시각 계획은 **승인 뒤**에 별도 스테이지로 돕니다.
+
+```
+① script.txt 문단 ↔ 씬 재동기화
+   개수가 같으면 문단 i = 씬 i (나머지 필드는 보존)
+   개수가 다르면 문단 기준으로 재구성하고 role을 위치로 재부여
+   (슬랙으로 붙여넣은 수정본은 빈 줄이 사라지므로 모든 개행으로 분할)
+② Haiku 1회 호출 — 씬별 visual{type, brief, must_show} + 영문 visual_query
+③ 실패해도 절대 중단하지 않음 — 빠진 값은 대본 문장/기본 검색어로 결정론적 채움
+④ content_package.json 재생성 (X·Instagram 어댑터가 수정된 본문을 보게)
+```
+
+`script_quality.json`에 `visual_plan_source`(`claude`/`fallback`), `scenes_with_visual_brief`,
+경고 `visual_plan_unavailable` / `visual_brief_backfilled`를 남깁니다. 자세한 내용은
+`docs/design/story-types.md` §7.
+
+---
+
 ### `2_caption.py` — 자막 생성 (스크립트 텍스트 기반)
 
 **기존 방식의 문제점**: faster-whisper STT 결과를 자막 텍스트로 사용 →  
@@ -324,9 +356,11 @@ Shorts 피드 초반 몰입 대리지표·평균 시청률·구독 전환율·�
 |------|------|------|
 | Stage 1 | `claude-3-5-haiku-latest` | 전략 수립 (빠름·저렴) |
 | Stage 2 | `claude-sonnet-4-6` | 대본 작성 (품질 집중) |
+| scene_visuals | `claude-haiku-4-5` | 승인된 대본 기준 씬 시각 계획 (작업당 약 $0.0075) |
 
 Stage 1이 검색 키워드·제목·훅 유형을 먼저 확정하므로,  
 Stage 2 Sonnet은 감정 여정과 문장 품질에만 집중합니다.
+화면 연출은 대본이 확정된 뒤 `scene_visuals`가 따로 계획합니다.
 
 ### 채널 톤 고정 (Creative DNA)
 
@@ -341,9 +375,9 @@ Stage 2 Sonnet은 감정 여정과 문장 품질에만 집중합니다.
 원리·체험형(35%) / 오해 교정형(30%) / 습관·기전형(25%) / 사례·여정형(10%).
 자동 기획 경로에서는 최근 잡의 실제 분포를 보고 **비중에 가장 부족한 타입**을
 Python이 결정론적으로 고르고(Claude는 관여하지 않음), Stage 1이 그 타입을
-`strategy.json`에 고정하며, Stage 2는 타입별 role 시퀀스와 장면별
-`visual.brief`로 대본을 씁니다. 봇으로 직접 넣은 수동 주제는 비중을 강제하지
-않고 Stage 1이 문장을 보고 추론합니다.
+`strategy.json`에 고정하며, Stage 2는 타입별 role 시퀀스에 맞춰 대본을 씁니다
+(`visual.brief`는 승인 뒤 `scene_visuals`가 채웁니다). 봇으로 직접 넣은 수동
+주제는 비중을 강제하지 않고 Stage 1이 문장을 보고 추론합니다.
 
 비중·템플릿은 `dev/config/story_type_mix.json`과
 `dev/config/story_templates/`에서 코드 수정 없이 바꿀 수 있고,
@@ -656,6 +690,9 @@ python 0_script.py "다음 주제"
 | `CLAUDE_STRATEGY_FALLBACK_MODELS` | `claude-3-5-haiku-20241022` | Stage 1 모델이 400 invalid model 응답을 낼 때 순서대로 재시도할 모델 목록(쉼표 구분) |
 | `CLAUDE_MODEL` | `claude-sonnet-4-6` | Stage 2 대본 작성 모델 |
 | `MAX_TOKENS` | `1000` | Stage 2 최대 출력 토큰 |
+| `SCENE_VISUALS_PLAN` | `1` | `0`이면 씬 시각 계획 호출을 끈다(재동기화와 기본값 채우기는 계속 동작). 모델은 `CLAUDE_STRATEGY_MODEL`을 공유 |
+| `SCENE_VISUALS_MAX_TOKENS` | `2000` | 씬 시각 계획 최대 출력 토큰 |
+| `SCENE_VISUALS_TIMEOUT_SEC` | `90` | 씬 시각 계획 호출 타임아웃(초) |
 
 ### 영상 길이
 

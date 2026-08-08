@@ -499,9 +499,10 @@ class SlackBotTests(unittest.TestCase):
 
     def test_auto_finish_can_resume_from_every_review_stage(self):
         # slack_bot drives this through pipeline_flow.STAGES, which includes
-        # x_thread (right after script) and x_post (right after upload).
+        # scene_visuals and x_thread (right after script) and x_post (right
+        # after upload).
         expected_commands = {
-            "await_script_approval": ["x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
+            "await_script_approval": ["scene_visuals.sh", "x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
             "await_tts_approval": ["1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
             "await_caption_approval": ["1_broll.sh", "3_upload.sh", "x_post.sh"],
             "await_broll_approval": ["3_upload.sh", "x_post.sh"],
@@ -874,8 +875,38 @@ class XPhotoIntakeTests(unittest.TestCase):
         self.assertTrue(slack_bot.apply_x_photo_message("C1", job, {"document": self._image()}))
         self.assertEqual(len(self.saved), 1)
         self.assertTrue(self.saved[0]["photo_path"].endswith(slack_bot.x_photo_card.PHOTO_FILENAME))
+        # x_poster holds the thread until this says a human supplied the image.
+        self.assertEqual(self.saved[0]["photo_source"], slack_bot.x_poster.PHOTO_SOURCE_OPERATOR)
         self.assertNotIn("x_photo_target", job)
         self.assertTrue(self.sent_files)
+
+    def test_image_arriving_after_the_upload_posts_the_held_thread(self):
+        # The pipeline's x_post stage held the thread for want of an image;
+        # the upload is the release trigger, otherwise nothing ever posts it.
+        job = self._armed_job()
+        job["stage"] = "done"
+        posted = []
+        original = slack_bot.x_poster.post_thread
+        slack_bot.x_poster.post_thread = lambda job_dir, **kw: (
+            posted.append(job_dir) or {"thread_url": "https://x.com/i/web/status/1", "tweet_ids": ["1"]}
+        )
+        try:
+            slack_bot.apply_x_photo_message("C1", job, {"document": self._image()})
+        finally:
+            slack_bot.x_poster.post_thread = original
+        self.assertEqual(len(posted), 1)
+        self.assertIn("X 스레드 게시 완료", self.messages[-1])
+
+    def test_image_arriving_mid_pipeline_does_not_post_early(self):
+        job = self._armed_job()
+        job["stage"] = "running"
+        original = slack_bot.x_poster.post_thread
+        slack_bot.x_poster.post_thread = lambda *a, **kw: self.fail("should not post yet")
+        try:
+            slack_bot.apply_x_photo_message("C1", job, {"document": self._image()})
+        finally:
+            slack_bot.x_poster.post_thread = original
+        self.assertEqual(len(self.saved), 1)
 
     def test_wrong_file_type_is_rejected_and_stays_armed(self):
         job = self._armed_job()

@@ -207,12 +207,16 @@ top_margin_px: 20
 
 ## 단계별 생성과 수동 보정
 
-`1_generate.sh`는 여전히 TTS, caption, B-roll을 순서대로 실행하는 통합 wrapper입니다. 다만 발음이나 자막 보정이 필요할 때는 아래 개별 스크립트를 같은 `JOB_ID`로 실행할 수 있습니다.
+`1_generate.sh`는 여전히 씬 시각 계획, TTS, caption, B-roll을 순서대로 실행하는 통합 wrapper입니다. 다만 발음이나 자막 보정이 필요할 때는 아래 개별 스크립트를 같은 `JOB_ID`로 실행할 수 있습니다.
 
 ```bash
 cd ~/brain50/dev
 export JOB_ID=test_job_001
 source ./config.sh
+
+# 0) 확정된 script.txt 기준으로 scenes.json의 텍스트·검색어 재계획
+#    script.txt를 손으로 고쳤다면 반드시 먼저 실행 (안 하면 B-roll이 수정 전 문장을 따라감)
+./sh/common/scene_visuals.sh
 
 # 1) script.txt를 읽어 voice.wav 생성
 ./sh/1_tts.sh

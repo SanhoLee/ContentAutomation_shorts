@@ -1,7 +1,8 @@
 # Story Types — 채널 4장르와 비중 운영
 
-주제 자동 선정 시 결정론적으로 `story_type`을 붙이고 → `strategy.json`에 고정 → Stage 2가 타입별 골격과
-`visual.brief`로 대본을 쓴다. 기존 FORMAT/HOOK/Creative DNA/근거/피드백 루프는 그대로 둔다.
+주제 자동 선정 시 결정론적으로 `story_type`을 붙이고 → `strategy.json`에 고정 → Stage 2가 타입별 골격에
+맞춰 대본과 `role`을 쓴다. 화면에 무엇이 보일지(`visual`, `visual_query`)는 대본 승인 뒤 별도 스테이지
+`scene_visuals`가 정한다(§7 참고). 기존 FORMAT/HOOK/Creative DNA/근거/피드백 루프는 그대로 둔다.
 
 관련: `docs/design/objective-driven-content-planner.md` (주제 선정), Creative DNA(Phase 2),
 `content_package.py`(Phase 3).
@@ -89,7 +90,12 @@ Stage 1이 기획 단계에서 확정된 타입을 무시하고 다른 값을 �
 { "story_type": "myth_bust", "format_type": "오해반전형", "hook_type": "반전형", ... }
 ```
 
-`scenes.json` / `scenes_timed.json`
+Stage 2가 쓰는 씬 (`{text, role}`) — 여기까지가 대본이고, 승인 게이트 대상이다.
+```json
+{ "text": "...", "role": "why_believed" }
+```
+
+`scene_visuals` 이후의 `scenes.json` / `scenes_timed.json`
 ```json
 {
   "text": "...", "role": "why_believed",
@@ -127,7 +133,7 @@ eligible 후보(`data/topics/eligible/*.json`)는 `suggested_story_types: []`와
 
 | 환경변수 | 기본값 | 의미 |
 |----------|--------|------|
-| `USE_STORY_TYPES` | `1` | `0`이면 Stage 1/Stage 2 프롬프트와 출력 스키마가 도입 이전과 **완전히 동일**해진다 |
+| `USE_STORY_TYPES` | `1` | `0`이면 Stage 1/Stage 2 프롬프트와 출력 스키마가 도입 이전과 **완전히 동일**해진다. `scene_visuals`도 `role`/`visual` 없이 `{text, visual_query}`만 남긴다 |
 | `STORY_TYPE_MIX_PATH` | `dev/config/story_type_mix.json` | 비중 설정 경로 |
 | `STORY_TEMPLATES_DIR` | `dev/config/story_templates` | 템플릿 폴더 경로 |
 
@@ -136,19 +142,35 @@ eligible 후보(`data/topics/eligible/*.json`)는 `suggested_story_types: []`와
 
 ---
 
-## 7. 검증과 의도적 비범위
+## 7. 시각 계획 스테이지 (`scene_visuals`)
 
-Stage 2 출력은 `script_quality.json`에 기록된다.
+`script.txt`는 `scenes.json`을 펼친 같은 객체라, 승인 게이트에서 본문을 고치면 두 파일이 어긋난다.
+그래서 시각 계획은 Stage 2가 아니라 승인 **뒤**에 돈다 (`pipeline_flow.STAGES`: `script` → `scene_visuals`
+→ `x_thread`). `advance()`가 스테이지 완료 **후에** 게이트에 멈추므로, 이 위치가 곧 "확정된 본문"이다.
 
-- `metrics.story_type`, `metrics.scenes_with_visual_brief`
-- 경고: `visual_brief_backfilled`(모델이 brief를 빠뜨려 대본 문장으로 채움),
-  `role_off_sequence`, `role_bookends_missing`
+순서: ① `script.txt` 문단 ↔ 씬 재동기화(개수가 다르면 문단 기준으로 재구성하고 role을 위치로 재부여)
+→ ② Haiku 1회로 `visual` + `visual_query` 계획 → ③ 빠진 값은 결정론적으로 채움
+→ ④ `content_package.json` 재생성(X/Instagram 어댑터가 수정된 본문을 보게).
 
-`visual.brief`가 비면 **재호출하지 않고** 대본 문장에서 결정론적으로 채운다. 명세는 "재시도 1회 또는
-guard 실패"를 허용하지만, 이 저장소 규칙(`CLAUDE.md`, `KNOWN_ISSUES.md`)은 API 비용을 두 배로 만드는
-재시도보다 비용 없는 실패 처리를 우선한다. 같은 이유로 `stage_guard`에 script 단계 가드를
-**붙이지 않았다** — 가드 실패는 `pipeline_flow.run_stage`에서 재실행을 부르고, 그건 가장 비싼 Claude
-단계를 통째로 다시 태우는 일이다. 대신 위 검사는 `validate_script()` 안에서 비용 없이 돈다.
+`script_quality.json`에 기록되는 값:
+
+- `metrics.story_type`(Stage 2), `metrics.scene_count` / `metrics.scenes_with_visual_brief` /
+  `metrics.visual_plan_source`(`claude` | `fallback`)
+- 경고: `visual_plan_unavailable`(계획 호출 실패 → 기본 검색어), `visual_brief_backfilled`(brief 누락 →
+  대본 문장으로 채움), `role_off_sequence`, `role_bookends_missing`
+
+계획 호출이 실패해도 **재호출하지 않는다**. 명세는 "재시도 1회 또는 guard 실패"를 허용하지만, 이 저장소
+규칙(`CLAUDE.md`, `KNOWN_ISSUES.md`)은 API 비용을 두 배로 만드는 재시도보다 비용 없는 실패 처리를
+우선한다. 같은 이유로 `stage_guard`에 script/scene_visuals 가드를 **붙이지 않았다** — 가드 실패는
+`pipeline_flow.run_stage`에서 재실행을 부른다. 대신 위 검사는 비용 없이 돈다.
+
+| 환경변수 | 기본값 | 의미 |
+|----------|--------|------|
+| `SCENE_VISUALS_PLAN` | `1` | `0`이면 Haiku 계획 호출을 끈다. 재동기화와 결정론적 채우기는 계속 동작 |
+| `SCENE_VISUALS_MAX_TOKENS` | `2000` | 계획 응답 상한 |
+| `SCENE_VISUALS_TIMEOUT_SEC` | `90` | 계획 호출 타임아웃 |
+
+모델은 `CLAUDE_STRATEGY_MODEL`(기본 Haiku)을 그대로 쓴다. 실측 비용은 작업당 약 $0.0075.
 
 범위 밖: 전 구간 AI 영상 생성, "핵심 3샷" 슬롯, FORMAT_TYPES 문자열 제거,
 `content_objectives` 가중치 개편.

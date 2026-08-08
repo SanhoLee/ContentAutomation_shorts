@@ -57,19 +57,34 @@
 
 `visual.brief` 누락 시 재시도 1회 옵션이 있었지만 채택 안 함 — 재시도가 Stage 1+2 전체를 다시 돌려 Claude 비용이 두 배가 되기 때문(비용 원칙 위반, #7/#10, `CLAUDE.md` 참고).
 
-대신 `normalize_story_scenes()`가 장면 텍스트로 `brief`를 결정적으로 백필하고, `validate_script()`가 `visual_brief_backfilled`/`role_off_sequence`/`role_bookends_missing`을 경고로 기록(비용 0). **모니터링**: `visual_brief_backfilled`가 30% 이상이면 가드가 아니라 Stage 2 프롬프트를 손봐야 함.
+대신 `scene_visuals.fill_scene_visuals()`가 장면 텍스트로 `brief`를 결정적으로 백필하고, 경고(`visual_brief_backfilled`, `visual_plan_unavailable`)만 `script_quality.json`에 기록(비용 0). `validate_script()`는 `role_off_sequence`/`role_bookends_missing`만 담당. **모니터링**: `visual_brief_backfilled`가 30% 이상이면 가드가 아니라 `scene_visuals.PLAN_PROMPT`를 손봐야 함.
 
-### 11. X(Twitter) 자동 게시 로직이 실계정으로 미검증 (2026-08-02)
+### 13. 시각 계획을 Stage 2에서 분리 (2026-08-08)
 
-`slack_bot._maybe_post_x_thread`가 job이 `done` 상태가 되면 `x_poster.post_thread()`를 호출, 사람 개입 없이 X에 게시됨. 미검증 부분:
+`script.txt`는 `scenes.json`을 `"\n\n".join(scene["text"])`로 펼친 같은 객체다. 그런데 승인 게이트에서 본문을 고치면 `script.txt`만 바뀌고 `scenes.json`의 `text`/`role`/`visual`/`visual_query`는 수정 전 상태로 남아, TTS·자막은 새 본문을, B-roll·X 스레드는 지워진 문장을 따라갔다(job `review_20260808_134830_992877_c43bc94c`).
 
-- **사진 업로드**: 리드 트윗에 `x_photo_card.py`로 렌더링한 카드를 첨부(`POST /2/media/upload`). 이 계정의 티어/토큰 스코프가 `media.write`를 실제로 부여하는지 미확인. 실패 시 텍스트만 게시(캐치됨).
+수정: 시각 계획을 Stage 2에서 떼어내 승인 게이트 **뒤**의 별도 스테이지 `scene_visuals`로 옮김(`pipeline_flow.STAGES`에서 `script` 다음, `x_thread` 앞). 이 스테이지가 확정된 `script.txt` 기준으로 씬 텍스트를 재동기화하고 Haiku 1회로 `visual`/`visual_query`를 계획한 뒤 `content_package.json`을 다시 만든다.
 
-과거 이력: `074f483`(2026-08-02)에서 처음 작성 당시 "sources tweet"용 `LINK_COST_CHARS` 문자 예산도 있었으나, 같은 날 `e6d0d62`에서 sources 트윗 자체를 제거 — 이제 `sources_text`는 `x_thread.json`에 담겨 Slack DM으로만 전송(`_maybe_send_x_sources_dm`). `LINK_COST_CHARS`는 코드에서 삭제됨.
+- **비용**: 작업당 Haiku 1회 ≈ $0.0075 (실측). Stage 1+2 재실행이 아니므로 #10 원칙과 충돌하지 않음. 계획 호출만 끄려면 `SCENE_VISUALS_PLAN=0` (텍스트 재동기화와 결정론적 채우기는 계속 동작).
+- **주의**: 슬랙으로 붙여넣은 수정본은 빈 줄이 사라져 한 줄에 한 씬으로 들어온다. `split_script_paragraphs()`가 빈 줄이 아니라 **모든 개행**으로 나누는 이유 — `\n\n`만 쓰면 8개 씬이 1개로 뭉개진다.
+- **모니터링**: `script_quality.json`의 `visual_plan_source`가 `fallback`인 비율. 계속 fallback이면 모든 영상이 같은 기본 검색어(`senior person daily life home`)로 나간다.
 
-안전성: 모든 실패 모드가 완전 중단이 아니라 성능 저하로 처리됨 — Pillow 없음→카드 없이 진행, 이미지 거부→텍스트만, 스레드 중간 실패→재개 가능(`/x_post`), sources DM 실패→로그만 남기고 무시(본 스레드는 이미 게시됨).
+### 11. X 토큰에 `media.write` 스코프 없음 — 운영 조치 필요 (2026-08-08)
 
-**액션**: 첫 실제 자동 게시 후 카드가 실제로 보이는지 확인. `media.write` 미부여 시 로그 `사진 업로드 실패, 텍스트만 게시합니다` 확인 후 X Developer Portal에서 스코프 변경(코드 수정 아님).
+**확인된 원인.** `data/x_token.json`의 OAuth 2.0 토큰이 `media.write` 없이 발급되어 미디어 업로드가 403으로 실패한다. `api.x.com/2/media/upload`은 `{"detail":"Forbidden"}`만 주지만 `upload.x.com/2/media/upload`은 `{"detail":"You are not permitted to use OAuth2 on this endpoint"}`를 준다 — 스코프 누락의 전형적 증상. 저장된 토큰에는 `scope` 필드 자체가 없다.
+
+이 때문에 job `review_20260808_134830_992877_c43bc94c`은 운영자가 슬랙에 사진을 올렸는데도(14:57 수신 확인) 텍스트만 게시됐다. 당시 `x_poster`가 업로드 실패를 조용히 삼키고 텍스트만 내보냈기 때문에 실패가 드러나지 않았다.
+
+**코드 수정(2026-08-08).**
+
+- 리드 트윗 이미지가 **운영자가 준 것**(`photo_source == "operator"`)이 아니면 게시를 보류(`PhotoPending`, 종료코드 2). 자동 생성 카드만으로는 나가지 않는다.
+- 사진 업로드가 실패하면 트윗을 하나도 올리지 않고 중단 — 트윗 1이 한 번 나가면 미디어를 나중에 붙일 수 없기 때문. 재개(`resume_from > 0`)와 `/x_post`(force)는 예외.
+- 슬랙에 사진이 도착하면 그 자리에서 보류된 스레드를 게시(`_maybe_post_x_thread`).
+- 이미지 없이 지금 내보내려면 `/x_post`.
+
+**남은 운영 조치**: X Developer Portal에서 앱에 `media.write` 포함해 재인증(코드로 해결 불가). 그 전까지 모든 스레드는 사진 대기 상태로 멈추거나 `/x_post`로 텍스트만 나간다.
+
+과거 이력: `074f483`(2026-08-02)의 "sources tweet"용 `LINK_COST_CHARS`는 같은 날 `e6d0d62`에서 트윗 자체와 함께 제거 — `sources_text`는 Slack DM으로만 전송(`_maybe_send_x_sources_dm`).
 
 ### 12. Seed anchoring이 자동완성 풀을 얇게 만들 수 있음 (2026-08-07)
 

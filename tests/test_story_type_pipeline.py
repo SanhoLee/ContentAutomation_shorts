@@ -153,8 +153,14 @@ class Stage2PromptTests(unittest.TestCase):
         prompt = SCRIPT_ON.build_prompt(dict(STRATEGY), abstracts="")
         self.assertIn("myth_bust", prompt)
         self.assertIn("why_believed", prompt)
-        self.assertIn("visual", prompt)
-        self.assertIn("must_show", prompt)
+
+    def test_the_prompt_no_longer_asks_stage_two_to_plan_visuals(self):
+        # The visual plan is scene_visuals' job now: asking here would fix it
+        # before the operator is allowed to edit the words it describes.
+        for module in (SCRIPT_ON, SCRIPT_OFF):
+            prompt = module.build_prompt(dict(STRATEGY), abstracts="")
+            self.assertNotIn('"visual_query"', prompt)
+            self.assertNotIn('"must_show"', prompt)
 
     def test_each_genre_injects_its_own_skeleton(self):
         for story_type in st.STORY_TYPES:
@@ -166,7 +172,7 @@ class Stage2PromptTests(unittest.TestCase):
         prompt = SCRIPT_OFF.build_prompt(dict(STRATEGY), abstracts="")
         self.assertNotIn("must_show", prompt)
         self.assertNotIn("스토리 타입", prompt)
-        self.assertIn('"visual_query"', prompt)
+        self.assertNotIn('"role"', prompt)
 
     def test_off_schema_has_no_story_type(self):
         self.assertNotIn("story_type", SCRIPT_OFF.strategy_output_schema()["properties"])
@@ -179,7 +185,9 @@ class Stage2PromptTests(unittest.TestCase):
             self.assertNotIn("{{", shape)
             parsed = json.loads(shape)
             self.assertIn("text", parsed)
-            self.assertIn("visual_query", parsed)
+            self.assertNotIn("visual_query", parsed)
+        self.assertIn("role", json.loads(SCRIPT_ON.scene_output_spec()[1]))
+        self.assertEqual(list(json.loads(SCRIPT_OFF.scene_output_spec()[1])), ["text"])
 
     def test_the_rendered_prompt_shows_a_parseable_scene_example(self):
         for module in (SCRIPT_ON, SCRIPT_OFF):
@@ -221,46 +229,17 @@ class NormalizeScenesTests(unittest.TestCase):
     def test_a_single_scene_script_still_normalizes(self):
         result = self.normalized(scenes(1))
         self.assertEqual(result[0]["role"], "hook")
-        self.assertTrue(result[0]["visual"]["brief"])
-
-    def test_every_scene_ends_with_a_visual_brief(self):
-        """Acceptance §10-4."""
-        for scene in self.normalized(scenes(6)):
-            self.assertTrue(scene["visual"]["brief"].strip())
-
-    def test_a_model_supplied_brief_is_kept_verbatim(self):
-        raw = scenes(3)
-        raw[1]["visual"] = {"type": "proof", "brief": "약통을 여는 손", "must_show": ["약통"]}
-        result = self.normalized(raw)
-        self.assertEqual(result[1]["visual"]["brief"], "약통을 여는 손")
-        self.assertEqual(result[1]["visual"]["type"], "proof")
-        self.assertEqual(result[1]["visual"]["must_show"], ["약통"])
-
-    def test_an_invalid_visual_type_is_replaced_by_the_role_default(self):
-        raw = scenes(3)
-        raw[0]["visual"] = {"type": "존재하지않음", "brief": "훅 화면"}
-        self.assertIn(self.normalized(raw)[0]["visual"]["type"], st.VISUAL_TYPES)
 
     def test_a_model_supplied_role_outside_the_sequence_is_replaced(self):
         raw = scenes(3)
         raw[1]["role"] = "설명"
         self.assertIn(self.normalized(raw)[1]["role"], st.role_sequence("myth_bust"))
 
-    def test_must_show_is_coerced_to_a_capped_list(self):
-        raw = scenes(2)
-        raw[0]["visual"] = {"brief": "화면", "must_show": "단일 문자열"}
-        raw[1]["visual"] = {"brief": "화면", "must_show": ["1", "2", "3", "4", "5"]}
-        result = self.normalized(raw)
-        self.assertEqual(result[0]["visual"]["must_show"], ["단일 문자열"])
-        self.assertEqual(len(result[1]["visual"]["must_show"]), 3)
-
-    def test_a_scene_without_a_visual_query_gets_a_searchable_fallback(self):
-        raw = [{"text": "쿼리 없는 장면"}]
-        self.assertEqual(self.normalized(raw)[0]["visual_query"], st.FALLBACK_VISUAL_QUERY)
-
-    def test_backfilled_briefs_are_counted_for_the_quality_report(self):
-        result = SCRIPT_ON.normalize_story_scenes({"scenes": scenes(4)}, dict(STRATEGY))
-        self.assertEqual(result["_visual_brief_backfilled"], 4)
+    def test_the_visual_plan_is_left_to_the_scene_visuals_stage(self):
+        # Stage 2 now only settles the narrative beat; visual/visual_query are
+        # filled after the script gate (see tests/test_scene_visuals.py).
+        for scene in self.normalized(scenes(4)):
+            self.assertNotIn("visual", scene)
 
     def test_empty_scenes_are_left_alone(self):
         self.assertEqual(SCRIPT_ON.normalize_story_scenes({"scenes": []}, dict(STRATEGY))["scenes"], [])
@@ -282,20 +261,14 @@ class QualityReportTests(unittest.TestCase):
         result = SCRIPT_ON.normalize_story_scenes(self.build_result(scenes(6)), dict(STRATEGY))
         report = SCRIPT_ON.validate_script(result, dict(STRATEGY))
         self.assertEqual(report["metrics"]["story_type"], "myth_bust")
-        self.assertEqual(report["metrics"]["scenes_with_visual_brief"], 6)
-
-    def test_backfilled_briefs_surface_as_a_warning_not_a_failure(self):
-        result = SCRIPT_ON.normalize_story_scenes(self.build_result(scenes(6)), dict(STRATEGY))
-        report = SCRIPT_ON.validate_script(result, dict(STRATEGY))
-        codes = {issue["code"] for issue in report["warnings"]}
-        self.assertIn("visual_brief_backfilled", codes)
-        self.assertTrue(report["ok"])
+        # scenes_with_visual_brief is scene_visuals' metric now; Stage 2 has no
+        # visual plan to count and must not claim one.
+        self.assertNotIn("scenes_with_visual_brief", report["metrics"])
 
     def test_wrong_bookend_roles_are_reported(self):
         raw = scenes(4)
         for scene in raw:
             scene["role"] = "evidence"
-            scene["visual"] = {"type": "proof", "brief": "화면", "must_show": ["x"]}
         report = SCRIPT_ON.validate_script(self.build_result(raw), dict(STRATEGY))
         codes = {issue["code"] for issue in report["warnings"]}
         self.assertIn("role_bookends_missing", codes)

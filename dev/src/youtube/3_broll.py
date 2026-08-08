@@ -91,7 +91,10 @@ def process_scene(i, scene):
     raw_path = os.path.join(TEMP_DIR, f"raw_{i:02d}.mp4")
     out_path = os.path.join(TEMP_DIR, f"part_{i:02d}.mp4")
     duration = scene.get("render_duration", scene["duration"])
-    queries = scene_queries(scene) or [scene["visual_query"]]
+    # A scene with no query at all only happens when scene_visuals was skipped
+    # (hand-run stages); the rotating fallback below covers it, so take it
+    # rather than KeyError halfway through a render.
+    queries = scene_queries(scene)
     attempts = [("ok", query) for query in queries] + [("fallback", next_fallback_query(i))]
     for status, candidate_query in attempts:
         clip_info = fetch_clip(candidate_query, raw_path, duration)
@@ -101,14 +104,14 @@ def process_scene(i, scene):
                 return {"index": i, "status": status, "query_used": candidate_query, **clip_info}
             except subprocess.CalledProcessError:
                 pass
-    return {"index": i, "status": "failed", "query_used": queries[0]}
+    return {"index": i, "status": "failed", "query_used": queries[0] if queries else ""}
 
 
 with open(os.path.join(WORK_DIR, "scenes_timed.json"), "r", encoding="utf-8") as f:
     scenes = json.load(f)
 results = []
 for i, scene in enumerate(scenes):
-    print(f"[{i}] '{scene['visual_query']}' 처리 중... (목표 {scene.get('render_duration', scene['duration']):.2f}s)")
+    print(f"[{i}] '{scene.get('visual_query', '-')}' 처리 중... (목표 {scene.get('render_duration', scene['duration']):.2f}s)")
     result = process_scene(i, scene)
     results.append(result)
     print(f"    -> {result['status']} ({result.get('orientation', '-')}, {result.get('fit_mode', '-')})")

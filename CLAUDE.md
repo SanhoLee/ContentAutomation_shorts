@@ -40,3 +40,13 @@ This repo already documents itself in depth; read the relevant file rather than 
 - Don't add new scattered `os.environ` parsing in `0_script.py` — centralize runtime knobs in `script_runtime.py` (this has regressed before, see `KNOWN_ISSUES.md`).
 - In the goal-driven planner, keep scoring/selection deterministic in Python — Claude proposes and critiques candidates but never makes the final numeric decision (see `docs/design/objective-driven-content-planner.md`). The same rule covers `story_type`: the genre is apportioned in `story_types.pick_story_type()`, and Claude only writes inside the genre it is handed.
 - Never commit `secrets.sh`, `.env`, `client_secret*.json`, or `youtube_feedback_token*.json` — these are gitignored and expected per-environment on the Lightsail host.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

@@ -65,3 +65,5 @@ check_volume_v2.py
 skills-lock.json
 # Cross-job B-roll clip reuse history written by 3_broll.py
 broll_usage.json
+
+graphify-out

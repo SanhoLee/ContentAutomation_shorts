@@ -67,11 +67,12 @@ Observed TTS binary:
 
 ## Recommended Lightsail Environment Variables
 
-In `dev/secrets.sh` and/or `prod/secrets.sh`:
+In `dev/secrets.sh`:
 
 ```bash
-export TELEGRAM_BOT_TOKEN="..."
-export TELEGRAM_CHAT_ID="..."
+export SLACK_BOT_TOKEN="..."
+export SLACK_APP_TOKEN="..."
+export SLACK_CHANNEL_ID="..."
 export ANTHROPIC_API_KEY="..."
 export PEXELS_API_KEY="..."
 export TTS_BIN=/home/ubuntu/.local/bin/supertonic
@@ -81,7 +82,6 @@ export CLAUDE_TIMEOUT=300
 Current optional/tuning variables:
 
 ```bash
-export TELEGRAM_POLL_ERROR_NOTIFY_INTERVAL=1800
 export TTS_VOICE=M2
 export ENABLE_WEB_RESEARCH=true
 export WEB_RESEARCH_TIMEOUT=60
@@ -110,16 +110,15 @@ On Linux/Cloud:
 
 ```bash
 python3 -m compileall -q dev/src
-python3 -m compileall -q prod/src
-bash -n dev/sh/*.sh prod/sh/*.sh deploy/lightsail/*.sh
+bash -n dev/sh/**/*.sh deploy/lightsail/*.sh
 git diff --check
 ```
 
 On Windows Codex, prefer explicit paths:
 
 ```powershell
-python -m py_compile dev\src\0_script.py dev\src\telegram_bot.py
-python -m py_compile dev\src\2_caption.py
+python -m py_compile dev\src\common\0_script.py dev\src\common\slack_bot.py
+python -m py_compile dev\src\youtube\2_caption.py
 git diff --check
 ```
 

@@ -9,8 +9,8 @@ two-gate flow makes expensive: after this gate nobody looks again until the
 finished video.
 
 `build_bundle()` reads the job's artifacts and returns plain data.  Rendering
-is deliberately a separate step (`render_text`) so Telegram, Slack and the CLI
-can each apply their own length limit to the same bundle.
+is deliberately a separate step (`render_text`) so Slack and the CLI can each
+apply their own length limit to the same bundle.
 
 This module only reads files.  It knows nothing about bots, the stage graph,
 or how the artifacts were produced -- a missing artifact is a skipped section,

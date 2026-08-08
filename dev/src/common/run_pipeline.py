@@ -17,8 +17,8 @@ Exit codes are meant to be read by a scheduler:
     10  the job is parked at a human gate (not an error)
     1   the job stopped and needs attention
 
-The bots use the same pipeline_flow core, so a job started here can be
-approved from Telegram and vice versa.
+The bot uses the same pipeline_flow core, so a job started here can be
+approved from Slack and vice versa.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 # 목표 지표 기반 Shorts 기획 엔진
 
-이 문서는 `dev`에 구현된 목표 기반 자동 기획 흐름의 운영 계약을 설명한다. 기존 직접 주제 명령은 그대로 유지하며, 목표 기획은 별도 진입점으로 실행한다. `prod`에는 dev 제한 테스트와 사용자 승인 전까지 반영하지 않는다.
+이 문서는 목표 기반 자동 기획 흐름의 운영 계약을 설명한다. 기존 직접 주제 명령은 그대로 유지하며, 목표 기획은 별도 진입점으로 실행한다.
 
 ## 실행 흐름
 
@@ -110,7 +110,7 @@ python3 src/common/0_topic_plan.py refresh --objective subscriber_growth
 
 `--require-runnable`을 사용해도 `manual_review`/`rejected`만으로는 중단하지 않는다. 결정론적 fallback은 항상 후보를 하나 만들어내므로, confidence가 낮거나 Planner/Critic 호출이 실패해도 그 후보로 제작을 계속 진행한다(품질 판단은 이후 성과 데이터로 반영). exit code 2로 중단하는 유일한 경우는 씨드로 만들 수 있는 후보가 하나도 없을 때(`planning.candidate_count == 0`)뿐이다. `run_goal.sh`은 이 옵션을 사용하므로 오래된 YouTube 동기화 데이터(`--allow-stale` 미지정 시)나 후보가 전혀 없는 경우에만 자동 진행을 멈춘다.
 
-## Telegram / Slack
+## Slack
 
 ```text
 /run_goal subscriber_growth
@@ -121,7 +121,7 @@ python3 src/common/0_topic_plan.py refresh --objective subscriber_growth
 
 봇의 `/run_goal`은 기획 후 기존 승인형 스크립트 검수 흐름으로 연결한다. `manual_review` 또는 `rejected`이어도 후보가 하나라도 있으면(`planning.candidate_count > 0`) 그 후보로 제작을 계속 진행하며, 낮은 확신도 상태임을 메시지로만 알린다. 씨드로 만들 수 있는 후보가 전혀 없을 때만 `topic_plan.json`을 보존하고 버튼으로 재기획/홈 이동을 안내한다.
 
-Slack `dev` 홈에서는 명령 입력 없이 `목표 기반 자동 기획` 버튼으로 같은 흐름을 시작할 수 있다. 버튼 UI는 목표 선택, 씨드 없음/직접 입력 선택, 최종 실행 확인의 3단계로 구성한다. 최종 확인 전에는 기존 작업 상태를 유지한다. 이 UI는 dev 제한 원칙에 따라 `prod`에는 아직 반영하지 않는다.
+Slack 홈에서는 명령 입력 없이 `목표 기반 자동 기획` 버튼으로 같은 흐름을 시작할 수 있다. 버튼 UI는 목표 선택, 씨드 없음/직접 입력 선택, 최종 실행 확인의 3단계로 구성한다. 최종 확인 전에는 기존 작업 상태를 유지한다.
 
 ## 목표 프로필
 
@@ -208,7 +208,7 @@ adjusted_score = base_score - duplicate - critic_risk - stale_strategy + explora
 
 `judge_candidate()`의 `confidence >= 0.6` 고정 게이트는 `adjusted_score`가 겪었던 것과 같은 문제를 갖고 있었다: `cohort_reliability = 표본 수/(표본 수+50)`이라 채널 영상이 150개(stable 단계)에 도달하기 전까지는 후보 품질과 무관하게 confidence가 구조적으로 0.6을 넘기 어렵다. 2026-07-29 기준 실측 `planning_runs.confidence` 15건의 중앙값은 ≈0.265, 0.6을 넘은 건 1건(0.667)뿐이었다.
 
-`decision` 자체는 봇 알림 문구("선정 주제" vs "최상위 검토 후보")와 경고 한 줄만 바꿀 뿐 제작 진행 여부를 막지 않으므로(`telegram_bot.py`/`slack_bot.py`), 이 게이트를 낮추는 것은 콘텐츠 품질 리스크가 아니라 라벨링 정확도 문제다. 고정 0.6 대신 `planning_runs.confidence` 히스토리의 `CLAUDE_CONFIDENCE_PERCENTILE`(기본 `0.5`=중앙값) 퍼센타일로 매 job마다 동적으로 계산한다(`_dynamic_confidence_threshold`). 계산된 값과 표본 수는 `topic_plan.json`의 `planning.confidence_threshold` / `confidence_threshold_percentile` / `confidence_threshold_sample_count`에 기록된다. 히스토리가 없을 때만 0.6으로 폴백한다.
+`decision` 자체는 봇 알림 문구("선정 주제" vs "최상위 검토 후보")와 경고 한 줄만 바꿀 뿐 제작 진행 여부를 막지 않으므로(`slack_bot.py`), 이 게이트를 낮추는 것은 콘텐츠 품질 리스크가 아니라 라벨링 정확도 문제다. 고정 0.6 대신 `planning_runs.confidence` 히스토리의 `CLAUDE_CONFIDENCE_PERCENTILE`(기본 `0.5`=중앙값) 퍼센타일로 매 job마다 동적으로 계산한다(`_dynamic_confidence_threshold`). 계산된 값과 표본 수는 `topic_plan.json`의 `planning.confidence_threshold` / `confidence_threshold_percentile` / `confidence_threshold_sample_count`에 기록된다. 히스토리가 없을 때만 0.6으로 폴백한다.
 
 **TODO(표본이 늘어나면 재검토):** `decision_threshold`와 마찬가지로 표본이 50~100건 이상 쌓이면 `CLAUDE_CONFIDENCE_PERCENTILE` 상향을 재검토한다.
 

@@ -9,13 +9,6 @@ cd ~/brain50/dev
 ./run.sh "주제 문장" [JOB_ID]
 ```
 
-운영 환경도 동일합니다.
-
-```bash
-cd ~/brain50/prod
-./run.sh "주제 문장" [JOB_ID]
-```
-
 ### 예시
 ```bash
 ./run.sh "오메가3가 정말 뇌에 좋을까?" test_omega3_v1
@@ -30,10 +23,8 @@ cd ~/brain50/prod
 - 디버깅이나 로그 추적을 쉽게 하고 싶을 때
 
 ## 저장 위치
-- dev 작업 폴더: `~/brain50/dev/data/work/{JOB_ID}/`
-- dev 최종 영상: `~/brain50/dev/data/output/output_{JOB_ID}.mp4`
-- prod 작업 폴더: `~/brain50/prod/data/work/{JOB_ID}/`
-- prod 최종 영상: `~/brain50/prod/data/output/output_{JOB_ID}.mp4`
+- 작업 폴더: `~/brain50/dev/data/work/{JOB_ID}/`
+- 최종 영상: `~/brain50/dev/data/output/output_{JOB_ID}.mp4`
 
 ## 주의사항
 - JOB_ID는 영문, 숫자, 언더스코어(_) 조합을 추천합니다.

@@ -58,11 +58,6 @@ WORK_DIR_BASE = Path(os.environ.get("WORK_DIR_BASE", BASE_DIR / "data" / "work")
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", BASE_DIR / "data" / "output"))
 STATE_PATH = Path(os.environ.get("SLACK_STATE_PATH", BASE_DIR / "data" / "slack_state.json"))
 MAX_TEXT_PREVIEW = int(os.environ.get("SLACK_MAX_TEXT_PREVIEW", "3500"))
-DEFAULT_CAPTION_FONT_SIZE = os.environ.get("SLACK_DEFAULT_CAPTION_FONT_SIZE", "62")
-DEFAULT_CAPTION_MARGIN_V = os.environ.get("SLACK_DEFAULT_CAPTION_MARGIN_V", "60")
-DEFAULT_CAPTION_STYLE = os.environ.get("SLACK_DEFAULT_CAPTION_STYLE", os.environ.get("CAPTION_STYLE", "default"))
-DEFAULT_CAPTION_MARGIN_H = os.environ.get("SLACK_DEFAULT_CAPTION_MARGIN_H", "10")
-DEFAULT_WEB_RESEARCH = os.environ.get("SLACK_DEFAULT_WEB_RESEARCH", "true").lower() not in ("off", "0", "false", "no")
 STATE_LOCK = threading.Lock()
 ACTIVE_PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES = {}
@@ -1103,20 +1098,6 @@ def preview_file(path, limit=MAX_TEXT_PREVIEW):
     return _po.preview_file(path, limit)
 
 
-def send_pubmed_notice(chat_id, job_id):
-    status = read_pubmed_status(job_id)
-    if not status or status.get("status") == "ok":
-        return
-    send_message(chat_id, "\n".join([
-        "PubMed 직접 검색 결과 없이 생성했습니다.",
-        f"주제: {status.get('topic', '')}",
-        f"원인 추정: {status.get('message', '')}",
-        "Claude는 일반 의학 지식 기반으로 조심스럽게 작성했습니다.",
-        "주제가 마음에 들지 않으면 /retry 새 주제로 다시 생성할 수 있습니다.",
-    ]))
-    send_file_or_path(chat_id, pubmed_status_path(job_id), "pubmed_status.json")
-
-
 
 
 def send_script(chat_id, job_id):
@@ -1313,20 +1294,9 @@ def display_config_value(value):
     return _po.display_config_value(value)
 
 
-def display_effective_model(job, job_key, value):
-    source = "override" if job_key in job else "env/default"
-    return f"{value} ({source})"
-
-
 # ── 설정 키: /set 메뉴 또는 key=value로 저장, run_auto/run 실행 시 자동 적용
-# (data table + validation logic shared with telegram_bot.py via config_settings.py)
-CONFIG_SETTINGS = build_config_settings(
-    default_web_research=DEFAULT_WEB_RESEARCH,
-    default_caption_font_size=DEFAULT_CAPTION_FONT_SIZE,
-    default_caption_margin_v=DEFAULT_CAPTION_MARGIN_V,
-    default_caption_margin_h=DEFAULT_CAPTION_MARGIN_H,
-    default_caption_style=DEFAULT_CAPTION_STYLE,
-)
+# (data table + validation logic live in config_settings.py)
+CONFIG_SETTINGS = build_config_settings()
 
 _PRESERVED_KEYS = {setting["job_key"] for setting in CONFIG_SETTINGS.values()}
 

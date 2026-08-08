@@ -1,6 +1,6 @@
 # Slack Bot Workflow
 
-Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, `/trend`, `/pick`, `/approve`, `/rerun`, `/render`, `/set`, `/app_status`, `/cancel`)을 실행합니다. 각 환경의 `slack_bot.py`에 단계 전환·산출물 처리·Slack 전송 로직이 모두 포함되어 Telegram 프로세스·토큰·소스코드 없이 독립 실행됩니다.
+Slack 봇은 승인형 파이프라인(`/run`, `/trend`, `/pick`, `/approve`, `/rerun`, `/render`, `/set`, `/app_status`, `/cancel`)을 실행하는 유일한 드라이버입니다. `dev/src/common/slack_bot.py`에 단계 전환·산출물 처리·Slack 전송 로직이 모두 포함됩니다.
 
 ## Slack에서 추가된 동작
 
@@ -11,7 +11,7 @@ Slack 봇은 기존 Telegram 봇과 동일한 승인형 파이프라인(`/run`, 
 - `/run 주제`, `/run_auto 주제`, `/trend 주제`로 직접 입력해도 즉시 실행되지 않고 같은 실행 확인 화면을 거칩니다. 주제 없이 명령하면 주제 입력 단계가 열립니다.
 - 주제 입력과 실행 확인 화면에는 `← 홈으로`와 `시작 취소`가 있습니다. 기존 작업을 보던 중 새 제작 버튼을 잘못 눌러도 홈으로 돌아가면 기존 작업 상태가 유지됩니다.
 - 모든 작업 메시지와 산출물은 명령을 보낸 메시지의 **스레드**에 모입니다. 여러 작업이 섞이는 것을 줄일 수 있습니다.
-- `SLACK_ALLOWED_USER_ID`를 설정하면 채널뿐 아니라 사용자도 제한할 수 있습니다. Telegram의 chat ID 제한보다 세밀합니다.
+- `SLACK_ALLOWED_USER_ID`를 설정하면 채널뿐 아니라 사용자도 제한할 수 있습니다.
 - X 스레드 초안이 만들어지면 봇이 **첫 트윗에 붙일 이미지를 첨부해 달라고 요청**합니다. 원하는 도구(ChatGPT 등)로 만들어 그 스레드에 그대로 올리면 저장되고, 최종 승인 화면에서 영상·초안과 함께 보여줍니다. 렌더가 도는 동안 올리면 되고, 안 올리면 자동 생성 글자 카드로 나갑니다. 다시 올리고 싶으면 `/x_photo`를 쓰세요. png·jpg·jpeg·webp만 받고 5MB를 넘으면 거절합니다.
 - X 스레드가 게시되면 그 근거(PubMed 링크 등)는 스레드 트윗이 아니라 운영자 **DM**으로 갑니다. 그대로 복사해서 쓰면 됩니다. 수신자는 `SLACK_DM_USER_ID`(미설정 시 `SLACK_ALLOWED_USER_ID`)이며, job당 한 번만 보냅니다. 봇에 DM을 보내려면 `im:write` 스코프가 필요합니다.
 - Slack 파일 업로드로 `script.txt`, `subs.srt`, `video_meta.json` 수정본을 스레드에 올릴 수 있습니다.
@@ -64,7 +64,7 @@ cd ~/brain50/dev
 ./sh/slack_bot.sh
 ```
 
-운영 환경은 `prod` 경로에서 같은 방식으로 실행합니다. 상태는 `data/slack_state.json`에 보존되며 Telegram 상태와 분리됩니다. 기본 경로를 바꾸려면 `SLACK_STATE_PATH`를 설정합니다.
+상태는 `data/slack_state.json`에 보존됩니다. 기본 경로를 바꾸려면 `SLACK_STATE_PATH`를 설정합니다.
 
 ## systemd
 
@@ -88,4 +88,4 @@ cd ~/brain50/dev
 
 버튼, 슬래시 명령, 메시지 입력, 백그라운드 작업 및 셸 명령의 요청·완료·실패 상태는 별도 파일 설정 없이 서비스 표준 출력에 기록됩니다. 위 `logs_slack_service.sh` 명령으로 `slack_action_requested`, `slack_action_finished`, `slack_task_finished`, `slack_command_failed` 등의 이벤트와 작업 ID·현재 단계를 바로 확인할 수 있습니다. 메시지 본문과 주제 원문은 로그에 남기지 않습니다.
 
-서비스 유닛의 기본 배포 경로는 기존 Telegram 유닛과 동일하게 `/home/ubuntu/brain50`입니다.
+서비스 유닛의 기본 배포 경로는 `/home/ubuntu/brain50`입니다.

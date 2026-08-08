@@ -190,10 +190,6 @@ def _compact_words(value: str) -> set[str]:
     return feedback.normalize_keywords(str(value or ""))
 
 
-def _jaccard_topic(left: str, right: str) -> float:
-    return feedback.jaccard(_compact_words(left), _compact_words(right))
-
-
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 

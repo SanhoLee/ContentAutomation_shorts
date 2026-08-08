@@ -7,7 +7,7 @@ Primary runtime: AWS Lightsail at `~/brain50`
 
 ## Immediate Context
 
-This project is a Lightsail-hosted Korean Shorts automation pipeline, driven interactively today via Telegram and Slack bots. The current priority is production stability: automated flows should keep moving unless a required step truly cannot continue (see `KNOWN_ISSUES.md`).
+This project is a Lightsail-hosted Korean Shorts automation pipeline, driven interactively today via a Slack bot. The current priority is production stability: automated flows should keep moving unless a required step truly cannot continue (see `KNOWN_ISSUES.md`).
 
 The longer-term direction is a fully unattended, scheduled content loop (see "North star" in `CLAUDE.md`); the goal-driven planner below is the piece that removes the human topic-selection step, but end-to-end scheduling is not wired up yet.
 
@@ -19,7 +19,7 @@ Start new cloud-agent work from `main` unless the user explicitly names another 
 
 `dev/src/`:
 
-- `common/` — content-type-agnostic: `0_script.py` (2-stage script generation), `0_topic_plan.py` + `objective_planner.py` (goal-driven auto topic planner), `evidence_probe.py` / `trend_probe.py` (PubMed/trend evidence guards), `pipeline_flow.py` (single source of truth for stage order), `pipeline_orchestrator.py`, `run_pipeline.py` (bot-free CLI), `stage_guard.py` (deterministic between-stage checks), `script_runtime.py` (Stage 0 runtime config, centralize new knobs here), `telegram_bot.py`, `slack_bot.py`.
+- `common/` — content-type-agnostic: `0_script.py` (2-stage script generation), `0_topic_plan.py` + `objective_planner.py` (goal-driven auto topic planner), `evidence_probe.py` / `trend_probe.py` (PubMed/trend evidence guards), `pipeline_flow.py` (single source of truth for stage order), `pipeline_orchestrator.py`, `run_pipeline.py` (bot-free CLI), `stage_guard.py` (deterministic between-stage checks), `script_runtime.py` (Stage 0 runtime config, centralize new knobs here), `slack_bot.py`.
 - `youtube/` — render-pipeline stages: `1_tts.py`, `2_caption.py`, `3_broll.py` / `3b_retry_broll.py`, `4_upload.py`, `6_youtube_feedback.py`, `broll_policy.py`, `caption_style.py`, `frame_style.py`, `korean_grammar.py`, `classify_uploads_by_category.py`.
 - `instagram/` — card-content skeleton (`card_content.py`, `card_render.py`, `publish.py`, `run.py`), not yet in production use.
 
@@ -35,7 +35,7 @@ Grouped by theme, newest first. See `git log --oneline` for the full list (~130 
 - **Goal-driven planner hardening** (`e0889b0`, `9619ade`, 2026-07-28/29): fixed decision-threshold (55.0) and confidence-threshold (0.6) being dead/unreachable gates; both now computed per-job from an observed-history percentile (`CLAUDE_SELECTION_PERCENTILE` / `CLAUDE_CONFIDENCE_PERCENTILE`), documented in `docs/design/objective-driven-content-planner.md`.
 - **Seed Interpreter + dev reorg + Instagram skeleton** (`5251c3e`, `66c4a6c`, `8c6fdd3`, 2026-07-26): added a Haiku-based seed-interpretation stage to the topic planner, reorganized `dev/src` into `common/youtube/instagram`, and scaffolded (not yet production) Instagram card content.
 - **Objective-driven Shorts planning** (`cbbb1a0` et al., 2026-07-20 onward): the entire goal-driven auto-planner — see `docs/design/objective-driven-content-planner.md` for the full operating contract, this is the single most detailed doc in the repo for that subsystem.
-- **Slack bot** (`c8cba65` et al., 2026-07-19): full Slack approval workflow, standalone alongside Telegram — see `docs/usage/slack-bot.md`.
+- **Slack bot** (`c8cba65` et al., 2026-07-19): full Slack approval workflow — see `docs/usage/slack-bot.md`. It became the only driver on 2026-08-08 when the Telegram bot was deleted.
 - **YouTube performance feedback loop** (`44edca0`, `ab58660`, 2026-07-18): adaptive analytics-based feedback into Stage 1/2 — see `docs/usage/youtube-feedback.md`.
 - **Caption/frame styling** (multiple, 2026-07-04 to 07-15): configurable caption style presets, ASS conversion, framed Shorts layout with top/bottom safe-zone presets, auto-generated frame headers.
 
@@ -48,7 +48,7 @@ Grouped by theme, newest first. See `git log --oneline` for the full list (~130 
 5. `dev/src/youtube/3_broll.py` — Pexels B-roll collection.
 6. Render (ffmpeg).
 7. `dev/src/youtube/4_upload.py` — YouTube upload.
-8. `dev/src/common/telegram_bot.py` / `dev/src/common/slack_bot.py` — approval workflow and orchestration (`/run`, `/run_review`, `/run_auto`).
+8. `dev/src/common/slack_bot.py` — approval workflow and orchestration (`/run`, `/run_review`, `/run_auto`).
 
 Between every stage, `dev/src/common/stage_guard.py` runs a deterministic, Claude-free check; one bounded retry on failure, then stop and surface the reason (no infinite retries — see `KNOWN_ISSUES.md`).
 
@@ -61,22 +61,19 @@ After merging/pulling latest on Lightsail:
 ```bash
 cd ~/brain50
 git pull
-./deploy/lightsail/restart_telegram_service.sh dev
-./deploy/lightsail/restart_slack_service.sh dev
+./deploy/lightsail/restart_slack_service.sh
 ```
 
 Logs:
 
 ```bash
-./deploy/lightsail/logs_telegram_service.sh dev
-./deploy/lightsail/logs_slack_service.sh dev
+./deploy/lightsail/logs_slack_service.sh
 ```
 
 If a service was disabled:
 
 ```bash
-./deploy/lightsail/install_telegram_service.sh dev
-./deploy/lightsail/install_slack_service.sh dev
+./deploy/lightsail/install_slack_service.sh
 ```
 
 ## Important Files To Read First
@@ -85,8 +82,8 @@ If a service was disabled:
 2. `KNOWN_ISSUES.md`
 3. `docs/design/objective-driven-content-planner.md` (if touching topic selection/planning)
 4. `README.md`
-5. `docs/usage/telegram-bot.md` / `docs/usage/slack-bot.md`
-6. `dev/src/common/telegram_bot.py` / `dev/src/common/slack_bot.py`
+5. `docs/usage/slack-bot.md`
+6. `dev/src/common/slack_bot.py`
 7. `dev/src/common/0_script.py`
 8. `dev/src/common/script_runtime.py`
 9. `dev/src/youtube/2_caption.py`
@@ -117,7 +114,7 @@ If a service was disabled:
 Use the narrowest relevant checks first:
 
 ```bash
-python3 -m py_compile dev/src/common/0_script.py dev/src/common/telegram_bot.py
+python3 -m py_compile dev/src/common/0_script.py dev/src/common/slack_bot.py
 python3 -m py_compile dev/src/youtube/2_caption.py
 git diff --check
 ```
@@ -131,7 +128,7 @@ python3 -m compileall -q dev/src
 Validate shell scripts when touched:
 
 ```bash
-bash -n dev/sh/*/*.sh prod/sh/*.sh deploy/lightsail/*.sh
+bash -n dev/sh/*/*.sh deploy/lightsail/*.sh
 ```
 
 Run the relevant pytest files (each test inserts `dev/src` onto `sys.path` manually):

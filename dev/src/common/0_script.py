@@ -1697,37 +1697,6 @@ def parse_claude_json(response, raw_filename="raw_response.txt"):
 def korean_char_count(text):
     return len(re.sub(r"[^\uAC00-\uD7A3]", "", text))
 
-def target_scene_count():
-    return max(8, min(10, min_scenes_estimate))
-
-def split_scene_sentences(text):
-    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
-    return parts if len(parts) > 1 else []
-
-def ensure_scene_count(scenes, min_count):
-    """Keep B-roll pacing near 8~10 scenes by splitting long generated scenes."""
-    if len(scenes) >= min_count:
-        return scenes
-
-    scenes = [dict(scene) for scene in scenes]
-    while len(scenes) < min_count:
-        candidates = [
-            (idx, split_scene_sentences(scene.get("text", "")), korean_char_count(scene.get("text", "")))
-            for idx, scene in enumerate(scenes)
-        ]
-        candidates = [(idx, parts, count) for idx, parts, count in candidates if len(parts) >= 2]
-        if not candidates:
-            break
-
-        idx, parts, _ = max(candidates, key=lambda item: item[2])
-        mid = max(1, len(parts) // 2)
-        original = scenes[idx]
-        left = {**original, "text": " ".join(parts[:mid])}
-        right = {**original, "text": " ".join(parts[mid:])}
-        scenes[idx:idx + 1] = [left, right]
-
-    return scenes
-
 def clip_at_word_boundary(text, limit):
     """Trim to a word boundary. On-screen copy must never end mid-word."""
     value = re.sub(r"\s+", " ", str(text or "")).strip()

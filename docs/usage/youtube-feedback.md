@@ -334,7 +334,7 @@ python dev/src/youtube/6_youtube_feedback.py check-auth
    python dev/src/youtube/6_youtube_feedback.py sync
    python -c "import sqlite3; c=sqlite3.connect('dev/data/youtube_feedback.db'); [print(r) for r in c.execute('SELECT run_id,finished_at,status,error_message FROM sync_runs ORDER BY run_id DESC LIMIT 3')]"
    ```
-   `status='success'`가 나오면 완료다. 이후 Slack/Telegram으로 트리거된 목표 기반 기획도 정상 진행된다.
+   `status='success'`가 나오면 완료다. 이후 Slack으로 트리거된 목표 기반 기획도 정상 진행된다.
 
 ## 10. 최종 체크리스트
 

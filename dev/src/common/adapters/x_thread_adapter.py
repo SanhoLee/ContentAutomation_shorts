@@ -14,12 +14,18 @@ rule-based text and a rule-based title (production continuity over a
 downstream-only artifact). Posting is out of scope here — this only writes
 a draft an operator copies by hand (or x_poster.py posts).
 
-Source order is hook, then each key_point. These sentences are packed
-greedily into as few tweets as fit under TWEET_MAX_CHARS (139 -- X weighs
-each CJK character as 2 toward its 280-weighted-character cap, so
-pure-Korean text tops out around 140, not the ~270 an ASCII tweet gets)
-rather than one sentence per tweet, since most individual sentences here
-run far shorter than the limit.
+Source order is hook, then each key_point. The body is capped at
+MAX_BODY_TWEETS (2) tweets: when the humanize rewrite is on (the default),
+the same Claude Haiku call that handles tone also composes tweet1 (hook)
+and tweet2 (body) directly from the full hook+key_points context, fitting
+each into TWEET_MAX_CHARS (139 -- X weighs each CJK character as 2 toward
+its 280-weighted-character cap, so pure-Korean text tops out around 140,
+not the ~270 an ASCII tweet gets) by judgment rather than mechanical
+slicing -- it drops or condenses whatever doesn't naturally fit instead of
+truncating mid-thought. Only when humanize is off, unavailable, or fails
+does this fall back to _pack_sentences's greedy, character-budget packing,
+itself capped at MAX_BODY_TWEETS groups so the thread still tops out at
+hook + body + recap = 3 tweets.
 
 The script's CTA scene and its next-episode tease are deliberately NOT
 posted. They are a Shorts outro ("오늘부터 시작해보세요. 다음 편에서는...")
@@ -73,6 +79,9 @@ from objective_planner import job_rng
 # so a pure-Korean post tops out around 280/2=140 chars, not the ~270-280
 # an ASCII tweet gets. 139 leaves a 1-char margin.
 TWEET_MAX_CHARS = 139
+# hook + key_points collapse into at most this many body tweets (then one
+# more for the recap) -- see module docstring.
+MAX_BODY_TWEETS = 2
 # The title shares the lead tweet with the first packed group, so it is
 # capped well under TWEET_MAX_CHARS -- a 60-char title still leaves ~70
 # chars of body, enough for a whole hook sentence.
@@ -101,7 +110,7 @@ JSON_OBJECT = re.compile(r"\{.*\}", re.S)
 URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.I)
 HASHTAG_PATTERN = re.compile(r"(?<!\S)#\S+")
 
-HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이다. 이 문장들을 X(트위터) 스레드용으로 다시 쓰고, 스레드 첫 트윗에 올릴 제목도 함께 만들어라.
+HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이다. 이 내용을 X(트위터) 스레드 트윗 2개(훅 트윗, 본문 트윗)로 새로 작문하고, 스레드 첫 트윗에 올릴 제목도 함께 만들어라.
 주제: {topic}
 쇼츠 제목(참고용): {title}
 
@@ -120,8 +129,20 @@ HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이
 - {title_max}자 이내. 본문 첫 문장을 그대로 베끼지 않는다.
 - 존댓말 기조를 지키고, 낚시성 과장이나 의학적 단정은 쓰지 않는다.
 
+tweet1 (훅 트윗 본문):
+- 아래 문장 목록의 훅(1번)을 중심으로, 제목과 자연스럽게 이어지는 첫 트윗 본문을 쓴다.
+- 제목과 tweet1을 합친 총 길이가 {tweet1_budget}자를 넘지 않게 분량을 스스로 조절한다.
+- 글자수를 억지로 채우려 문장을 늘리지 말고, 억지로 자르지도 말 것. 자연스러운
+  문장으로 끝맺는다.
+
+tweet2 (본문 트윗):
+- 나머지 문장들(핵심 포인트)의 내용을 하나의 자연스러운 문단으로 압축해서 쓴다.
+- {tweet2_budget}자 이내. 다 들어가지 않으면 덜 중요한 내용은 과감히 빼고, 가장
+  중요한 핵심만 남긴다. 문장을 기계적으로 끊어 붙이지 말고 새로 쓴 글처럼 이어지게
+  한다.
+
 마지막 요약(스레드를 닫는 트윗):
-- summary: 위 문장들의 핵심만 1~3줄로 압축한다. 줄당 {line_max}자 이내.
+- summary: 전체 핵심만 1~3줄로 압축한다. 줄당 {line_max}자 이내.
 - 본문에 없는 새로운 정보나 숫자를 만들어내지 않는다. 있는 내용만 줄인다.
 - summary_lead: 그 요약을 여는 짧은 한 줄. {lead_max}자 이내.
 - summary_lead는 이 편의 내용과 결에 맞게 매번 새로 쓴다. "핵심만 정리하면" 같은
@@ -131,14 +152,14 @@ HUMANIZE_PROMPT = """다음은 유튜브 쇼츠 대본에서 뽑은 문장들이
 
 공통 금지:
 - 해시태그(#), URL/링크, 이모지는 절대 넣지 않는다.
-- 각 문장의 핵심 정보와 순서, 문장 개수를 그대로 유지한다. 문장을 합치거나 나누지 않는다.
+- 문장 목록에 없는 사실이나 숫자를 새로 만들어내지 않는다.
 
 문장 목록:
 {numbered}
 
 출력은 순수 JSON 객체만. 형식:
-{{"title": "제목", "sentences": ["문장1", "문장2"], "summary_lead": "머리말", "summary": ["요약1", "요약2"]}}
-sentences 배열의 길이는 반드시 {count}개여야 한다. 다른 설명은 절대 붙이지 않는다."""
+{{"title": "제목", "tweet1": "훅 트윗 본문", "tweet2": "본문 트윗", "summary_lead": "머리말", "summary": ["요약1", "요약2"]}}
+다른 설명은 절대 붙이지 않는다."""
 
 
 def _ban_keywords() -> list[str]:
@@ -171,11 +192,12 @@ def _strip_banned_markup(text: str) -> str:
 
 
 def _humanize_with_claude(raw_texts: list[str], *, topic: str, title: str) -> dict[str, Any] | None:
-    """One bounded, non-retrying rewrite pass, returning
-    {"title": str, "texts": list[str], "summary_lead": str, "summary": list}.
-    Returns None on any failure so the caller can fall back to the original
-    rule-based text rather than blocking a downstream-only artifact on a
-    Claude outage."""
+    """One bounded, non-retrying call that composes the hook and body tweets
+    directly (not a 1:1 sentence rewrite) plus the recap, returning
+    {"title": str, "tweet1": str, "tweet2": str, "summary_lead": str,
+    "summary": list}. Returns None on any failure so the caller can fall
+    back to the original rule-based text rather than blocking a
+    downstream-only artifact on a Claude outage."""
     if not raw_texts:
         return None
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -189,14 +211,19 @@ def _humanize_with_claude(raw_texts: list[str], *, topic: str, title: str) -> di
     import requests
 
     numbered = "\n".join(f"{i}. {text}" for i, text in enumerate(raw_texts, start=1))
+    # tweet1_budget is the combined title+separator+tweet1 ceiling; Claude
+    # balances title vs. body length itself rather than being handed a
+    # budget net of the *actual* title, which isn't known until this same
+    # call returns it.
     prompt = HUMANIZE_PROMPT.format(
         topic=topic or "뇌 건강",
         title=title or "(없음)",
         title_max=X_TITLE_MAX_CHARS,
+        tweet1_budget=TWEET_MAX_CHARS - len(TITLE_SEPARATOR),
+        tweet2_budget=TWEET_MAX_CHARS,
         line_max=SUMMARY_LINE_MAX_CHARS,
         lead_max=SUMMARY_LEAD_MAX_CHARS,
         numbered=numbered,
-        count=len(raw_texts),
     )
     payload = {
         "model": X_THREAD_HUMANIZE_MODEL,
@@ -231,17 +258,19 @@ def _humanize_with_claude(raw_texts: list[str], *, topic: str, title: str) -> di
         return None
     if not isinstance(parsed, dict):
         return None
-    sentences = parsed.get("sentences")
-    if not isinstance(sentences, list) or len(sentences) != len(raw_texts):
+    tweet1 = str(parsed.get("tweet1") or "").strip()
+    tweet2 = str(parsed.get("tweet2") or "").strip()
+    if not tweet1 or not tweet2:
         return None
     summary = parsed.get("summary")
     return {
         # A missing/empty title, lead or summary is survivable on its own --
         # each has a rule-based fallback, and the caller still adopts the
-        # rewritten body. Only a sentence-count mismatch (above) is fatal,
-        # because that means the body no longer maps onto the source.
+        # composed body. Only a missing tweet1/tweet2 (above) is fatal,
+        # because then there's no body to post at all.
         "title": str(parsed.get("title") or "").strip(),
-        "texts": [str(t).strip() for t in sentences],
+        "tweet1": tweet1,
+        "tweet2": tweet2,
         "summary_lead": str(parsed.get("summary_lead") or "").strip(),
         "summary": [str(line).strip() for line in summary] if isinstance(summary, list) else [],
     }
@@ -295,6 +324,7 @@ _PREFIX_RESERVE_WIDTH = len("99/99 ")
 
 def _pack_sentences(
     texts: list[str], *, max_chars: int, prefix_reserve: int, lead_reserve: int = 0,
+    max_groups: int | None = None,
 ) -> list[str]:
     """Greedily fill each tweet with as many whole sentences as fit,
     instead of one sentence per tweet -- a 70-char sentence alone in a
@@ -303,7 +333,14 @@ def _pack_sentences(
 
     `lead_reserve` shrinks the first group's budget only: the lead tweet
     also has to carry the X title, so it has less room for body text than
-    every tweet after it."""
+    every tweet after it.
+
+    `max_groups` is the rule-based fallback's only tool for keeping the
+    thread short (the primary path lets Claude judge what to keep -- see
+    module docstring): once the last allowed group is open, no further
+    group is started. Whatever still fits gets appended to that group
+    (truncated at a boundary if needed); anything past that is dropped
+    rather than spilling into a new tweet."""
     base = max(1, max_chars - prefix_reserve)
 
     def budget_for(group_index: int) -> int:
@@ -315,11 +352,22 @@ def _pack_sentences(
         text = text.strip()
         if not text:
             continue
+        at_cap = max_groups is not None and len(groups) >= max_groups - 1
         budget = budget_for(len(groups))
         candidate = f"{current} {text}".strip() if current else text
         if len(candidate) <= budget:
             current = candidate
             continue
+        if at_cap:
+            if current:
+                remaining = budget - len(current) - 1
+                if remaining > 0:
+                    addition = _truncate_at_boundary(text, remaining)
+                    if addition:
+                        current = f"{current} {addition}".strip()
+            else:
+                current = _truncate_at_boundary(text, budget)
+            break
         if current:
             groups.append(current)
             budget = budget_for(len(groups))
@@ -516,6 +564,7 @@ def build_tweets(
     title = _fallback_title(package, ban_keywords)
     summary_lead = _pick_summary_lead(package, job_id, ban_keywords)
     summary_source: list[str] | None = None
+    composed: list[str] | None = None
 
     humanize = humanize if humanize is not None else _humanize_enabled()
     if humanize and raw_texts:
@@ -525,15 +574,16 @@ def build_tweets(
             raw_texts, topic=topic, title=str(source.get("title") or "").strip(),
         )
         if rewritten:
-            filtered = [_sanitize(text, ban_keywords) for text in rewritten["texts"]]
-            # Only adopt the rewrite if it didn't collapse a sentence to
-            # empty -- a partial ban-keyword hit here means the rewrite
-            # drifted into risky phrasing the original text never had, so
-            # it's safer to keep the pre-rewrite text than to drop a tweet.
-            # The title/lead/summary ride on that same verdict: they came
-            # from the one call, so a body we distrust taints them too.
-            if all(filtered):
-                raw_texts = filtered
+            tweet1 = _sanitize(rewritten["tweet1"], ban_keywords)
+            tweet2 = _sanitize(rewritten["tweet2"], ban_keywords)
+            # Only adopt the composed body if neither tweet collapsed to
+            # empty -- a ban-keyword hit means the rewrite drifted into
+            # risky phrasing the source never had, so it's safer to fall
+            # back to the rule-based body than post one we distrust. The
+            # title/lead/summary ride on that same verdict: they came from
+            # the one call, so a body we distrust taints them too.
+            if tweet1 and tweet2:
+                composed = [tweet1, tweet2]
                 title = _sanitize(rewritten["title"], ban_keywords, X_TITLE_MAX_CHARS) or title
                 summary_lead = _sanitize(
                     rewritten["summary_lead"], ban_keywords, SUMMARY_LEAD_MAX_CHARS,
@@ -542,10 +592,20 @@ def build_tweets(
 
     prefix_reserve = _PREFIX_RESERVE_WIDTH if number_prefix else 0
     lead_reserve = len(title) + len(TITLE_SEPARATOR) if title else 0
-    groups = _pack_sentences(
-        raw_texts, max_chars=TWEET_MAX_CHARS, prefix_reserve=prefix_reserve,
-        lead_reserve=lead_reserve,
-    )
+    if composed is not None:
+        # Claude already sized these to fit; this is a clamp of last resort
+        # in case it overshot, playing the same role as the title/summary
+        # truncation elsewhere -- not the primary shaping mechanism (see
+        # module docstring).
+        groups = [
+            _truncate_at_boundary(composed[0], max(1, TWEET_MAX_CHARS - prefix_reserve - lead_reserve)),
+            _truncate_at_boundary(composed[1], max(1, TWEET_MAX_CHARS - prefix_reserve)),
+        ]
+    else:
+        groups = _pack_sentences(
+            raw_texts, max_chars=TWEET_MAX_CHARS, prefix_reserve=prefix_reserve,
+            lead_reserve=lead_reserve, max_groups=MAX_BODY_TWEETS,
+        )
 
     # Title only rides along when there is a lead tweet to attach it to --
     # an empty package must stay empty rather than become a title-only post.

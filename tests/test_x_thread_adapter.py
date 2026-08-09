@@ -103,6 +103,16 @@ class BuildTweetsTests(unittest.TestCase):
         tweets = xta.build_tweets({}, ban_keywords=[], humanize=False)
         self.assertEqual(tweets, [])
 
+    def test_thread_never_exceeds_three_tweets_even_with_many_key_points(self):
+        # Rule-based fallback path (humanize=False): hook + many key_points
+        # must still collapse to at most hook+body+recap = 3 tweets.
+        package = dict(PACKAGE)
+        package["key_points"] = [
+            {"text": f"핵심 포인트 {i}번째 내용입니다."} for i in range(10)
+        ]
+        tweets = xta.build_tweets(package, ban_keywords=[], humanize=False)
+        self.assertLessEqual(len(tweets), 3)
+
     def test_title_alone_never_produces_a_tweet(self):
         # A package with a title but no usable body must stay empty rather
         # than post a title-only tweet.
@@ -181,7 +191,7 @@ class SummaryTweetTests(unittest.TestCase):
 
     def test_claude_summary_lines_are_bulleted_when_there_are_several(self):
         rewrite = {
-            "title": "", "texts": ["가", "나", "다"], "summary_lead": "정리하면",
+            "title": "", "tweet1": "가", "tweet2": "나", "summary_lead": "정리하면",
             "summary": ["잠이 먼저입니다", "걷기가 다음입니다", "오래 가는 건 습관입니다"],
         }
         with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
@@ -218,7 +228,7 @@ class SummaryTweetTests(unittest.TestCase):
 
     def test_recap_respects_the_char_budget_with_a_number_prefix(self):
         rewrite = {
-            "title": "", "texts": ["가", "나", "다"], "summary_lead": "가" * 40,
+            "title": "", "tweet1": "가", "tweet2": "나", "summary_lead": "가" * 40,
             "summary": ["나" * 60, "다" * 60, "라" * 60],
         }
         with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
@@ -264,7 +274,7 @@ class SummaryLeadTests(unittest.TestCase):
 
     def test_claude_lead_wins_over_the_pool(self):
         rewrite = {
-            "title": "", "texts": ["가", "나", "다"],
+            "title": "", "tweet1": "가", "tweet2": "나",
             "summary_lead": "이번 편은 이렇게 정리돼요", "summary": ["핵심입니다"],
         }
         with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
@@ -318,11 +328,8 @@ class NoHashtagsOrLinksTests(unittest.TestCase):
     def test_rewrite_that_adds_a_hashtag_or_link_is_sanitized(self):
         rewrite = {
             "title": "잠 못 자면 기억력부터 흔들려요 #뇌건강",
-            "texts": [
-                "치매 원인, 생각하시는 그게 아닐 수 있어요. https://x.com/foo",
-                "잠이 부족하면 기억력이 떨어진다는 연구가 있어요.",
-                "하루 30분 걷기만 해도 도움이 된대요.",
-            ],
+            "tweet1": "치매 원인, 생각하시는 그게 아닐 수 있어요. https://x.com/foo",
+            "tweet2": "잠이 부족하면 기억력이 떨어진다는 연구가 있고, 하루 30분 걷기만 해도 도움이 된대요.",
             "summary_lead": "정리해보면 #요약",
             "summary": ["작은 습관이 뇌를 지켜요 https://example.com"],
         }
@@ -379,24 +386,23 @@ class HumanizeTests(unittest.TestCase):
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
         rewrite = {
             "title": "치매 원인, 생각하시는 그게 아닙니다",
-            "texts": [
-                "치매 원인, 그거 아니라고 하네요.",
-                "잠이 부족하면 기억력이 떨어진대요.",
-                "산책 30분이면 충분하다고 해요.",
-            ],
+            "tweet1": "치매 원인, 그거 아니라고 하네요.",
+            "tweet2": "잠이 부족하면 기억력이 떨어진대요. 산책 30분이면 충분하다고 해요.",
             "summary_lead": "짧게 정리해드리면",
             "summary": ["잠과 걷기, 이 둘이 핵심이에요"],
         }
         with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
             tweets = xta.build_tweets(PACKAGE, ban_keywords=[])
+        self.assertEqual(len(tweets), 3)
         self.assertTrue(tweets[0]["text"].startswith("치매 원인, 생각하시는 그게 아닙니다"))
         self.assertIn("치매 원인, 그거 아니라고 하네요.", _body(tweets))
+        self.assertIn("산책 30분이면 충분하다고 해요.", tweets[1]["text"])
         self.assertTrue(tweets[-1]["text"].startswith("짧게 정리해드리면"))
         self.assertIn("잠과 걷기, 이 둘이 핵심이에요", tweets[-1]["text"])
 
     def test_rewrite_without_a_title_keeps_the_rule_based_one(self):
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
-        rewrite = {"title": "", "texts": ["가", "나", "다"], "summary_lead": "", "summary": []}
+        rewrite = {"title": "", "tweet1": "가", "tweet2": "나", "summary_lead": "", "summary": []}
         with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
             tweets = xta.build_tweets(PACKAGE, ban_keywords=[])
         self.assertTrue(tweets[0]["text"].startswith("치매를 부르는 습관"))
@@ -405,7 +411,8 @@ class HumanizeTests(unittest.TestCase):
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
         bad_rewrite = {
             "title": "완치 보장",
-            "texts": ["완치 보장 가능", "잠 부족하면 기억력 떨어져요", "산책 30분이면 돼요"],
+            "tweet1": "완치 보장 가능",
+            "tweet2": "잠 부족하면 기억력 떨어져요. 산책 30분이면 돼요.",
             "summary_lead": "완치 정리하면",
             "summary": ["완치 보장됩니다"],
         }
@@ -424,13 +431,30 @@ class HumanizeTests(unittest.TestCase):
         baseline = xta.build_tweets(PACKAGE, ban_keywords=[], humanize=False)
         self.assertEqual([t["text"] for t in tweets], [t["text"] for t in baseline])
 
-    def test_sentence_count_mismatch_falls_back(self):
+    def test_composed_tweets_cap_the_thread_at_three(self):
+        os.environ["ANTHROPIC_API_KEY"] = "test-key"
+        rewrite = {
+            "title": "치매, 원인이 이거였어요",
+            "tweet1": "치매 원인, 다들 생각하는 그게 아니라고 해요.",
+            "tweet2": "잠 부족과 운동 부족이 기억력 저하로 이어질 수 있다는 연구들이 있어요.",
+            "summary_lead": "짧게 정리하면",
+            "summary": ["잠과 걷기가 핵심이에요"],
+        }
+        package = dict(PACKAGE)
+        package["key_points"] = [
+            {"text": f"핵심 포인트 {i}번째 내용입니다."} for i in range(10)
+        ]
+        with mock.patch.object(xta, "_humanize_with_claude", return_value=rewrite):
+            tweets = xta.build_tweets(package, ban_keywords=[])
+        self.assertEqual(len(tweets), 3)
+
+    def test_missing_tweet_field_falls_back(self):
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
         response = mock.Mock()
         response.raise_for_status = mock.Mock()
         response.json.return_value = {"content": [{
             "type": "text",
-            "text": json.dumps({"title": "제목", "sentences": ["한 문장뿐"]}, ensure_ascii=False),
+            "text": json.dumps({"title": "제목", "tweet1": "훅만 있음"}, ensure_ascii=False),
         }]}
         with mock.patch("requests.post", return_value=response):
             tweets = xta.build_tweets(PACKAGE, ban_keywords=[])

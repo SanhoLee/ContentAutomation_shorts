@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 import content_package
 import evidence_probe
+import hook_types
 import story_types
 from claude_cost import assert_budget, record_usage, web_search_total
 # Both live in scene_visuals because that stage runs without Stage 2's env.
@@ -841,6 +842,19 @@ GENERIC_FINAL_ANSWERS = (
     "상황에 따라 다르",
 )
 INSUFFICIENT_EVIDENCE_STATUSES = {"insufficient", "limited", "none", "unsupported", "unknown"}
+# A 숫자형 hook that opens on "대부분" has followed the label and skipped the
+# point, so the vague quantifier disqualifies the scene even when a digit is
+# present elsewhere in it.
+VAGUE_QUANTIFIERS = (
+    "많은", "대부분", "상당수", "적지 않은", "수많은", "대다수", "거의 모두", "절반가량",
+)
+# An open loop hung on a demonstrative promises nothing concrete enough to
+# scroll for. Checked for every pattern, not just 호기심갭형, because every hook
+# ends Scene 1 unresolved.
+VAGUE_HOOK_ANCHORS = (
+    "이 방법", "그 방법", "이것", "그것", "이 사실", "그 사실",
+    "이 비밀", "그 비밀", "이 한 가지", "이 이유", "그 이유",
+)
 
 
 def bounded_research_context(abstracts="", web_research="", limit=3000):
@@ -1010,7 +1024,7 @@ def local_strategy_fallback(topic, trend_context=None, reason=None):
         "main_keyword": keyword[:12],
         "sub_keywords": [],
         "search_intent": "핵심 내용을 쉽게 확인하고 싶음",
-        "hook_type": "공감형",
+        "hook_type": hook_types.CALLOUT,
         "title": title[:28],
         "search_title_format": "생활습관형",
         "core_message": "부담을 줄이는 작은 습관부터 시작하세요",
@@ -1137,6 +1151,12 @@ def plan_strategy(
     design_hint = design_constraint_hint(content_design)
     decided_story_type = strategy_story_type({"content_design": content_design or {}})
     story_hint = story_type_directive(decided_story_type, bool(decided_story_type))
+    # Stage 1 picks the hook pattern, so the concreteness rules have to reach it
+    # too — otherwise a 숫자형 job gets a title with no real number in it.
+    hook_rule = (
+        "hook_type    : " + " / ".join(hook_types.HOOK_PATTERNS) + " 중 하나\n"
+        + hook_types.prompt_block() + "\n"
+    )
     story_rule = ""
     story_json_fields = ""
     if USE_STORY_TYPES:
@@ -1157,8 +1177,7 @@ def plan_strategy(
 main_keyword : YouTube에서 실제 검색할 핵심 키워드 (공백 포함 12자 이내)
 sub_keywords : 연관 검색어 2~3개 (배열)
 search_intent: 이 키워드를 검색하는 사람의 상황/걱정 (20자 이내)
-hook_type    : 두려움형 / 반전형 / 숫자충격형 / 공감형 중 하나
-{story_rule}title        : 영상 본문과 훅을 자연스럽게 대표하는 한국어 제목 (15~28자 권장)
+{hook_rule}{story_rule}title        : 영상 본문과 훅을 자연스럽게 대표하는 한국어 제목 (15~28자 권장)
                - 사용자가 입력한 주제문을 그대로 복사하거나 어순만 바꾸지 말 것
                - main_keyword는 가능하면 앞쪽에 넣되, 억지스럽거나 기계적인 제목 금지
                - 실제 영상에서 밝혀지는 긴장/반전/해결 약속이 제목에 드러나야 함
@@ -1407,7 +1426,10 @@ def pace_instruction():
 
 def build_prompt(strategy, abstracts, trend_context=None, web_research="", youtube_guidance=""):
     main_keyword   = strategy.get("main_keyword", "")
-    hook_type      = strategy.get("hook_type", "두려움형")
+    # The single point where a legacy hook label on disk is upgraded before it
+    # reaches Stage 2, so old work dirs resumed after deploy still render a
+    # pattern the prompt actually describes.
+    hook_type      = hook_types.normalize(strategy.get("hook_type")) or hook_types.CALLOUT
     title          = strategy.get("title", "")
     core_message   = strategy.get("core_message", "")
     search_intent  = strategy.get("search_intent", "")
@@ -1486,6 +1508,7 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", youtu
         )
 
     story_block = story_type_block(strategy)
+    hook_block = hook_types.prompt_block(hook_type)
     scene_rules, scene_shape = scene_output_spec()
 
     prompt_min_chars = max(1, int(total_chars * PROMPT_MIN_LENGTH_RATIO))
@@ -1530,12 +1553,8 @@ main_keyword       : {main_keyword}
 ─── 📖 따뜻한 스토리텔링 흐름 ───
 [1단계: 3초 안에 스크롤을 멈추게 하는 강렬한 훅 → 공감으로 착지]
 - Scene 1(첫 문장)은 무조건 스크롤을 멈추게 만드는 강력한 한 방이어야 합니다. 밋밋하게 시작하면 실패입니다.
-  아래 패턴 중 이 영상의 주제와 훅 유형({hook_type})에 가장 잘 맞는 것을 선택해 강하게 쓰세요.
-  · 반전형: "{main_keyword}, 원인이 여러분이 생각하는 그게 아닙니다"
-  · 손실회피/경각심형: "이 습관, 지금 이 순간에도 뇌를 조용히 갉아먹고 있을 수 있습니다"
-  · 즉각 지목형: "방금도 이거 하고 계셨죠?" (시청자의 구체적 행동을 콕 집어서 찌르듯 시작)
-  · 숫자 충격형: "10명 중 7명이 모르고 지나칩니다" 같은 구체적 수치·비교로 시작
-  · 금기 폭로형: "의사들이 굳이 먼저 말 안 해주는 사실이 있습니다"
+  아래 6개 패턴 중 이 영상에 배정된 훅 유형({hook_type})을 우선 쓰되, 주제에 더 맞는 패턴이 있으면 그것을 고르세요.
+{hook_block}
 - 훅 문장은 단정적이고 힘 있는 어조로 쓰세요. "~할 수도 있어요" 같은 완곡체보다
   "~입니다", "~하고 계십니다"처럼 단호하게 끊어 쓰는 것이 몰입도를 높입니다.
 - 단, 다음은 절대 금지합니다: 근거 없이 특정 질병을 확정 진단하는 표현("~하면 치매 걸립니다", "~하면 죽습니다" 등
@@ -1589,7 +1608,7 @@ main_keyword       : {main_keyword}
   "frame_header": {{"title": "대제목", "subtitle": "소제목"}},
   "description": "설명란 인트로 텍스트\\n\\n썸네일 문구 후보: {thumbnail_hint}",
   "final_answer": "제목과 시청자 질문에 대한 한 문장 최종 답",
-  "hook_open_loop": "Scene 1 끝에서 아직 답하지 않고 남긴 질문 한 문장",
+  "hook_open_loop": "Scene 1 끝에서 아직 답하지 않고 남긴 질문 한 문장. 감추는 대상을 '이 방법' 같은 지시대명사가 아니라 구체 명사로 지목할 것",
   "promise_fulfilled": true,
   "evidence_limit": "근거가 부족하거나 비교가 불가한 지점",
   "scenes": [
@@ -1803,6 +1822,24 @@ def validate_script(result, strategy):
         errors.append(quality_issue("missing_final_answer", "final_answer가 비어 있습니다."))
     if not str(result.get("hook_open_loop") or "").strip():
         warnings.append(quality_issue("missing_hook_open_loop", "Scene 1을 미해결로 끝냈는지 확인할 오픈루프 문장이 없습니다.", "warning"))
+    hook_pattern = hook_types.normalize(result.get("hook_type") or strategy.get("hook_type"))
+    open_loop = str(result.get("hook_open_loop") or "").strip()
+    scene1 = str(scenes[0].get("text", "")) if scenes and isinstance(scenes[0], dict) else ""
+    # ponytail: digit-only heuristic, add a hangul-numeral table if
+    # hook_number_not_concrete fires on >30% of 숫자형 jobs.
+    if hook_pattern == hook_types.NUMBER and scene1:
+        if not re.search(r"\d", scene1) or any(word in scene1 for word in VAGUE_QUANTIFIERS):
+            warnings.append(quality_issue(
+                "hook_number_not_concrete",
+                "숫자형 훅인데 Scene 1에 구체적 실수치가 없거나 뭉뚱그린 수량 표현이 있습니다.",
+                "warning",
+            ))
+    if open_loop and any(anchor in open_loop for anchor in VAGUE_HOOK_ANCHORS):
+        warnings.append(quality_issue(
+            "hook_open_loop_not_anchored",
+            "오픈루프가 지시대명사('이 방법' 등)에 걸려 있습니다. 구체 명사로 지목하세요.",
+            "warning",
+        ))
     if "#" in str(result.get("title") or ""):
         warnings.append(quality_issue("hooky_title_hashtag", "제목에 해시태그가 들어 있습니다.", "warning"))
     if result.get("promise_fulfilled") is not True:
@@ -1853,6 +1890,10 @@ def validate_script(result, strategy):
             "intent_type": strategy.get("intent_type"),
             "comparison_targets": strategy.get("comparison_targets", []),
             "final_answer_present": bool(final_answer),
+            # The field a future performance aggregation will GROUP BY. Recording
+            # it now is what makes the sample start accumulating.
+            "hook_pattern": hook_pattern,
+            "hook_open_loop_present": bool(open_loop),
             "story_type": strategy_story_type(strategy) if USE_STORY_TYPES else None,
             # scenes_with_visual_brief is added later, by scene_visuals.
         },
@@ -1917,6 +1958,7 @@ def write_outputs(result, strategy, trend_context=None):
         "frame_header":        frame_header,
         "description":         description,
         "final_answer":        result.get("final_answer", ""),
+        "hook_open_loop":      result.get("hook_open_loop", ""),
         "promise_fulfilled":   result.get("promise_fulfilled"),
         "evidence_limit":      result.get("evidence_limit", ""),
         "source_mix":          strategy.get("source_mix", {}),

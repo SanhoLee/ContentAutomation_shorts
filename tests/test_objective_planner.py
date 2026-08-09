@@ -75,6 +75,38 @@ class ObjectivePlannerTests(unittest.TestCase):
         )
         self.assertNotIn("score", valid["candidates"][0])
 
+    def test_planner_hook_type_survives_as_a_retired_label(self):
+        # 질문형 is retired (merged into 호기심갭형) but Haiku still answers it out
+        # of habit. Before normalize() ran here, this candidate was skipped
+        # outright instead of landing on the label the DB now expects.
+        candidates = [{"candidate_id": "cand_01", "topic": "수면 신호", "evidence_refs": []}]
+        valid = objective_planner.validate_planner_output(
+            {"candidates": [{"candidate_id": "cand_01", "hook_type": "질문형"}]},
+            candidates, valid_refs=set(), existing_video_ids=set(),
+        )
+        self.assertEqual(valid["candidates"][0]["hook_type"], "호기심갭형")
+        self.assertEqual(valid["skipped_candidates"], [])
+
+    def test_planner_hook_type_still_rejects_a_genuinely_unknown_value(self):
+        # A second, clean candidate keeps the whole call from raising (that only
+        # happens when every candidate is dropped), so the skip itself is visible.
+        candidates = [
+            {"candidate_id": "cand_01", "topic": "수면 신호", "evidence_refs": []},
+            {"candidate_id": "cand_02", "topic": "기억력 습관", "evidence_refs": []},
+        ]
+        valid = objective_planner.validate_planner_output(
+            {"candidates": [
+                {"candidate_id": "cand_01", "hook_type": "완전히엉뚱한값"},
+                {"candidate_id": "cand_02"},
+            ]},
+            candidates, valid_refs=set(), existing_video_ids=set(),
+        )
+        self.assertEqual([c["candidate_id"] for c in valid["candidates"]], ["cand_02"])
+        self.assertEqual(len(valid["skipped_candidates"]), 1)
+        skipped = valid["skipped_candidates"][0]
+        self.assertEqual(skipped["candidate_id"], "cand_01")
+        self.assertIn("완전히엉뚱한값", skipped["reason"])
+
     def test_validators_reject_refs_when_no_evidence_was_supplied(self):
         candidates = [{"candidate_id": "cand_01", "topic": "수면 신호", "evidence_refs": []}]
         with self.assertRaises(objective_planner.PlannerValidationError):
@@ -692,6 +724,56 @@ class ObjectivePlannerTests(unittest.TestCase):
             self.assertEqual(plan["strategy_source"], "deterministic_fallback")
             self.assertIn("content_design", plan)
             self.assertTrue(output.exists())
+
+    def test_format_hook_repeat_penalty_survives_legacy_db_labels(self):
+        # content_features still holds retired labels (질문형, not 호기심갭형).
+        # Before normalize() ran on both sides of this comparison, every DB row
+        # used the old vocabulary and the comparison could never match, so the
+        # monotony penalty silently never fired again.
+        original_default_item = objective_planner._default_planner_item
+
+        def run(tmp, *, db_hook_type):
+            # allow_ai=False routes every candidate through _default_planner_item
+            # (no live planner/critic call), so forcing its output here is enough
+            # to make every candidate in the pool carry the same format/hook --
+            # otherwise whichever candidate wins selection might be a sibling
+            # that never touches the DB row this test seeded, masking the result.
+            def forced_default(candidate):
+                item = original_default_item(candidate)
+                return {**item, "format_type": "오해반전형", "hook_type": "질문형"}
+
+            db_path = Path(tmp) / "feedback.db"
+            conn = objective_planner.feedback.connect(db_path)
+            now = objective_planner.utc_now()
+            conn.execute(
+                "INSERT INTO videos (video_id, title, published_at, fetched_at) VALUES (?, ?, ?, ?)",
+                ("v1", "완전히 다른 영상 제목입니다", now, now),
+            )
+            conn.execute(
+                "INSERT INTO content_features (video_id, format_type, hook_type, plan_json, created_at) "
+                "VALUES (?, ?, ?, '{}', ?)",
+                ("v1", "오해반전형", db_hook_type, now),
+            )
+            conn.commit()
+            conn.close()
+
+            objective_planner._default_planner_item = forced_default
+            try:
+                plan = objective_planner.plan_objective_topic(
+                    "reach", seed_topic="수면", job_id="hook_repeat_job",
+                    db_path=db_path, allow_ai=False,
+                )
+            finally:
+                objective_planner._default_planner_item = original_default_item
+            return plan["objective"]["base_score"] - plan["objective"]["adjusted_score"]
+
+        with tempfile.TemporaryDirectory() as tmp_match, tempfile.TemporaryDirectory() as tmp_diff:
+            # DB has legacy "질문형"; forced planner item also answers "질문형" ->
+            # both normalize to 호기심갭형 -> same pair -> penalty fires.
+            matched_gap = run(tmp_match, db_hook_type="질문형")
+            # DB history uses a different pattern -> no repeat -> no penalty.
+            mismatched_gap = run(tmp_diff, db_hook_type="반전형")
+        self.assertEqual(matched_gap - mismatched_gap, 10.0)
 
 
 class StoryTypeSelectionTests(unittest.TestCase):

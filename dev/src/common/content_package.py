@@ -157,6 +157,9 @@ def build_content_package(
             or ""
         ),
         "hook": scenes[0]["text"] if scenes else "",
+        # The question Scene 1 deliberately left unanswered. Empty for jobs
+        # written before it was persisted.
+        "hook_open_loop": str(video_meta.get("hook_open_loop") or ""),
         "core_message": video_meta.get("core_message", ""),
         "key_points": _build_key_points(scenes),
         "evidence": _build_evidence(strategy),

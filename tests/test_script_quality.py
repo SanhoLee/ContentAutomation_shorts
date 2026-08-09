@@ -363,9 +363,60 @@ class ScriptQualityTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertIn("missing_hook_open_loop", warning_codes(report))
 
+    def test_number_hook_without_a_real_figure_is_warned(self):
+        result = complete_result()
+        result["hook_type"] = "숫자형"
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertTrue(report["ok"])
+        self.assertIn("hook_number_not_concrete", warning_codes(report))
+        self.assertNotIn("hook_number_not_concrete", issue_codes(report))
+
+    def test_number_hook_with_a_real_figure_passes(self):
+        result = complete_result()
+        result["hook_type"] = "숫자형"
+        result["scenes"][0]["text"] = "10명 중 7명이 모르고 지나갑니다"
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertNotIn("hook_number_not_concrete", warning_codes(report))
+
+    def test_vague_quantifier_beats_a_digit_in_a_number_hook(self):
+        result = complete_result()
+        result["hook_type"] = "숫자형"
+        result["scenes"][0]["text"] = "10명 중 대부분이 모르고 지나갑니다"
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertIn("hook_number_not_concrete", warning_codes(report))
+
+    def test_number_check_does_not_apply_to_other_patterns(self):
+        result = complete_result()
+        result["hook_type"] = "반전형"
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertNotIn("hook_number_not_concrete", warning_codes(report))
+
+    def test_open_loop_hung_on_a_demonstrative_is_warned(self):
+        result = complete_result()
+        result["hook_open_loop"] = "그런데 이 방법이 진짜 이유입니다"
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertTrue(report["ok"])
+        self.assertIn("hook_open_loop_not_anchored", warning_codes(report))
+
+    def test_open_loop_anchored_to_a_concrete_noun_passes(self):
+        result = complete_result()
+        result["hook_open_loop"] = "아침에 드시는 이 한 잔이 왜 문제일까요"
+        report = script0.validate_script(result, comparison_strategy())
+        self.assertNotIn("hook_open_loop_not_anchored", warning_codes(report))
+
+    def test_metrics_report_the_normalized_hook_pattern(self):
+        result = complete_result()
+        result.pop("hook_type", None)
+        strategy = comparison_strategy()
+        strategy["hook_type"] = "공감형"  # retired label still on disk
+        report = script0.validate_script(result, strategy)
+        self.assertEqual(report["metrics"]["hook_pattern"], "지목형")
+        self.assertFalse(report["metrics"]["hook_open_loop_present"])
+
     def test_title_hashtag_is_flagged_and_stripped(self):
         result = complete_result()
         result["title"] = "제목 #뇌건강 #50대"
+        result["hook_open_loop"] = "검사지 맨 아래 한 줄이 왜 중요할까요"
         report = script0.validate_script(result, comparison_strategy())
         self.assertTrue(report["ok"])
         self.assertIn("hooky_title_hashtag", warning_codes(report))
@@ -377,6 +428,8 @@ class ScriptQualityTests(unittest.TestCase):
                     script0.write_outputs(result, comparison_strategy())
                 meta = json.loads(Path(tmp, "video_meta.json").read_text(encoding="utf-8"))
                 self.assertEqual(meta["title"], "제목")
+                # The open loop used to be generated, validated, then dropped.
+                self.assertEqual(meta["hook_open_loop"], "검사지 맨 아래 한 줄이 왜 중요할까요")
             finally:
                 script0.WORK_DIR = old_work_dir
 

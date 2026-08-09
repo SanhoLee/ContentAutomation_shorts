@@ -37,6 +37,7 @@ from research_signals import (
     research_depth_metric,
 )
 from script_runtime import load_runtime_settings
+import hook_types
 import story_types
 
 
@@ -57,7 +58,7 @@ ENUM_FIELDS = (
 FORMAT_TYPES = (
     "오해반전형", "자가진단형", "사례추적형", "비교형", "연구발견형", "행동챌린지형",
 )
-HOOK_TYPES = ("반전형", "공감형", "질문형", "경고형", "발견형", "도전형")
+HOOK_TYPES = hook_types.HOOK_PATTERNS
 EXPLORATION_MODES = ("exploit", "adjacent", "wildcard", "manual")
 DECISIONS = ("selected", "limited_test", "manual_review", "rejected")
 CRITIC_ENUM_FIELDS = ("duplicate_risk", "overfit_risk", "evidence_risk")
@@ -968,12 +969,20 @@ def validate_planner_output(
                 "reason": f"허용되지 않은 format_type입니다: {raw['format_type']}",
             })
             continue
-        if raw.get("hook_type") and str(raw["hook_type"]) not in HOOK_TYPES:
-            skipped.append({
-                "candidate_id": candidate_id,
-                "reason": f"허용되지 않은 hook_type입니다: {raw['hook_type']}",
-            })
-            continue
+        if raw.get("hook_type"):
+            # Absorb the retired labels instead of dropping the candidate. If
+            # every candidate drops, validate_planner_output raises and the whole
+            # run falls back to _default_planner_item — too steep a price for a
+            # model that answered 공감형 out of habit. A genuinely unknown value
+            # is still rejected.
+            canonical_hook = hook_types.normalize(raw["hook_type"])
+            if not canonical_hook:
+                skipped.append({
+                    "candidate_id": candidate_id,
+                    "reason": f"허용되지 않은 hook_type입니다: {raw['hook_type']}",
+                })
+                continue
+            raw = {**raw, "hook_type": canonical_hook}
         risk_flags = [str(item) for item in raw.get("risk_flags") or []]
         if _unsupported_numeric_claim(raw) and "unsupported_claim" not in risk_flags:
             risk_flags.append("unsupported_claim")
@@ -1077,7 +1086,7 @@ def _planner_prompt(
 - format_type은 반드시 다음 중 하나여야 합니다 (다른 값 절대 사용 금지):
   {list(FORMAT_TYPES)}
 - hook_type은 반드시 다음 중 하나여야 합니다 (다른 값 절대 사용 금지):
-  {list(HOOK_TYPES)}
+{hook_types.prompt_block()}
 - angle은 20자 이내 한 문장으로 요약하세요.
 - risk_flags는 최대 2개, 각 15자 이내로 작성하세요.
 - candidates 배열을 가진 JSON 객체만 출력하세요.
@@ -1450,7 +1459,7 @@ def _default_planner_item(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_id": candidate["candidate_id"], "topic": topic,
         "topic_family": candidate.get("topic_family") or "기타",
         "angle": "기존 결론을 복제하지 않고 생활 속 판단 기준에 초점",
-        "format_type": formats.get(mode, "오해반전형"), "hook_type": hooks.get(mode, "공감형"),
+        "format_type": formats.get(mode, "오해반전형"), "hook_type": hooks.get(mode, hook_types.CALLOUT),
         "emotion_curve": ["공감", "의외성", "이해", "안심", "행동"],
         "series_key": candidate.get("topic_family") or "건강 습관",
         "series_potential": "medium", "channel_fit": "medium",
@@ -1589,7 +1598,10 @@ def _topic_plan(
             "angle": planner.get("angle") or "생활 속 판단 기준",
             "story_type": resolved_story_type,
             "format_type": format_type,
-            "hook_type": str(planner.get("hook_type") or "반전형"),
+            # This value flows to content_design -> Stage 1 -> video_meta.json ->
+            # content_features.hook_type, so normalizing here is what keeps the
+            # DB on a single vocabulary from now on.
+            "hook_type": hook_types.normalize(planner.get("hook_type")) or hook_types.REVERSAL,
             "emotion_curve": list(planner.get("emotion_curve") or ["공감", "이해", "안심", "행동"]),
             "series_key": planner.get("series_key") or topic,
             "cta_type": "series_next",
@@ -1715,8 +1727,12 @@ def plan_objective_topic(
             "SELECT * FROM strategy_hypotheses WHERE objective_type=? AND status IN ('testing','active','weakened')",
             (config.objective_type,),
         )]
+        # Both sides go through normalize(): every published row still holds a
+        # retired label, so comparing raw strings would silently stop the
+        # monotony penalty from ever firing again — and a penalty that never
+        # fires writes no log line to notice.
         recent_combinations = {
-            (str(row["format_type"] or ""), str(row["hook_type"] or ""))
+            (str(row["format_type"] or ""), hook_types.normalize(row["hook_type"]) or "")
             for row in conn.execute("""
                 SELECT f.format_type, f.hook_type FROM content_features f
                 JOIN videos v ON v.video_id=f.video_id
@@ -1727,7 +1743,7 @@ def plan_objective_topic(
             default_item = _default_planner_item(candidate)
             candidate["format_hook_repeat"] = (
                 str(default_item.get("format_type") or ""),
-                str(default_item.get("hook_type") or ""),
+                hook_types.normalize(default_item.get("hook_type")) or "",
             ) in recent_combinations
         local_rows = _local_candidate_rows(candidates, config.objective_type, job_id)
         preflight_best = float(local_rows[0]["judgment"]["adjusted_score"])
@@ -1802,7 +1818,7 @@ def plan_objective_topic(
             planner_item = planner_map.get(candidate["candidate_id"], _default_planner_item(candidate))
             candidate["format_hook_repeat"] = (
                 str(planner_item.get("format_type") or ""),
-                str(planner_item.get("hook_type") or ""),
+                hook_types.normalize(planner_item.get("hook_type")) or "",
             ) in recent_combinations
             score = score_candidate(candidate, planner_item, config.objective_type)
             initial.append({"candidate": candidate, "planner": planner_item, "score": score})

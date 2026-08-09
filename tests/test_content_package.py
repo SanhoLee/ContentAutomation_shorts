@@ -23,6 +23,7 @@ DEFAULT_VIDEO_META = {
     "topic": "치매 예방", "main_keyword": "치매 예방", "hook_type": "반전형",
     "title": "치매 예방 습관", "core_message": "작은 습관부터 시작하세요",
     "hashtags": "#치매예방 #뇌건강",
+    "hook_open_loop": "아침에 드시는 이 한 잔이 왜 문제일까요",
 }
 
 DEFAULT_SCENES = [
@@ -57,12 +58,22 @@ class BuildContentPackageTests(unittest.TestCase):
             self.assertEqual(package["version"], 1)
             self.assertEqual(package["source"]["topic"], "치매 예방")
             self.assertEqual(package["hook"], "훅 문장입니다")
+            self.assertEqual(package["hook_open_loop"], "아침에 드시는 이 한 잔이 왜 문제일까요")
             self.assertEqual(package["cta"]["action"], "CTA 문장입니다")
             self.assertEqual(package["cta"]["next_topic_tease"], "수면과 기억력")
             self.assertEqual(package["hashtags"], ["#치매예방", "#뇌건강"])
             self.assertTrue(package["platforms"]["youtube_shorts"]["ready"])
             self.assertFalse(package["platforms"]["x_thread"]["ready"])
             self.assertTrue((job_dir / "content_package.json").exists())
+
+    def test_job_without_an_open_loop_yields_an_empty_string(self):
+        # Jobs rendered before hook_open_loop was persisted still have to build.
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            legacy_meta = {k: v for k, v in DEFAULT_VIDEO_META.items() if k != "hook_open_loop"}
+            write_job_files(job_dir, video_meta=legacy_meta, scenes=DEFAULT_SCENES, strategy=DEFAULT_STRATEGY)
+            package = cp.build_content_package(job_dir)
+            self.assertEqual(package["hook_open_loop"], "")
 
     def test_scene_roles_are_hook_body_cta(self):
         with tempfile.TemporaryDirectory() as tmp:

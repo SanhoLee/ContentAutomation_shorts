@@ -1,6 +1,6 @@
 # 알려진 이슈 및 리스크 목록
 
-최종 업데이트: 2026-08-08
+최종 업데이트: 2026-08-09
 기준 브랜치: `main`
 
 ## 활성 / 모니터링 항목
@@ -93,6 +93,14 @@
 완화책: `batch_expand()`가 `off_topic` 앵커 시드를 원본 시드로 1회 재시도, 결과는 `no_domain_anchor`로 걸러짐 → 실패 모드는 헛된 suggest 호출이지 잘못된 주제가 아님.
 
 **액션**: 실제 `--refresh` 후 `data/topics/raw/{stamp}_run.json`에서 `anchored_seed_count` 대비 `anchor_fallback_count` 확인. 절반 넘으면 `seed_anchors`를 실제로 사람들이 입력하는 표현으로 바꾸거나 `max_anchor_variants`를 2로 올릴 것(suggest 호출 수 증가, `max_seeds_total`로 제한됨).
+
+### 14. 훅 패턴 어휘 통일, 숫자형/호기심갭형 구체성 규칙 추가 (2026-08-09)
+
+Stage 1/Stage 2 프롬프트, 플래너 enum, 피드백 DB가 각각 다른 훅 라벨 어휘를 썼다(`숫자충격형` vs `질문형` vs `즉각지목형` 등). `hook_types.py`가 6개 패턴(`숫자형`/`호기심갭형`/`반전형`/`지목형`/`경고형`/`폭로형`)으로 통일하고, `normalize()`가 레거시 라벨과 DB에 이미 쌓인 값을 canonical로 변환한다(`objective_planner.validate_planner_output`, `format_hook_repeat` 비교 양쪽 모두 포함).
+
+`validate_script()`에 `hook_number_not_concrete`(숫자형인데 Scene 1에 실수치 없음/뭉뚱그린 표현), `hook_open_loop_not_anchored`(오픈루프가 '이 방법' 같은 지시대명사에 걸림) 경고 2개 추가 — #6/#8/#10과 같은 production-continuity 원칙으로 경고일 뿐 게이트 아님.
+
+**모니터링**: `script_quality.json`의 `hook_number_not_concrete`/`hook_open_loop_not_anchored` 빈도가 30% 이상이면 프롬프트 예시를 더 구체적으로 보강. 숫자형 체크는 `re.search(r"\d")` 기반 휴리스틱이라 "일곱 명 중 하나" 같은 한글 수사는 놓친다 — 오탐 비율이 높으면 한글 수사 테이블 추가 검토.
 
 ## 해결됨
 

@@ -322,7 +322,7 @@ if [ -n "$THUMBNAIL_FILE" ]; then
     ffmpeg -y -loop 1 -t 0.1 -i "$THUMBNAIL_FILE" \
     -f lavfi -t 0.1 -i anullsrc=channel_layout=stereo:sample_rate=48000 \
     -i "$OUTPUT_FILE" \
-    -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30[thumbv];[thumbv][1:a][2:v][2:a]concat=n=2:v=1:a=1[v][a]" \
+    -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30[thumbv];[2:v]fps=30[mainv];[thumbv][1:a][mainv][2:a]concat=n=2:v=1:a=1[v][a]" \
     -map "[v]" -map "[a]" \
     -c:v libx264 -c:a aac -pix_fmt yuv420p \
     "$THUMB_TMP"

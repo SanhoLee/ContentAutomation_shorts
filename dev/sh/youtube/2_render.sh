@@ -310,6 +310,25 @@ ffmpeg -y -nostats -progress "$RENDER_PROGRESS_FILE" \
 -c:v libx264 -c:a aac -pix_fmt yuv420p \
 "$OUTPUT_FILE"
 
+# Optional first-frame thumbnail (see slack_bot.py's thumbnail_intake gate):
+# operator-supplied image, already normalized to 1080x1920 PNG, held for
+# 0.1s before the real video. A separate concat pass rather than folding
+# into FILTER_COMPLEX above, so the frame/caption filter graph stays
+# untouched whether or not a thumbnail was supplied.
+THUMBNAIL_FILE="$(ls "$WORK_DIR"/thumbnail.* 2>/dev/null | head -n1 || true)"
+if [ -n "$THUMBNAIL_FILE" ]; then
+    echo "썸네일 첫 프레임 삽입 (0.1초): $THUMBNAIL_FILE"
+    THUMB_TMP="$WORK_DIR/output_with_thumbnail.mp4"
+    ffmpeg -y -loop 1 -t 0.1 -i "$THUMBNAIL_FILE" \
+    -f lavfi -t 0.1 -i anullsrc=channel_layout=stereo:sample_rate=48000 \
+    -i "$OUTPUT_FILE" \
+    -filter_complex "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30[thumbv];[thumbv][1:a][2:v][2:a]concat=n=2:v=1:a=1[v][a]" \
+    -map "[v]" -map "[a]" \
+    -c:v libx264 -c:a aac -pix_fmt yuv420p \
+    "$THUMB_TMP"
+    mv "$THUMB_TMP" "$OUTPUT_FILE"
+fi
+
 cat > "$WORK_DIR/render_config.json" <<EOF
 {"font_size": "${FONT_SIZE}", "margin_v": "${MARGIN_V}", "margin_h": "${MARGIN_H}", "caption_style": "${CAPTION_STYLE_NAME}", "caption_style_file": "${CAPTION_STYLE_FILE}", "caption_ass_file": "${CAPTION_ASS_FILE}", "frame_mode": "${FRAME_MODE}", "frame_top_preset": "${FRAME_TOP_PRESET}", "frame_top_margin_pct": "${FRAME_TOP_MARGIN_PCT}", "frame_top_margin_x_pct": "${FRAME_TOP_MARGIN_X_PCT}", "frame_bottom_preset": "${FRAME_BOTTOM_PRESET}", "frame_json": ${FRAME_JSON:-null}, "broll_fit_mode": "${BROLL_FIT_MODE}", "duration": "${DURATION}", "caption_force_style": ${CAPTION_STYLE_JSON}}
 EOF

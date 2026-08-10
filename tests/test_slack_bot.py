@@ -13,6 +13,7 @@ sys.path.insert(0, str(SRC))
 # dev/config.sh puts common/, youtube/ and instagram/ all on PYTHONPATH so
 # the pipeline modules can import each other; tests must do the same.
 sys.path.insert(0, str(ROOT / "dev" / "src" / "youtube"))
+import job_state
 import pipeline_orchestrator as _po
 import slack_bot
 
@@ -475,11 +476,14 @@ class SlackBotTests(unittest.TestCase):
             "await_tts_approval": "await_caption_approval",
             "await_caption_approval": "await_broll_approval",
             "await_broll_approval": "await_render_config",
-            "await_render_config": "await_render_approval",
+            "await_render_config": "await_thumbnail_intake",
+            "await_thumbnail_intake": "await_render_approval",
             "await_render_approval": "await_upload_meta_approval",
             "await_upload_meta_approval": "done",
         }
-        sender_names = ("send_tts", "send_caption", "send_broll", "send_render_ready", "send_rendered_video", "send_upload_meta", "send_message")
+        sender_names = ("send_tts", "send_caption", "send_broll", "send_render_ready",
+                         "send_rendered_video", "send_upload_meta", "send_message",
+                         "send_thumbnail_prompt")
         originals = {name: getattr(slack_bot, name) for name in sender_names}
         old_run_command, old_run_render = slack_bot.run_command, slack_bot.run_render
         try:
@@ -500,49 +504,70 @@ class SlackBotTests(unittest.TestCase):
     def test_auto_finish_can_resume_from_every_review_stage(self):
         # slack_bot drives this through pipeline_flow.STAGES, which includes
         # scene_visuals and x_thread (right after script) and x_post (right
-        # after upload).
-        expected_commands = {
-            "await_script_approval": ["scene_visuals.sh", "x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
-            "await_tts_approval": ["1_caption.sh", "1_broll.sh", "3_upload.sh", "x_post.sh"],
-            "await_caption_approval": ["1_broll.sh", "3_upload.sh", "x_post.sh"],
-            "await_broll_approval": ["3_upload.sh", "x_post.sh"],
-            "await_render_config": ["3_upload.sh", "x_post.sh"],
-            "await_render_approval": ["3_upload.sh", "x_post.sh"],
-            "await_upload_meta_approval": ["3_upload.sh", "x_post.sh"],
+        # after upload). thumbnail_intake now parks every one of these runs
+        # once before render -- it's the one gate auto mode still honours --
+        # so each expected command list stops there; approving it lets the
+        # rest (render onward) run in a second pass.
+        expected_commands_before_gate = {
+            "await_script_approval": ["scene_visuals.sh", "x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh"],
+            "await_tts_approval": ["1_caption.sh", "1_broll.sh"],
+            "await_caption_approval": ["1_broll.sh"],
+            "await_broll_approval": [],
+            "await_render_config": [],
+            "await_render_approval": [],
+            "await_upload_meta_approval": [],
         }
-        render_stages = {
-            "await_script_approval", "await_tts_approval", "await_caption_approval",
-            "await_broll_approval", "await_render_config",
-        }
+        # These three stages resume from render.sh (or later), so pipeline_flow
+        # is already past broll and its thumbnail_intake gate never fires again.
+        no_gate_stages = {"await_render_approval", "await_upload_meta_approval"}
         # This test is about which stages run, not about the stage checks --
         # those have their own coverage in test_stage_guard.py, and the fake
         # job directories here hold no artifacts for them to inspect.
         real_check = slack_bot.pipeline_flow.stage_guard.check
         slack_bot.pipeline_flow.stage_guard.check = lambda *a, **k: (True, "")
         try:
-            self._assert_auto_finish_resumes(expected_commands, render_stages)
+            self._assert_auto_finish_resumes(expected_commands_before_gate, no_gate_stages)
         finally:
             slack_bot.pipeline_flow.stage_guard.check = real_check
 
-    def _assert_auto_finish_resumes(self, expected_commands, render_stages):
+    def _assert_auto_finish_resumes(self, expected_commands_before_gate, no_gate_stages):
         for stage in slack_bot.WORKFLOW_STAGES:
-            commands, renders = [], []
+            commands, renders, gates = [], [], []
             old_run_command = slack_bot.run_command
             old_run_render_silent = slack_bot._run_render_silent
             old_send_message = slack_bot.send_message
+            old_send_thumbnail_prompt = slack_bot.send_thumbnail_prompt
             try:
                 slack_bot.run_command = lambda args, *a, **k: commands.append(Path(args[0]).name)
                 slack_bot._run_render_silent = lambda *a, **k: renders.append("render")
                 slack_bot.send_message = lambda *a, **k: None
+                slack_bot.send_thumbnail_prompt = lambda chat_id, job_id: gates.append(job_id)
                 job = {"job_id": f"job-{stage}", "topic": "테스트", "stage": stage}
                 slack_bot.run_remaining_to_upload("C1", job)
+                if stage in no_gate_stages:
+                    self.assertEqual(gates, [])
+                    self.assertEqual(job["stage"], "done")
+                else:
+                    self.assertEqual(gates, [job["job_id"]])
+                    self.assertEqual(job["stage"], "await_thumbnail_intake")
+                    self.assertEqual(commands, expected_commands_before_gate[stage])
+                    self.assertEqual(renders, [])
+
+                    # Production never re-enters run_to_completion here -- the
+                    # real resume path is resume_after_thumbnail ->
+                    # approve_review_gate -> run_review_pipeline. approve_review_gate
+                    # calls pipeline_flow.approve() itself, so this must not
+                    # approve again first -- a second approve() with nothing left
+                    # awaiting would wipe the cleared_gate it just set.
+                    slack_bot.approve_review_gate("C1", job)
+                    self.assertEqual(job["stage"], "done")
+                    self.assertEqual(renders, ["render"])
+                    self.assertEqual(commands[-2:], ["3_upload.sh", "x_post.sh"])
             finally:
                 slack_bot.run_command = old_run_command
                 slack_bot._run_render_silent = old_run_render_silent
                 slack_bot.send_message = old_send_message
-            self.assertEqual(commands, expected_commands[stage])
-            self.assertEqual(len(renders), 1 if stage in render_stages else 0)
-            self.assertEqual(job["stage"], "done")
+                slack_bot.send_thumbnail_prompt = old_send_thumbnail_prompt
 
     def test_cancel_request_is_available_while_busy(self):
         job_id = f"cancel-{slack_bot.__name__}"
@@ -969,6 +994,188 @@ class XPhotoIntakeTests(unittest.TestCase):
         self._handle(job, {"chat": {"id": "C1"}, "text": "이거 언제 끝나?"})
         self.assertEqual(self.saved, [])
         self.assertIn("진행 중입니다", self.messages[-1])
+
+
+class ThumbnailIntakeTests(unittest.TestCase):
+    """Unlike the X lead photo, render is genuinely on hold here: the intake
+    must reject a bad attachment while staying armed, and resuming must route
+    to the right driver depending on whether the job carries a pipeline_flow
+    `mode` (review/auto) or is the legacy mode-less /run chain."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.job_dir = Path(self._tmp.name)
+        self.messages = []
+        self.sent_files = []
+        self.normalized = []
+        self._originals = (
+            slack_bot.work_dir, slack_bot.send_message, slack_bot.send_file_or_path,
+            slack_bot.download_slack_file, slack_bot.x_photo_card.normalize_thread_photo,
+            slack_bot.start_background_task,
+        )
+        slack_bot.work_dir = lambda job_id: self.job_dir
+        slack_bot.send_message = lambda chat_id, text: self.messages.append(text)
+        slack_bot.send_file_or_path = lambda chat_id, path, caption=None, as_video=False: (
+            self.sent_files.append(str(path))
+        )
+        slack_bot.download_slack_file = lambda doc, dest: Path(dest).write_bytes(b"png-bytes")
+        def fake_normalize(src, dest, size=None):
+            self.normalized.append(size)
+            return Path(dest)
+        slack_bot.x_photo_card.normalize_thread_photo = fake_normalize
+        # Run resume_after_thumbnail inline so tests can assert on its effect
+        # without spinning up a real background thread.
+        slack_bot.start_background_task = lambda state, chat_id, job, label, target: target()
+
+    def tearDown(self):
+        (slack_bot.work_dir, slack_bot.send_message, slack_bot.send_file_or_path,
+         slack_bot.download_slack_file, slack_bot.x_photo_card.normalize_thread_photo,
+         slack_bot.start_background_task) = self._originals
+        self._tmp.cleanup()
+
+    def _armed_job(self, **extra):
+        job = {"job_id": "J1", "stage": "await_thumbnail_intake",
+               "thumbnail_target": str(self.job_dir / "thumbnail.png")}
+        job.update(extra)
+        return job
+
+    def _image(self, name="frame.png", size=1024):
+        return {"id": "F1", "name": name, "size": size}
+
+    def _handle_message(self, job, message):
+        state = {"chats": {"C1": job}}
+        old_save_state = slack_bot.save_state
+        slack_bot.save_state = lambda _state: None
+        try:
+            slack_bot.handle_message(state, message)
+        finally:
+            slack_bot.save_state = old_save_state
+
+    def test_unarmed_upload_is_not_consumed(self):
+        job = {"job_id": "J1"}
+        consumed = slack_bot.apply_thumbnail_message(None, "C1", job, {"document": self._image()})
+        self.assertFalse(consumed)
+
+    def test_wrong_file_type_is_rejected_and_stays_armed(self):
+        job = self._armed_job()
+        self.assertTrue(
+            slack_bot.apply_thumbnail_message(None, "C1", job, {"document": self._image("notes.pdf")})
+        )
+        self.assertIn("thumbnail_target", job)
+        self.assertIn("이미지 파일만", self.messages[-1])
+
+    def test_oversized_image_is_rejected_and_stays_armed(self):
+        job = self._armed_job()
+        big = self._image(size=slack_bot.THUMBNAIL_MAX_BYTES + 1)
+        self.assertTrue(slack_bot.apply_thumbnail_message(None, "C1", job, {"document": big}))
+        self.assertIn("thumbnail_target", job)
+
+    def test_download_failure_is_reported_not_raised(self):
+        job = self._armed_job()
+        def boom(doc, dest):
+            raise RuntimeError("slack download 500")
+        slack_bot.download_slack_file = boom
+        self.assertTrue(slack_bot.apply_thumbnail_message(None, "C1", job, {"document": self._image()}))
+        self.assertIn("slack download 500", self.messages[-1])
+        self.assertIn("thumbnail_target", job)
+
+    def test_image_is_normalized_to_the_shorts_frame_and_resumes_via_gate(self):
+        job = self._armed_job(mode=job_state.MODE_REVIEW)
+        resumed = []
+        old_approve = slack_bot.approve_review_gate
+        old_run_next = slack_bot.run_next_stage
+        slack_bot.approve_review_gate = lambda chat_id, job: resumed.append(("gate", chat_id))
+        slack_bot.run_next_stage = lambda chat_id, job: resumed.append(("legacy", chat_id))
+        try:
+            self.assertTrue(
+                slack_bot.apply_thumbnail_message(None, "C1", job, {"document": self._image()})
+            )
+        finally:
+            slack_bot.approve_review_gate = old_approve
+            slack_bot.run_next_stage = old_run_next
+        self.assertNotIn("thumbnail_target", job)
+        self.assertEqual(self.normalized, [slack_bot.THUMBNAIL_SIZE])
+        self.assertTrue(self.sent_files)
+        self.assertEqual(resumed, [("gate", "C1")])
+
+    def test_image_resumes_the_legacy_chain_when_the_job_has_no_mode(self):
+        job = self._armed_job()  # no "mode" key: legacy /run driver
+        resumed = []
+        old_approve = slack_bot.approve_review_gate
+        old_run_next = slack_bot.run_next_stage
+        slack_bot.approve_review_gate = lambda chat_id, job: resumed.append(("gate", chat_id))
+        slack_bot.run_next_stage = lambda chat_id, job: resumed.append(("legacy", chat_id))
+        try:
+            slack_bot.apply_thumbnail_message(None, "C1", job, {"document": self._image()})
+        finally:
+            slack_bot.approve_review_gate = old_approve
+            slack_bot.run_next_stage = old_run_next
+        self.assertEqual(resumed, [("legacy", "C1")])
+
+    def test_yes_button_arms_the_target_without_approving_the_gate(self):
+        state = {"chats": {"C1": {"job_id": "J1", "stage": "await_thumbnail_intake"}}}
+        old_save_state = slack_bot.save_state
+        slack_bot.save_state = lambda _state: None
+        try:
+            callback = {"message": {"chat": {"id": "C1"}}, "data": "thumbnail_yes:await_thumbnail_intake"}
+            slack_bot.handle_callback(state, callback)
+        finally:
+            slack_bot.save_state = old_save_state
+        job = state["chats"]["C1"]
+        self.assertTrue(job["thumbnail_target"].endswith("thumbnail.png"))
+        self.assertIn("첨부해", self.messages[-1])
+
+    def _no_button_resumes(self, job):
+        state = {"chats": {"C1": job}}
+        resumed = []
+        old_start = slack_bot.start_background_task
+        old_save_state = slack_bot.save_state
+        old_approve = slack_bot.approve_review_gate
+        old_run_next = slack_bot.run_next_stage
+        slack_bot.start_background_task = lambda state, chat_id, job, label, target: target()
+        slack_bot.save_state = lambda _state: None
+        slack_bot.approve_review_gate = lambda chat_id, job: resumed.append("gate")
+        slack_bot.run_next_stage = lambda chat_id, job: resumed.append("legacy")
+        try:
+            callback = {"message": {"chat": {"id": "C1"}}, "data": "approve:await_thumbnail_intake"}
+            slack_bot.handle_callback(state, callback)
+        finally:
+            slack_bot.start_background_task = old_start
+            slack_bot.save_state = old_save_state
+            slack_bot.approve_review_gate = old_approve
+            slack_bot.run_next_stage = old_run_next
+        return resumed
+
+    def test_no_button_skips_via_the_gate_for_a_moded_job(self):
+        job = {"job_id": "J1", "stage": "await_thumbnail_intake", "mode": job_state.MODE_REVIEW}
+        self.assertEqual(self._no_button_resumes(job), ["gate"])
+
+    def test_no_button_skips_via_the_legacy_chain_for_a_mode_less_job(self):
+        job = {"job_id": "J1", "stage": "await_thumbnail_intake"}
+        self.assertEqual(self._no_button_resumes(job), ["legacy"])
+
+    def test_no_button_deletes_a_stale_thumbnail_from_an_earlier_render_pass(self):
+        # A retried/rewound render can leave thumbnail.png on disk from a
+        # prior yes answer; 2_render.sh only checks the file's presence, so
+        # skipping now must remove it or the stale image gets spliced in
+        # against this answer.
+        stale = self.job_dir / "thumbnail.png"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"stale-png")
+        job = {"job_id": "J1", "stage": "await_thumbnail_intake"}
+        self._no_button_resumes(job)
+        self.assertFalse(stale.exists())
+
+    def test_message_dispatch_routes_uploads_to_the_thumbnail_intake(self):
+        job = self._armed_job(mode=job_state.MODE_REVIEW)
+        old_approve = slack_bot.approve_review_gate
+        slack_bot.approve_review_gate = lambda chat_id, job: None
+        try:
+            self._handle_message(job, {"chat": {"id": "C1"}, "document": self._image()})
+        finally:
+            slack_bot.approve_review_gate = old_approve
+        self.assertNotIn("thumbnail_target", job)
+        self.assertTrue(self.sent_files)
 
 
 class XPhotoPipelineHookTests(unittest.TestCase):

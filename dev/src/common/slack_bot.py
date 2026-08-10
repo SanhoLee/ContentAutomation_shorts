@@ -826,7 +826,7 @@ def is_busy(job):
 def _mark_workflow_cancelled(job):
     job["stage"] = "cancelled"
     job["cancelled_at"] = datetime.now().isoformat(timespec="seconds")
-    for key in ("cancel_requested", "auto_from_stage", "auto_progress", "edit_target", "edit_stage", "title_edit_field", "title_edit_stage", "x_photo_target"):
+    for key in ("cancel_requested", "auto_from_stage", "auto_progress", "edit_target", "edit_stage", "title_edit_field", "title_edit_stage", "x_photo_target", "thumbnail_target"):
         job.pop(key, None)
 
 
@@ -1252,6 +1252,7 @@ def send_gate(chat_id, job, gate):
     """Dispatch a pipeline_flow gate to the message that presents it."""
     senders = {
         "script_review": send_script,
+        "thumbnail_intake": send_thumbnail_prompt,
         "final_confirm": send_final_confirm,
     }
     sender = senders.get(gate)
@@ -1696,6 +1697,97 @@ def handle_x_photo(chat_id, job):
             chat_id,
             "지금은 이미지를 받을 수 없습니다. 초안이 없거나 이미 게시된 스레드입니다.",
         )
+
+
+# Video-thumbnail intake. Not downstream-optional like the X lead photo --
+# render is genuinely on hold until the operator answers, so this parks the
+# job at a real pipeline_flow gate (thumbnail_intake) instead of firing
+# fire-and-forget. YouTube gives no other way to control the Shorts feed
+# thumbnail yet, so this is a manual first-frame swap: 0.1s of the supplied
+# image spliced onto the front of the render (see 2_render.sh).
+THUMBNAIL_EXTENSIONS = X_PHOTO_EXTENSIONS
+THUMBNAIL_MAX_BYTES = X_PHOTO_MAX_BYTES
+THUMBNAIL_SIZE = (1080, 1920)
+
+
+def send_thumbnail_prompt(chat_id, job_id):
+    send_action_message(
+        chat_id,
+        "썸네일 이미지를 영상 맨 앞 0.1초 프레임으로 붙일까요? "
+        "(YouTube Shorts는 아직 커스텀 썸네일을 지원하지 않아, 우회로 아주 짧게 노출합니다)",
+        [[button("예 - 이미지 첨부", "thumbnail_yes:await_thumbnail_intake"),
+          button("아니오 - 건너뛰기", "approve:await_thumbnail_intake")]],
+    )
+
+
+def apply_thumbnail_message(state, chat_id, job, message):
+    """Consume an uploaded image as the render's first-frame thumbnail.
+
+    Mirrors apply_x_photo_message: returns False for anything that is not an
+    image upload while armed, so a text message during the wait still
+    reaches the command handlers. A rejected upload keeps the armed state so
+    the next attempt just works.
+
+    Resuming runs the render itself, so unlike apply_x_photo_message's cheap
+    downstream post, this goes through start_background_task rather than
+    running inline on the message-handling thread.
+    """
+    target = job.get("thumbnail_target")
+    if not target:
+        return False
+    doc = message.get("document")
+    if not doc:
+        return False
+
+    name = str(doc.get("name") or doc.get("title") or "")
+    suffix = Path(name).suffix.lower()
+    if suffix not in THUMBNAIL_EXTENSIONS:
+        send_message(
+            chat_id,
+            f"이미지 파일만 받을 수 있습니다 ({', '.join(THUMBNAIL_EXTENSIONS)}). "
+            f"받은 파일: {name or '이름 없음'}",
+        )
+        return True
+    size = doc.get("size")
+    if isinstance(size, int) and size > THUMBNAIL_MAX_BYTES:
+        send_message(
+            chat_id,
+            f"이미지가 너무 큽니다 ({size:,}바이트). "
+            f"{THUMBNAIL_MAX_BYTES:,}바이트 이하로 줄여서 다시 보내주세요.",
+        )
+        return True
+
+    target_path = Path(target)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    staged = target_path.with_name(f"thumbnail_upload{suffix}")
+    try:
+        download_slack_file(doc, staged)
+        final_path = x_photo_card.normalize_thread_photo(staged, target_path, size=THUMBNAIL_SIZE)
+    except Exception as exc:
+        staged.unlink(missing_ok=True)
+        send_message(chat_id, f"이미지를 저장하지 못했습니다: {exc}\n다시 첨부해 주세요.")
+        return True
+    if staged != final_path:
+        staged.unlink(missing_ok=True)
+
+    job.pop("thumbnail_target", None)
+    send_file_or_path(chat_id, final_path, "영상 첫 프레임(0.1초)으로 저장했습니다.")
+    start_background_task(state, chat_id, job, "썸네일 적용 후 렌더링",
+                          lambda: resume_after_thumbnail(chat_id, job))
+    return True
+
+
+def resume_after_thumbnail(chat_id, job):
+    """Unpark the job once the thumbnail decision is settled.
+
+    A job with a `mode` is pipeline_flow-driven (review or auto) and resumes
+    by clearing the gate; a mode-less job is the legacy /run step chain,
+    which never touches pipeline_flow at all.
+    """
+    if job.get("mode"):
+        approve_review_gate(chat_id, job)
+    else:
+        run_next_stage(chat_id, job)
 
 
 def _maybe_send_x_sources_dm(job_dir):
@@ -2446,11 +2538,38 @@ def handle_callback(state, callback):
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
-            if job.get("mode") == job_state.MODE_REVIEW:
+            if expected_stage == "await_thumbnail_intake":
+                # A re-render (retry/rewind) can leave a thumbnail.* from an
+                # earlier pass on disk; 2_render.sh only checks for the
+                # file's presence, so skipping here must remove it or the
+                # stale image would get spliced back in against this answer.
+                job_id = job.get("job_id")
+                if job_id:
+                    for stale in work_dir(job_id).glob("thumbnail.*"):
+                        stale.unlink(missing_ok=True)
+            # Any job with a mode is pipeline_flow-driven (review or auto --
+            # auto only ever parks at thumbnail_intake); a mode-less job is
+            # the legacy /run step chain, which never touches pipeline_flow.
+            if job.get("mode"):
                 start_background_task(state, chat_id, job, "승인 후 진행",
                                       lambda: approve_review_gate(chat_id, job))
             else:
                 start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
+        elif data.startswith("thumbnail_yes:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            job_id = job.get("job_id")
+            if not job_id:
+                send_message(chat_id, "진행 중인 작업이 없습니다.")
+                return
+            job["thumbnail_target"] = str(work_dir(job_id) / "thumbnail.png")
+            send_message(
+                chat_id,
+                "썸네일로 쓸 이미지를 이 스레드에 첨부해 주세요. "
+                "도착하면 바로 렌더링을 이어서 진행합니다.",
+            )
         elif data.startswith("review_mode:"):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:
@@ -2794,6 +2913,12 @@ def handle_message(state, message):
         # of apply_edit_message: an uploaded image is never the answer to a
         # script.txt edit prompt.
         if apply_x_photo_message(chat_id, job, message):
+            save_state(state)
+            return
+        # The armed thumbnail intake needs the same carve-out, and for the
+        # same reason: it is parked (not busy) waiting for exactly this
+        # upload, so the busy gate below must not intercept it.
+        if apply_thumbnail_message(state, chat_id, job, message):
             save_state(state)
             return
         if is_busy(job) and not (

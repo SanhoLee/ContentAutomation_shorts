@@ -99,15 +99,24 @@ class ReviewOrchestrationTests(unittest.TestCase):
         argv, _ = self.bot.commands[0]
         self.assertEqual(argv[-2:], ["--topic-json", "/work/topic_plan.json"])
 
-    def test_approval_runs_to_the_final_gate_without_uploading(self):
+    def test_approval_stops_at_thumbnail_intake_before_render(self):
         po.run_review_pipeline(self.bot, 1, self.job)
+        result = po.approve_review_gate(self.bot, 1, self.job)
+        self.assertEqual(result.gate, "thumbnail_intake")
+        self.assertEqual(self.job["stage"], "await_thumbnail_intake")
+        self.assertNotIn("2_render.sh", self.bot.scripts_run)
+
+    def test_second_approval_runs_to_the_final_gate_without_uploading(self):
+        po.run_review_pipeline(self.bot, 1, self.job)
+        po.approve_review_gate(self.bot, 1, self.job)
         result = po.approve_review_gate(self.bot, 1, self.job)
         self.assertEqual(result.gate, "final_confirm")
         self.assertEqual(self.job["stage"], "await_final_confirm")
         self.assertNotIn("3_upload.sh", self.bot.scripts_run)
 
-    def test_second_approval_uploads_and_finishes(self):
+    def test_third_approval_uploads_and_finishes(self):
         po.run_review_pipeline(self.bot, 1, self.job)
+        po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         result = po.approve_review_gate(self.bot, 1, self.job)
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
@@ -115,11 +124,12 @@ class ReviewOrchestrationTests(unittest.TestCase):
         # x_post (no gate of its own) runs immediately after upload.
         self.assertEqual(self.bot.scripts_run[-2:], ["3_upload.sh", "x_post.sh"])
 
-    def test_the_human_sees_exactly_two_gates(self):
+    def test_the_human_sees_exactly_three_gates(self):
         po.run_review_pipeline(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
-        self.assertEqual(self.bot.gates, ["script_review", "final_confirm"])
+        po.approve_review_gate(self.bot, 1, self.job)
+        self.assertEqual(self.bot.gates, ["script_review", "thumbnail_intake", "final_confirm"])
 
     def test_failure_reports_the_stage_and_reason(self):
         self.bot.fail_stages = {"1_caption.sh"}
@@ -134,7 +144,7 @@ class ReviewOrchestrationTests(unittest.TestCase):
         job = {"job_id": "J2", "topic": "수면과 기억력"}
         bot = FakeBot(self._tmp.name)
         result = po.switch_to_review(bot, 1, job)
-        self.assertEqual(result.gate, "final_confirm")
+        self.assertEqual(result.gate, "thumbnail_intake")
         self.assertNotIn("0_script.sh", bot.scripts_run)
 
     def test_mode_is_persisted_so_another_process_can_resume(self):
@@ -147,7 +157,8 @@ class ReviewOrchestrationTests(unittest.TestCase):
     def test_render_reports_progress_rather_than_going_silent(self):
         # A 1080p render is long; no ticks reads as a hang.
         po.run_review_pipeline(self.bot, 1, self.job)
-        po.approve_review_gate(self.bot, 1, self.job)
+        po.approve_review_gate(self.bot, 1, self.job)  # clears script_review
+        po.approve_review_gate(self.bot, 1, self.job)  # clears thumbnail_intake, runs render
         self.assertTrue(self.bot.render_progress_started)
         self.assertIn("2_render.sh", self.bot.scripts_run)
 

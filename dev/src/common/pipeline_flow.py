@@ -86,7 +86,7 @@ STAGES = (
     Stage(
         name="broll",
         command=("sh/youtube/1_broll.sh",),
-        gates=("broll_review", "render_config"),
+        gates=("broll_review", "render_config", "thumbnail_intake"),
         guard="broll",
         # Re-searching only the failed scenes costs a fraction of the API
         # calls a full re-run would, which matters for an unattended retry.
@@ -120,8 +120,11 @@ STAGES_BY_NAME = {stage.name: stage for stage in STAGES}
 ALL_GATES = tuple(gate for stage in STAGES for gate in stage.gates)
 
 MODE_GATES = {
-    job_state.MODE_AUTO: frozenset(),
-    job_state.MODE_REVIEW: frozenset({"script_review", "final_confirm"}),
+    # Auto otherwise honours no gate, but the thumbnail hold is an explicit
+    # exception the operator asked for: even a fully unattended run stops
+    # here rather than shipping a video nobody had a chance to brand.
+    job_state.MODE_AUTO: frozenset({"thumbnail_intake"}),
+    job_state.MODE_REVIEW: frozenset({"script_review", "thumbnail_intake", "final_confirm"}),
     job_state.MODE_FULL_GATE: frozenset(ALL_GATES),
 }
 

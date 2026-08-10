@@ -45,17 +45,19 @@ def _photo_text(package: dict[str, Any], job_dir: Path) -> str:
     return _video_meta_title(job_dir)
 
 
-def normalize_thread_photo(source: Path, output_path: Path) -> Path:
-    """Re-shape an operator-supplied image into the thread's lead photo.
+def normalize_thread_photo(source: Path, output_path: Path, size=THREAD_PHOTO_SIZE) -> Path:
+    """Re-shape an operator-supplied image to `size` and re-encode as PNG.
 
-    Center-crops to THREAD_PHOTO_SIZE's 16:9 and re-encodes as PNG, so a
-    square AI image or a phone screenshot lands the way we chose rather
-    than however X's timeline decides to crop it.
+    Center-crops to the target aspect, so a square AI image or a phone
+    screenshot lands the way we chose rather than however the consumer
+    (X's timeline, the Shorts frame) decides to crop it. `size` defaults to
+    the thread lead photo's 16:9; the video-thumbnail intake reuses this
+    with a 1080x1920 portrait size instead of duplicating the crop math.
 
     Without Pillow the file is moved through untouched and its own path is
-    returned: X accepts JPEG/WebP fine, and a correctly-uploaded but
-    unshaped image beats no image at all. Raises only on filesystem
-    failure -- the caller reports that to the operator and keeps waiting.
+    returned: a correctly-uploaded but unshaped image beats no image at
+    all. Raises only on filesystem failure -- the caller reports that to
+    the operator and keeps waiting.
     """
     source, output_path = Path(source), Path(output_path)
     try:
@@ -66,7 +68,7 @@ def normalize_thread_photo(source: Path, output_path: Path) -> Path:
             source.replace(kept)
         return kept
 
-    target_w, target_h = THREAD_PHOTO_SIZE
+    target_w, target_h = size
     with Image.open(source) as image:
         image = image.convert("RGB")
         width, height = image.size
@@ -77,7 +79,7 @@ def normalize_thread_photo(source: Path, output_path: Path) -> Path:
             crop_w, crop_h = width, width * target_h // target_w
         left, top = (width - crop_w) // 2, (height - crop_h) // 2
         cropped = image.crop((left, top, left + crop_w, top + crop_h))
-        cropped.resize(THREAD_PHOTO_SIZE).save(output_path, format="PNG")
+        cropped.resize((target_w, target_h)).save(output_path, format="PNG")
     return output_path
 
 

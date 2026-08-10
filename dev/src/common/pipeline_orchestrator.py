@@ -28,6 +28,7 @@ from stage_guard import media_duration_seconds  # noqa: F401  (re-exported)
 # of its edit affordances (본문 수정 / 타이틀 수정) keep working unchanged.
 GATE_STAGES = {
     "script_review": "await_script_approval",
+    "thumbnail_intake": "await_thumbnail_intake",
     "final_confirm": "await_final_confirm",
 }
 
@@ -41,6 +42,7 @@ BOT_STAGE_TO_FLOW = {
     "await_caption_approval": "caption",
     "await_broll_approval": "broll",
     "await_render_config": "broll",
+    "await_thumbnail_intake": "broll",
     "await_render_approval": "render",
     "await_upload_meta_approval": "render",
     "await_final_confirm": "render",
@@ -384,8 +386,17 @@ def run_to_completion(ctx, chat_id, job, *, final_message=None, running_stage=No
         ctx.send_message(chat_id, final_message(job, default_text) if final_message else default_text)
         return result
 
-    # Unattended runs have no gate to fall back to, so a failure is an error.
-    # Raising keeps the bots' existing recovery prompts working unchanged.
+    if result.status == pipeline_flow.STATUS_GATE:
+        # Auto otherwise never parks, but thumbnail_intake is honoured even
+        # here (see pipeline_flow.MODE_GATES) -- this is not a failure, just
+        # the one thing auto still waits on a human for.
+        job["stage"] = GATE_STAGES.get(result.gate, result.gate)
+        ctx.send_gate(chat_id, job, result.gate)
+        return result
+
+    # Unattended runs have no other gate to fall back to, so a failure is an
+    # error. Raising keeps the bots' existing recovery prompts working
+    # unchanged.
     job["stage"] = start_stage
     job["last_error"] = result.reason
     raise RuntimeError(f"{result.stage} 단계에서 중단했습니다: {result.reason}")
@@ -482,6 +493,9 @@ def run_next_stage(ctx, chat_id, job, *, final_message=None):
         job["stage"] = "await_render_config"
         ctx.send_render_ready(chat_id, job)
     elif stage == "await_render_config":
+        job["stage"] = "await_thumbnail_intake"
+        ctx.send_thumbnail_prompt(chat_id, job_id)
+    elif stage == "await_thumbnail_intake":
         ctx.run_render(chat_id, job)
     elif stage == "await_render_approval":
         job["stage"] = "await_upload_meta_approval"

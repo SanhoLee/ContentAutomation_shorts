@@ -90,12 +90,16 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_thread"].gates, ())
         self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_post"].gates, ())
 
-    def test_review_mode_honours_exactly_two_gates(self):
+    def test_review_mode_honours_exactly_three_gates(self):
         gates = pipeline_flow.gates_for_mode(job_state.MODE_REVIEW)
-        self.assertEqual(gates, {"script_review", "final_confirm"})
+        self.assertEqual(gates, {"script_review", "thumbnail_intake", "final_confirm"})
 
-    def test_auto_mode_honours_no_gates(self):
-        self.assertEqual(pipeline_flow.gates_for_mode(job_state.MODE_AUTO), frozenset())
+    def test_auto_mode_honours_only_thumbnail_intake(self):
+        # Every other gate is skipped for unattended runs; thumbnail_intake is
+        # the one deliberate exception -- it still parks for a human reply.
+        self.assertEqual(
+            pipeline_flow.gates_for_mode(job_state.MODE_AUTO), {"thumbnail_intake"}
+        )
 
     def test_full_gate_mode_honours_every_gate(self):
         self.assertEqual(
@@ -122,8 +126,18 @@ class GraphTests(unittest.TestCase):
 
 
 class AutoModeTests(PipelineFlowTestCase):
-    def test_runs_every_stage_without_stopping(self):
+    def test_stops_only_at_thumbnail_intake(self):
         runner = FakeRunner()
+        result = self.advance(runner, job_state.MODE_AUTO)
+        self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
+        self.assertEqual(result.gate, "thumbnail_intake")
+        self.assertEqual(runner.stages, ["script", "scene_visuals", "x_thread", "tts",
+                                          "caption", "broll"])
+
+    def test_runs_every_stage_without_stopping_again_after_approval(self):
+        runner = FakeRunner()
+        self.advance(runner, job_state.MODE_AUTO)
+        pipeline_flow.approve(self.work_dir)
         result = self.advance(runner, job_state.MODE_AUTO)
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
         self.assertEqual(runner.stages, list(pipeline_flow.STAGE_NAMES))
@@ -144,23 +158,38 @@ class ReviewModeTests(PipelineFlowTestCase):
         self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
         self.assertEqual(runner.stages, ["script"])  # nothing new ran
 
-    def test_after_approval_runs_through_to_the_final_gate(self):
+    def test_after_approval_stops_at_thumbnail_intake_before_render(self):
         runner = FakeRunner()
         self.advance(runner, job_state.MODE_REVIEW)
         pipeline_flow.approve(self.work_dir)
         result = self.advance(runner, job_state.MODE_REVIEW)
         self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
-        self.assertEqual(result.gate, "final_confirm")
+        self.assertEqual(result.gate, "thumbnail_intake")
         # scene_visuals and x_thread run right after the script gate (neither has
         # a gate of its own), so both see the approved text and the thread draft
-        # already exists by the time final_confirm shows it alongside the video.
+        # already exists by the time thumbnail_intake asks about the thumbnail.
+        # render has not run yet -- thumbnail_intake sits before it in broll's
+        # gate order, so the operator's yes/no can still affect the render.
         self.assertEqual(
             runner.stages,
-            ["script", "scene_visuals", "x_thread", "tts", "caption", "broll", "render"],
+            ["script", "scene_visuals", "x_thread", "tts", "caption", "broll"],
         )
+
+    def test_after_thumbnail_intake_runs_through_to_the_final_gate(self):
+        runner = FakeRunner()
+        self.advance(runner, job_state.MODE_REVIEW)
+        pipeline_flow.approve(self.work_dir)
+        self.advance(runner, job_state.MODE_REVIEW)
+        pipeline_flow.approve(self.work_dir)
+        result = self.advance(runner, job_state.MODE_REVIEW)
+        self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
+        self.assertEqual(result.gate, "final_confirm")
+        self.assertIn("render", runner.stages)
 
     def test_upload_only_happens_after_the_final_confirmation(self):
         runner = FakeRunner()
+        self.advance(runner, job_state.MODE_REVIEW)
+        pipeline_flow.approve(self.work_dir)
         self.advance(runner, job_state.MODE_REVIEW)
         pipeline_flow.approve(self.work_dir)
         self.advance(runner, job_state.MODE_REVIEW)
@@ -172,7 +201,7 @@ class ReviewModeTests(PipelineFlowTestCase):
         # x_post (no gate) runs immediately after upload in the same pass.
         self.assertEqual(runner.stages[-2:], ["upload", "x_post"])
 
-    def test_a_human_intervenes_exactly_twice(self):
+    def test_a_human_intervenes_exactly_three_times(self):
         runner = FakeRunner()
         gates = []
         result = self.advance(runner, job_state.MODE_REVIEW)
@@ -180,7 +209,7 @@ class ReviewModeTests(PipelineFlowTestCase):
             gates.append(result.gate)
             pipeline_flow.approve(self.work_dir)
             result = self.advance(runner, job_state.MODE_REVIEW)
-        self.assertEqual(gates, ["script_review", "final_confirm"])
+        self.assertEqual(gates, ["script_review", "thumbnail_intake", "final_confirm"])
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
 
 
@@ -196,7 +225,7 @@ class FullGateModeTests(PipelineFlowTestCase):
         self.assertEqual(
             gates,
             ["script_review", "tts_review", "caption_review",
-             "broll_review", "render_config", "final_confirm"],
+             "broll_review", "render_config", "thumbnail_intake", "final_confirm"],
         )
         self.assertEqual(runner.stages, list(pipeline_flow.STAGE_NAMES))
 
@@ -253,6 +282,9 @@ class GuardRetryTests(PipelineFlowTestCase):
         pipeline_flow.stage_guard.check = flaky
         runner = FakeRunner()
         result = self.advance(runner, job_state.MODE_AUTO)
+        self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
+        pipeline_flow.approve(self.work_dir)
+        result = self.advance(runner, job_state.MODE_AUTO)
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
         self.assertEqual(runner.stages.count("tts"), 2)
 
@@ -280,13 +312,14 @@ class ResumeTests(PipelineFlowTestCase):
         pipeline_flow.approve(self.work_dir)
         later_runner = FakeRunner()
         result = pipeline_flow.advance(self.work_dir, BASE_DIR, later_runner)
-        self.assertEqual(result.gate, "final_confirm")
+        self.assertEqual(result.gate, "thumbnail_intake")
         self.assertNotIn("script", later_runner.stages)
 
     def test_mode_defaults_to_the_stored_one(self):
         job_state.set_mode(self.work_dir, job_state.MODE_AUTO)
         result = pipeline_flow.advance(self.work_dir, BASE_DIR, FakeRunner())
-        self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
+        self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
+        self.assertEqual(result.gate, "thumbnail_intake")
 
     def test_rewind_reruns_the_named_stage(self):
         runner = FakeRunner()

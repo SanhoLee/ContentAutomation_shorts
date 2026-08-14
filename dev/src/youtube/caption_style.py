@@ -279,10 +279,12 @@ def main():
     if args.margin_h:
         style["MarginL"] = str(args.margin_h)
         style["MarginR"] = str(args.margin_h)
-    if args.offset_x:
+    # A zone-mode preset's positioning is intentional; a stale offset override
+    # left over from a center-offset style must not silently clobber it.
+    if args.offset_x and style.get("PositionMode", "").strip().lower() != "zone":
         style["PositionMode"] = "center-offset"
         style["OffsetX"] = str(args.offset_x)
-    if args.offset_y:
+    if args.offset_y and style.get("PositionMode", "").strip().lower() != "zone":
         style["PositionMode"] = "center-offset"
         style["OffsetY"] = str(args.offset_y)
     if args.pos_x:

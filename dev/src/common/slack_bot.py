@@ -1157,6 +1157,35 @@ def send_broll(chat_id, job_id):
         send_message(chat_id, f"broll.mp4를 찾지 못했습니다: {path}")
 
 
+# Quick-pick buttons on the render-ready screen. Presets not listed here
+# render with their own preset defaults (font_size/margin_v untouched) --
+# only these two have been hand-tuned to look right in the framed layout.
+_RENDER_QUICK_STYLE_LABELS = {
+    "default": "기본 스타일",
+    "center-outline": "중앙 외곽선",
+    "center-yellow": "중앙 노랑",
+    "center-white": "중앙 하양",
+    "frame-bottom-caption": "프레임 하단",
+}
+_RENDER_QUICK_STYLE_OVERRIDES = {
+    "default": ("62", "60"),
+    "center-yellow": ("72", "0"),
+}
+
+
+def _render_quick_style_buttons(stage):
+    rows = []
+    styles = [choice_value for _, choice_value in CONFIG_SETTINGS["style"].get("choices", ())]
+    for index in range(0, len(styles), 2):
+        row = []
+        for style_id in styles[index:index + 2]:
+            label = _RENDER_QUICK_STYLE_LABELS.get(style_id, style_id)
+            font_size, margin_v = _RENDER_QUICK_STYLE_OVERRIDES.get(style_id, ("-", "-"))
+            row.append(button(label, f"render:{stage}:{font_size}:{margin_v}:{style_id}"))
+        rows.append(row)
+    return rows
+
+
 def send_render_ready(chat_id, job):
     font_size = job.get("caption_font_size")
     margin_v = job.get("caption_margin_v")
@@ -1179,8 +1208,7 @@ def send_render_ready(chat_id, job):
         chat_id,
         workflow_status_text(job, msg),
         [
-            [button("기본 스타일",  "render:await_render_config:62:60:default"),
-             button("중앙 노랑",  "render:await_render_config:72:0:center-yellow")],
+            *_render_quick_style_buttons("await_render_config"),
             [button("← 이전 단계", "back:await_render_config:await_broll_approval"),
              button("현재 설정으로 렌더 ▶", "approve:await_render_config")],
             [button("🚀 여기서부터 끝까지", "auto_finish:await_render_config"),
@@ -2650,8 +2678,14 @@ def handle_callback(state, callback):
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
                 return
-            job["caption_font_size"] = positive_int(font_size, "font_size")
-            job["caption_margin_v"] = positive_int(margin_v, "margin_v")
+            if font_size == "-":
+                job.pop("caption_font_size", None)
+            else:
+                job["caption_font_size"] = positive_int(font_size, "font_size")
+            if margin_v == "-":
+                job.pop("caption_margin_v", None)
+            else:
+                job["caption_margin_v"] = positive_int(margin_v, "margin_v")
             if caption_style:
                 job["caption_style"] = safe_caption_style(caption_style)
             start_background_task(state, chat_id, job, "렌더링", lambda: run_render(chat_id, job))

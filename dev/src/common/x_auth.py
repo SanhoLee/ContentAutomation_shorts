@@ -121,15 +121,27 @@ def get_valid_access_token(*, token_file: str | Path | None = None) -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="X OAuth 2.0 토큰 최초 등록 (bootstrap)")
-    parser.add_argument("--access-token", required=True)
-    parser.add_argument("--refresh-token", required=True)
+    parser = argparse.ArgumentParser(description="X OAuth 2.0 토큰 최초 등록 (bootstrap) / 주기적 갱신")
+    parser.add_argument("--access-token")
+    parser.add_argument("--refresh-token")
     parser.add_argument("--expires-in", type=int, default=DEFAULT_EXPIRES_IN_SEC, help="초 단위, 기본 2시간")
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--keepalive", action="store_true",
+        help="포스팅 여부와 무관하게 저장된 토큰을 갱신(cron용). refresh_token이 X 쪽에서 "
+        "유휴 폐기되기 전에 주기적으로 호출해 살려둔다.",
+    )
+    args = parser.parse_args(argv)
+    if not args.keepalive and (not args.access_token or not args.refresh_token):
+        parser.error("--access-token/--refresh-token이 필요합니다 (최초 등록) 또는 --keepalive를 쓰세요")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.keepalive:
+        get_valid_access_token()
+        print("X 토큰 갱신(keepalive) 완료")
+        return 0
     path = bootstrap(args.access_token, args.refresh_token, expires_in=args.expires_in)
     print(f"X 토큰 저장 완료: {path}")
     return 0

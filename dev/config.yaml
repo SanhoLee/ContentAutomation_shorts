@@ -41,7 +41,7 @@ dev:
   CHARS_PER_SEC: 4.5
   CAPTION_FONT_SIZE: 72
   CAPTION_MARGIN_V: 60
-  CAPTION_STYLE: "center-yellow"
+  CAPTION_STYLE: "frame-bottom-caption"
   FRAME_MODE: "framed"
   FRAME_TOP_STYLE_FILE: "${BASE_DIR}/frame_top_styles.yaml"
   FRAME_BOTTOM_STYLE_FILE: "${BASE_DIR}/frame_bottom_styles.yaml"

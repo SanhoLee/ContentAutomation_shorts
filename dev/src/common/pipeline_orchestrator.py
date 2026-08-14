@@ -119,6 +119,7 @@ _ENV_KEYS = {
     "frame_top_pct": "FRAME_TOP_PCT",
     "frame_bottom_pct": "FRAME_BOTTOM_PCT",
     "frame_bottom_channel_name": "FRAME_BOTTOM_CHANNEL_NAME",
+    "channel_style": "CHANNEL_STYLE",
     "frame_header_text": "FRAME_HEADER_TEXT",
     "tts_voice": "TTS_VOICE",
     "youtube_feedback_strictness": "YOUTUBE_FEEDBACK_STRICTNESS",

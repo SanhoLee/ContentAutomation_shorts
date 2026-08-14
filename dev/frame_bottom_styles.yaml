@@ -3,14 +3,3 @@ presets:
   default:
     height_pct: 27.00
     background: black
-    channel: "브레인피프티"
-    font: Noto Sans CJK KR
-    font_style: Bold
-    color: white
-    size: 60
-    # 하단 프레임 시작점에서 채널명까지의 거리(px)
-    top_margin_px: 20
-
-  minimal:
-    extends: default
-    channel: ""

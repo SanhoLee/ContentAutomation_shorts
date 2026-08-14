@@ -1,0 +1,22 @@
+# Channel-name / watermark placement presets (ffmpeg drawtext).
+# 정렬 방식은 caption_styles.yaml과 동일한 Zone/XPct/VAlign/DistancePct.
+presets:
+  default:
+    FontName: Noto Sans CJK KR
+    FontStyle: Bold
+    FontSize: 60
+    Color: white
+    Zone: frame_top
+    XPct: 50
+    VAlign: top
+    DistancePct: 10
+
+  watermark:
+    extends: default
+    FontSize: 32
+    Color: white@0.35
+    FontStyle: ""
+    Zone: broll
+    XPct: 92
+    VAlign: bottom
+    DistancePct: 4

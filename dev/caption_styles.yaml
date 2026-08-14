@@ -46,7 +46,7 @@ presets:
     PositionMode: zone
     Zone: frame_bottom
     XPct: 50
-    VAlign: bottom
-    DistancePct: 15
+    VAlign: top
+    DistancePct: 2
 
   

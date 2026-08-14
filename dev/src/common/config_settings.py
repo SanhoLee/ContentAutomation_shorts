@@ -150,7 +150,7 @@ def build_config_settings():
     default_caption_font_size = os.environ.get("SLACK_DEFAULT_CAPTION_FONT_SIZE", "62")
     default_caption_margin_v = os.environ.get("SLACK_DEFAULT_CAPTION_MARGIN_V", "60")
     default_caption_margin_h = os.environ.get("SLACK_DEFAULT_CAPTION_MARGIN_H", "10")
-    default_caption_style = os.environ.get("SLACK_DEFAULT_CAPTION_STYLE", os.environ.get("CAPTION_STYLE", "default"))
+    default_caption_style = os.environ.get("SLACK_DEFAULT_CAPTION_STYLE", os.environ.get("CAPTION_STYLE", "frame-bottom-caption"))
     default_web_research = _env_bool(os.environ.get("SLACK_DEFAULT_WEB_RESEARCH", "true"))
 
     settings = {}
@@ -172,13 +172,14 @@ def build_config_settings():
         "style": {"category": "caption", "label": "자막 스타일", "job_key": "caption_style", "env": "CAPTION_STYLE", "default": default_caption_style, "kind": "style", "choices": tuple((style, style) for style in ("default", "center-outline", "center-yellow", "center-white", "frame-bottom-caption"))},
         "offset_x": {"category": "caption", "label": "가로 위치 보정 (center 계열 전용)", "job_key": "caption_offset_x", "env": "CAPTION_OFFSET_X", "default": "0", "kind": "signed_int"},
         "offset_y": {"category": "caption", "label": "세로 위치 보정 (center 계열 전용)", "job_key": "caption_offset_y", "env": "CAPTION_OFFSET_Y", "default": "0", "kind": "signed_int"},
-        "frame": {"category": "frame", "label": "프레임 모드", "job_key": "frame_mode", "env": "FRAME_MODE", "default": "full", "kind": "choice", "choices": (("전체 화면", "full"), ("상하 프레임", "framed"))},
+        "frame": {"category": "frame", "label": "프레임 모드", "job_key": "frame_mode", "env": "FRAME_MODE", "default": "framed", "kind": "choice", "choices": (("전체 화면", "full"), ("상하 프레임", "framed"))},
         "broll_fit": {"category": "frame", "label": "B-roll 맞춤", "job_key": "broll_fit_mode", "env": "BROLL_FIT_MODE", "default": "cover", "kind": "choice", "choices": (("채우기", "cover"), ("원본 유지", "contain"), ("블러 여백", "blur-contain"))},
         "top_preset": {"category": "frame", "label": "상단 프리셋", "job_key": "frame_top_preset", "env": "FRAME_TOP_PRESET", "default": "default", "kind": "style", "choices": (("default", "default"), ("brain50", "brain50"))},
-        "bottom_preset": {"category": "frame", "label": "하단 프리셋", "job_key": "frame_bottom_preset", "env": "FRAME_BOTTOM_PRESET", "default": "default", "kind": "style", "choices": (("default", "default"), ("minimal", "minimal"))},
+        "bottom_preset": {"category": "frame", "label": "하단 프리셋", "job_key": "frame_bottom_preset", "env": "FRAME_BOTTOM_PRESET", "default": "default", "kind": "style", "choices": (("default", "default"),)},
         "top_pct": {"category": "frame", "label": "상단 높이(%)", "job_key": "frame_top_pct", "env": "FRAME_TOP_PCT", "default": "preset", "kind": "positive_number"},
         "bottom_pct": {"category": "frame", "label": "하단 높이(%)", "job_key": "frame_bottom_pct", "env": "FRAME_BOTTOM_PCT", "default": "preset", "kind": "positive_number"},
         "channel": {"category": "frame", "label": "하단 채널명", "job_key": "frame_bottom_channel_name", "env": "FRAME_BOTTOM_CHANNEL_NAME", "default": "브레인피프티", "kind": "text"},
+        "channel_style": {"category": "frame", "label": "채널명 위치/스타일", "job_key": "channel_style", "env": "CHANNEL_STYLE", "default": "default", "kind": "style", "choices": (("default", "default"), ("watermark", "watermark"))},
         "header": {"category": "frame", "label": "상단 제목", "job_key": "frame_header_text", "env": "FRAME_HEADER_TEXT", "default": "자동 생성", "kind": "text"},
     })
     return settings

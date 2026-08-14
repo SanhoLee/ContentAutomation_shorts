@@ -8,7 +8,7 @@ DURATION_OVERRIDE=""
 FONT_SIZE="${CAPTION_FONT_SIZE:-22}"
 MARGIN_V="${CAPTION_MARGIN_V:-60}"
 MARGIN_H="${CAPTION_MARGIN_H:-10}"  # 좌우 마진
-CAPTION_STYLE_NAME="${CAPTION_STYLE:-default}"
+CAPTION_STYLE_NAME="${CAPTION_STYLE:-frame-bottom-caption}"
 CAPTION_STYLE_FILE="${CAPTION_STYLE_FILE:-$BASE_DIR/caption_styles.yaml}"
 FONT_SIZE_EXPLICIT=0
 MARGIN_V_EXPLICIT=0
@@ -21,7 +21,7 @@ CAPTION_ZONE="${CAPTION_ZONE:-}"
 CAPTION_X_PCT="${CAPTION_X_PCT:-}"
 CAPTION_VALIGN="${CAPTION_VALIGN:-}"
 CAPTION_DISTANCE_PCT="${CAPTION_DISTANCE_PCT:-}"
-FRAME_MODE="${FRAME_MODE:-full}"
+FRAME_MODE="${FRAME_MODE:-framed}"
 FRAME_TOP_STYLE_FILE="${FRAME_TOP_STYLE_FILE:-$BASE_DIR/frame_top_styles.yaml}"
 FRAME_BOTTOM_STYLE_FILE="${FRAME_BOTTOM_STYLE_FILE:-$BASE_DIR/frame_bottom_styles.yaml}"
 FRAME_TOP_PRESET="${FRAME_TOP_PRESET:-default}"
@@ -202,9 +202,6 @@ PY
     if [ -n "$FRAME_BOTTOM_PCT" ]; then
         FRAME_ARGS+=(--bottom-height-pct "$FRAME_BOTTOM_PCT")
     fi
-    if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then
-        FRAME_ARGS+=(--channel-name "$FRAME_BOTTOM_CHANNEL_NAME")
-    fi
     eval "$(python3 "$SRC_DIR/youtube/frame_style.py" "${FRAME_ARGS[@]}" --shell)"
 else
     FRAME_TOP_H=0
@@ -256,6 +253,21 @@ fi
 CAPTION_ASS_FILE="$WORK_DIR/subs_styled.ass"
 CAPTION_STYLE_JSON="$(python3 "$SRC_DIR/youtube/caption_style.py" "${STYLE_ARGS[@]}" --srt-in "$WORK_DIR/subs.srt" --ass-out "$CAPTION_ASS_FILE" --json)"
 
+# 채널명/워터마크도 캡션과 동일한 zone(frame_top/frame_bottom/broll) 배치를 쓰므로
+# FRAME_TOP_H/FRAME_BOTTOM_H가 정해진 뒤, framed/full 분기와 무관하게 한 번만 계산한다.
+CHANNEL_STYLE_NAME="${CHANNEL_STYLE:-default}"
+CHANNEL_STYLE_FILE="${CHANNEL_STYLE_FILE:-$BASE_DIR/channel_styles.yaml}"
+CHANNEL_ARGS=(
+    --preset-file "$CHANNEL_STYLE_FILE"
+    --style "$CHANNEL_STYLE_NAME"
+    --zone-top-h "$FRAME_TOP_H"
+    --zone-bottom-h "$FRAME_BOTTOM_H"
+)
+if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then
+    CHANNEL_ARGS+=(--text "$FRAME_BOTTOM_CHANNEL_NAME")
+fi
+eval "$(python3 "$SRC_DIR/youtube/channel_style.py" "${CHANNEL_ARGS[@]}" --shell)"
+
 echo "자막 설정: Style=${CAPTION_STYLE_NAME}, FontSize=${FONT_SIZE}, MarginV=${MARGIN_V}, MarginH=${MARGIN_H}, OffsetX=${OFFSET_X:-preset}, OffsetY=${OFFSET_Y:-preset}, PosX=${POS_X:-preset}, PosY=${POS_Y:-preset}"
 echo "프레임 설정: Mode=${FRAME_MODE}, TopPreset=${FRAME_TOP_PRESET}, BottomPreset=${FRAME_BOTTOM_PRESET}, TopMarginPct=${FRAME_TOP_MARGIN_PCT:-preset}, TopMarginXPct=${FRAME_TOP_MARGIN_X_PCT:-preset}, BrollFit=${BROLL_FIT_MODE}"
 
@@ -281,6 +293,14 @@ drawtext_font_option() {
         printf ":font=%s" "$font_pattern"
     fi
 }
+
+CHANNEL_DRAWTEXT=""
+if [ -n "$CHANNEL_TEXT" ]; then
+    CHANNEL_TEXT_FILE="$WORK_DIR/channel_text.txt"
+    printf "%s" "$CHANNEL_TEXT" > "$CHANNEL_TEXT_FILE"
+    CHANNEL_FONT_OPTION="$(drawtext_font_option "$CHANNEL_FONT_NAME" "$CHANNEL_FONT_FILE" "$CHANNEL_FONT_STYLE")"
+    CHANNEL_DRAWTEXT="drawtext=textfile=${CHANNEL_TEXT_FILE}${CHANNEL_FONT_OPTION}:fontcolor=${CHANNEL_COLOR}:fontsize=${CHANNEL_FONT_SIZE}:x=${CHANNEL_X_EXPR}:y=${CHANNEL_Y_EXPR}"
+fi
 
 if [ "$FRAME_MODE" = "framed" ]; then
     CONTENT_W=1080
@@ -310,7 +330,6 @@ if [ "$FRAME_MODE" = "framed" ]; then
 
     FILTER_COMPLEX="color=c=${FRAME_TOP_BACKGROUND}:s=1080x1920:d=${DURATION}[base];[base]drawbox=x=0:y=${BOTTOM_Y}:w=1080:h=${FRAME_BOTTOM_H}:color=${FRAME_BOTTOM_BACKGROUND}:t=fill[frame_base];${BROLL_FILTER}[frame_base][broll]overlay=0:${CONTENT_Y}[framed]"
     TOP_FONT_OPTION="$(drawtext_font_option "$FRAME_TOP_FONT_NAME" "$FRAME_TOP_FONT_FILE" "$FRAME_TOP_FONT_STYLE")"
-    BOTTOM_FONT_OPTION="$(drawtext_font_option "$FRAME_BOTTOM_FONT" "$FRAME_BOTTOM_FONT_FILE" "$FRAME_BOTTOM_FONT_STYLE")"
     CURRENT_LABEL="[framed]"
     if [ -n "$FRAME_TOP_TITLE" ]; then
         TOP_TITLE_FILE="$WORK_DIR/frame_top_title.txt"
@@ -324,11 +343,9 @@ if [ "$FRAME_MODE" = "framed" ]; then
         FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${TOP_SUBTITLE_FILE}${TOP_FONT_OPTION}:fontcolor=${FRAME_TOP_SUBTITLE_COLOR}:fontsize=${FRAME_TOP_SUBTITLE_SIZE}:x=${FRAME_TOP_TEXT_X}:y=${FRAME_TOP_SUBTITLE_Y}[with_top_subtitle]"
         CURRENT_LABEL="[with_top_subtitle]"
     fi
-    if [ -n "$FRAME_BOTTOM_CHANNEL" ]; then
-        BOTTOM_CHANNEL_FILE="$WORK_DIR/frame_bottom_channel.txt"
-        printf "%s" "$FRAME_BOTTOM_CHANNEL" > "$BOTTOM_CHANNEL_FILE"
-        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}drawtext=textfile=${BOTTOM_CHANNEL_FILE}${BOTTOM_FONT_OPTION}:fontcolor=${FRAME_BOTTOM_COLOR}:fontsize=${FRAME_BOTTOM_SIZE}:x=(w-text_w)/2:y=${FRAME_BOTTOM_Y}[with_bottom_channel]"
-        CURRENT_LABEL="[with_bottom_channel]"
+    if [ -n "$CHANNEL_DRAWTEXT" ]; then
+        FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}${CHANNEL_DRAWTEXT}[with_channel]"
+        CURRENT_LABEL="[with_channel]"
     fi
     if [ "$CURRENT_LABEL" != "[framed]" ]; then
         FILTER_COMPLEX="${FILTER_COMPLEX};${CURRENT_LABEL}subtitles=${CAPTION_ASS_FILE}[v]"
@@ -336,7 +353,11 @@ if [ "$FRAME_MODE" = "framed" ]; then
         FILTER_COMPLEX="${FILTER_COMPLEX};[framed]subtitles=${CAPTION_ASS_FILE}[v]"
     fi
 else
-    FILTER_COMPLEX="[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles=${CAPTION_ASS_FILE}[v]"
+    FILTER_COMPLEX="[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+    if [ -n "$CHANNEL_DRAWTEXT" ]; then
+        FILTER_COMPLEX="${FILTER_COMPLEX},${CHANNEL_DRAWTEXT}"
+    fi
+    FILTER_COMPLEX="${FILTER_COMPLEX},subtitles=${CAPTION_ASS_FILE}[v]"
 fi
 
 ffmpeg -y -nostats -progress "$RENDER_PROGRESS_FILE" \

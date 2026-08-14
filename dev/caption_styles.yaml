@@ -40,3 +40,13 @@ presets:
     PrimaryColour: "&H00FFFFFF"
     Outline: 6
     Shadow: 2
+
+  frame-bottom-caption:
+    extends: center-outline
+    PositionMode: zone
+    Zone: frame_bottom
+    XPct: 50
+    VAlign: bottom
+    DistancePct: 15
+
+  

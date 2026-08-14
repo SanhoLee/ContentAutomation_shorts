@@ -18,7 +18,10 @@ ASS_STYLE_FIELDS = [
     "Bold", "Italic", "Underline", "StrikeOut", "ScaleX", "ScaleY", "Spacing", "Angle",
     "BorderStyle", "Outline", "Shadow", "Alignment", "MarginL", "MarginR", "MarginV", "Encoding",
 ]
-POSITION_KEYS = {"PositionMode", "PosX", "PosY", "OffsetX", "OffsetY", "Anchor", "PlayResX", "PlayResY"}
+POSITION_KEYS = {
+    "PositionMode", "PosX", "PosY", "OffsetX", "OffsetY", "Anchor", "PlayResX", "PlayResY",
+    "Zone", "XPct", "VAlign", "DistancePct", "ZoneTopH", "ZoneBottomH",
+}
 ALIASES = {
     "font_name": "FontName", "font_size": "FontSize", "primary_colour": "PrimaryColour",
     "secondary_colour": "SecondaryColour", "outline_colour": "OutlineColour", "back_colour": "BackColour",
@@ -26,6 +29,8 @@ ALIASES = {
     "margin_l": "MarginL", "margin_r": "MarginR", "margin_v": "MarginV", "wrap_style": "WrapStyle",
     "position_mode": "PositionMode", "pos_x": "PosX", "pos_y": "PosY", "offset_x": "OffsetX",
     "offset_y": "OffsetY", "anchor": "Anchor", "play_res_x": "PlayResX", "play_res_y": "PlayResY",
+    "zone": "Zone", "x_pct": "XPct", "valign": "VAlign", "distance_pct": "DistancePct",
+    "zone_top_h": "ZoneTopH", "zone_bottom_h": "ZoneBottomH",
 }
 
 
@@ -104,12 +109,50 @@ def _int_value(style: dict, key: str, default: int) -> int:
         raise SystemExit(f"{key} must be numeric: {style.get(key)}") from None
 
 
+def zone_bounds(style: dict) -> tuple:
+    """(top_y, bottom_y) in canvas pixels for the named zone, given the framed-mode bar heights."""
+    zone = str(style.get("Zone", "broll")).strip().lower()
+    play_y = _int_value(style, "PlayResY", VIDEO_HEIGHT)
+    top_h = _int_value(style, "ZoneTopH", 0)
+    bottom_h = _int_value(style, "ZoneBottomH", 0)
+    if zone == "frame_top":
+        top, bottom = 0, top_h
+    elif zone == "frame_bottom":
+        top, bottom = play_y - bottom_h, play_y
+    elif zone == "broll":
+        top, bottom = top_h, play_y - bottom_h
+    else:
+        raise SystemExit(f"unknown Zone: {style.get('Zone')} (expected frame_top, frame_bottom, or broll)")
+    if bottom - top <= 0:
+        raise SystemExit(
+            f"Zone '{zone}' has no height (top={top}, bottom={bottom}); "
+            "frame_top/frame_bottom require FRAME_MODE=framed with a nonzero bar height"
+        )
+    return top, bottom
+
+
 def position_override(style: dict) -> str:
     mode = str(style.get("PositionMode", "")).strip().lower()
     if mode in ("", "alignment", "margin"):
         return ""
     play_x = _int_value(style, "PlayResX", VIDEO_WIDTH)
     play_y = _int_value(style, "PlayResY", VIDEO_HEIGHT)
+    if mode == "zone":
+        zone_top, zone_bottom = zone_bounds(style)
+        zone_h = zone_bottom - zone_top
+        x_pct = _int_value(style, "XPct", 50)
+        x = play_x * x_pct // 100
+        valign = str(style.get("VAlign", "bottom")).strip().lower()
+        distance_pct = _int_value(style, "DistancePct", 0)
+        if valign == "top":
+            anchor = 8
+            y = zone_top + zone_h * distance_pct // 100
+        elif valign == "bottom":
+            anchor = 2
+            y = zone_bottom - zone_h * distance_pct // 100
+        else:
+            raise SystemExit(f"unknown VAlign: {style.get('VAlign')} (expected top or bottom)")
+        return f"{{\\an{anchor}\\pos({x},{y})}}"
     anchor = _int_value(style, "Anchor", _int_value(style, "Alignment", 5))
     if mode in ("absolute", "pos", "position"):
         x = _int_value(style, "PosX", play_x // 2)
@@ -216,6 +259,12 @@ def main():
     parser.add_argument("--offset-y")
     parser.add_argument("--pos-x")
     parser.add_argument("--pos-y")
+    parser.add_argument("--zone-top-h", default="0")
+    parser.add_argument("--zone-bottom-h", default="0")
+    parser.add_argument("--zone")
+    parser.add_argument("--x-pct")
+    parser.add_argument("--valign")
+    parser.add_argument("--distance-pct")
     parser.add_argument("--srt-in")
     parser.add_argument("--ass-out")
     parser.add_argument("--json", action="store_true")
@@ -242,6 +291,20 @@ def main():
     if args.pos_y:
         style["PositionMode"] = "absolute"
         style["PosY"] = str(args.pos_y)
+    style["ZoneTopH"] = str(args.zone_top_h)
+    style["ZoneBottomH"] = str(args.zone_bottom_h)
+    if args.zone:
+        style["PositionMode"] = "zone"
+        style["Zone"] = str(args.zone)
+    if args.x_pct:
+        style["PositionMode"] = "zone"
+        style["XPct"] = str(args.x_pct)
+    if args.valign:
+        style["PositionMode"] = "zone"
+        style["VAlign"] = str(args.valign)
+    if args.distance_pct:
+        style["PositionMode"] = "zone"
+        style["DistancePct"] = str(args.distance_pct)
 
     force_style = build_force_style(style)
     position = position_override(style)

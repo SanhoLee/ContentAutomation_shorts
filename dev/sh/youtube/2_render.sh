@@ -17,6 +17,10 @@ OFFSET_X="${CAPTION_OFFSET_X:-}"
 OFFSET_Y="${CAPTION_OFFSET_Y:-}"
 POS_X=""
 POS_Y=""
+CAPTION_ZONE="${CAPTION_ZONE:-}"
+CAPTION_X_PCT="${CAPTION_X_PCT:-}"
+CAPTION_VALIGN="${CAPTION_VALIGN:-}"
+CAPTION_DISTANCE_PCT="${CAPTION_DISTANCE_PCT:-}"
 FRAME_MODE="${FRAME_MODE:-full}"
 FRAME_TOP_STYLE_FILE="${FRAME_TOP_STYLE_FILE:-$BASE_DIR/frame_top_styles.yaml}"
 FRAME_BOTTOM_STYLE_FILE="${FRAME_BOTTOM_STYLE_FILE:-$BASE_DIR/frame_bottom_styles.yaml}"
@@ -66,6 +70,22 @@ while [ "$#" -gt 0 ]; do
             ;;
         --pos-y)
             POS_Y="$2"
+            shift 2
+            ;;
+        --zone)
+            CAPTION_ZONE="$2"
+            shift 2
+            ;;
+        --x-pct)
+            CAPTION_X_PCT="$2"
+            shift 2
+            ;;
+        --valign)
+            CAPTION_VALIGN="$2"
+            shift 2
+            ;;
+        --distance-pct)
+            CAPTION_DISTANCE_PCT="$2"
             shift 2
             ;;
         --frame-mode|--frame)
@@ -141,10 +161,74 @@ if [ -n "$DURATION_OVERRIDE" ]; then
     echo "테스트 모드: ${DURATION}초만 렌더링"
 fi
 
+# 캡션 zone(frame_top/frame_bottom/broll) 좌표 계산에 프레임 바 높이가 필요하므로,
+# frame_style.py를 caption_style.py보다 먼저 실행해 FRAME_TOP_H/FRAME_BOTTOM_H를 확보한다.
+if [ "$FRAME_MODE" = "framed" ]; then
+    FRAME_HEADER_JSON="$WORK_DIR/frame_header.json"
+    if [ -f "$FRAME_HEADER_JSON" ] && { [ -z "$FRAME_TOP_TITLE" ] || [ -z "$FRAME_TOP_SUBTITLE" ]; }; then
+        FRAME_HEADER_EXPORTS="$(FRAME_HEADER_JSON="$FRAME_HEADER_JSON" python3 - <<'PY'
+import json, os, shlex
+with open(os.environ["FRAME_HEADER_JSON"], "r", encoding="utf-8") as f:
+    data = json.load(f)
+for env_key, json_key in (("FRAME_TOP_TITLE", "title"), ("FRAME_TOP_SUBTITLE", "subtitle")):
+    value = str(data.get(json_key, "")).strip()
+    if value:
+        print(f"export {env_key}={shlex.quote(value)}")
+PY
+)"
+        eval "$FRAME_HEADER_EXPORTS"
+    fi
+    FRAME_ARGS=(
+        --top-file "$FRAME_TOP_STYLE_FILE"
+        --top-preset "$FRAME_TOP_PRESET"
+        --bottom-file "$FRAME_BOTTOM_STYLE_FILE"
+        --bottom-preset "$FRAME_BOTTOM_PRESET"
+    )
+    if [ -n "$FRAME_TOP_TITLE" ]; then
+        FRAME_ARGS+=(--top-title "$FRAME_TOP_TITLE")
+    fi
+    if [ -n "$FRAME_TOP_SUBTITLE" ]; then
+        FRAME_ARGS+=(--top-subtitle "$FRAME_TOP_SUBTITLE")
+    fi
+    if [ -n "$FRAME_TOP_PCT" ]; then
+        FRAME_ARGS+=(--top-height-pct "$FRAME_TOP_PCT")
+    fi
+    if [ -n "$FRAME_TOP_MARGIN_PCT" ]; then
+        FRAME_ARGS+=(--top-margin-pct "$FRAME_TOP_MARGIN_PCT")
+    fi
+    if [ -n "$FRAME_TOP_MARGIN_X_PCT" ]; then
+        FRAME_ARGS+=(--top-margin-x-pct "$FRAME_TOP_MARGIN_X_PCT")
+    fi
+    if [ -n "$FRAME_BOTTOM_PCT" ]; then
+        FRAME_ARGS+=(--bottom-height-pct "$FRAME_BOTTOM_PCT")
+    fi
+    if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then
+        FRAME_ARGS+=(--channel-name "$FRAME_BOTTOM_CHANNEL_NAME")
+    fi
+    eval "$(python3 "$SRC_DIR/youtube/frame_style.py" "${FRAME_ARGS[@]}" --shell)"
+else
+    FRAME_TOP_H=0
+    FRAME_BOTTOM_H=0
+fi
+
 STYLE_ARGS=(
     --preset-file "$CAPTION_STYLE_FILE"
     --style "$CAPTION_STYLE_NAME"
+    --zone-top-h "$FRAME_TOP_H"
+    --zone-bottom-h "$FRAME_BOTTOM_H"
 )
+if [ -n "$CAPTION_ZONE" ]; then
+    STYLE_ARGS+=(--zone "$CAPTION_ZONE")
+fi
+if [ -n "$CAPTION_X_PCT" ]; then
+    STYLE_ARGS+=(--x-pct "$CAPTION_X_PCT")
+fi
+if [ -n "$CAPTION_VALIGN" ]; then
+    STYLE_ARGS+=(--valign "$CAPTION_VALIGN")
+fi
+if [ -n "$CAPTION_DISTANCE_PCT" ]; then
+    STYLE_ARGS+=(--distance-pct "$CAPTION_DISTANCE_PCT")
+fi
 # default 스타일은 기존 CAPTION_* 기본값을 유지하고, 다른 프리셋은 파일 값을 우선합니다.
 # CLI로 넘긴 값은 항상 프리셋보다 우선합니다.
 if [ "$CAPTION_STYLE_NAME" = "default" ] || [ "$FONT_SIZE_EXPLICIT" = "1" ]; then
@@ -199,49 +283,6 @@ drawtext_font_option() {
 }
 
 if [ "$FRAME_MODE" = "framed" ]; then
-    FRAME_HEADER_JSON="$WORK_DIR/frame_header.json"
-    if [ -f "$FRAME_HEADER_JSON" ] && { [ -z "$FRAME_TOP_TITLE" ] || [ -z "$FRAME_TOP_SUBTITLE" ]; }; then
-        FRAME_HEADER_EXPORTS="$(FRAME_HEADER_JSON="$FRAME_HEADER_JSON" python3 - <<'PY'
-import json, os, shlex
-with open(os.environ["FRAME_HEADER_JSON"], "r", encoding="utf-8") as f:
-    data = json.load(f)
-for env_key, json_key in (("FRAME_TOP_TITLE", "title"), ("FRAME_TOP_SUBTITLE", "subtitle")):
-    value = str(data.get(json_key, "")).strip()
-    if value:
-        print(f"export {env_key}={shlex.quote(value)}")
-PY
-)"
-        eval "$FRAME_HEADER_EXPORTS"
-    fi
-    FRAME_ARGS=(
-        --top-file "$FRAME_TOP_STYLE_FILE"
-        --top-preset "$FRAME_TOP_PRESET"
-        --bottom-file "$FRAME_BOTTOM_STYLE_FILE"
-        --bottom-preset "$FRAME_BOTTOM_PRESET"
-    )
-    if [ -n "$FRAME_TOP_TITLE" ]; then
-        FRAME_ARGS+=(--top-title "$FRAME_TOP_TITLE")
-    fi
-    if [ -n "$FRAME_TOP_SUBTITLE" ]; then
-        FRAME_ARGS+=(--top-subtitle "$FRAME_TOP_SUBTITLE")
-    fi
-    if [ -n "$FRAME_TOP_PCT" ]; then
-        FRAME_ARGS+=(--top-height-pct "$FRAME_TOP_PCT")
-    fi
-    if [ -n "$FRAME_TOP_MARGIN_PCT" ]; then
-        FRAME_ARGS+=(--top-margin-pct "$FRAME_TOP_MARGIN_PCT")
-    fi
-    if [ -n "$FRAME_TOP_MARGIN_X_PCT" ]; then
-        FRAME_ARGS+=(--top-margin-x-pct "$FRAME_TOP_MARGIN_X_PCT")
-    fi
-    if [ -n "$FRAME_BOTTOM_PCT" ]; then
-        FRAME_ARGS+=(--bottom-height-pct "$FRAME_BOTTOM_PCT")
-    fi
-    if [ -n "$FRAME_BOTTOM_CHANNEL_NAME" ]; then
-        FRAME_ARGS+=(--channel-name "$FRAME_BOTTOM_CHANNEL_NAME")
-    fi
-    eval "$(python3 "$SRC_DIR/youtube/frame_style.py" "${FRAME_ARGS[@]}" --shell)"
-
     CONTENT_W=1080
     CONTENT_H="$FRAME_CONTENT_H"
     CONTENT_Y="$FRAME_TOP_H"

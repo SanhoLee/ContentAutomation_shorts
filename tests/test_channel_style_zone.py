@@ -2,11 +2,19 @@ import sys
 import unittest
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEV_SRC = REPO_ROOT / "dev" / "src"
 sys.path.insert(0, str(DEV_SRC / "youtube"))
 
 import channel_style as chs  # noqa: E402
+
+
+class ChannelDefaultPresetTests(unittest.TestCase):
+    def test_default_preset_has_nonempty_text(self):
+        presets = yaml.safe_load((REPO_ROOT / "dev" / "channel_styles.yaml").read_text())["presets"]
+        self.assertTrue(presets["default"].get("Text"))
 
 
 class ChannelZonePositionTests(unittest.TestCase):

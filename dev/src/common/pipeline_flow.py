@@ -317,11 +317,24 @@ def advance(work_dir, base_dir, runner, mode=None, guard_settings=None, on_event
             return Result(status=STATUS_FAILED, stage=stage.name, reason=reason,
                           completed=completed)
 
-        job_state.reset_attempts(work_dir, stage.name)
-        job_state.update(work_dir, stage=stage.name, last_error=None, cleared_gate=None)
+        mark_stage_done(work_dir, stage.name)
         completed.append(stage.name)
         current = stage
         cleared_gate = None
+
+
+def mark_stage_done(work_dir, stage_name):
+    """Record `stage_name` as the last completed stage in job_state.json.
+
+    Used both by advance() after it runs a stage itself, and by callers that
+    re-ran a stage's script directly (a rework/redo outside advance()) -- so
+    job_state.json's position stays honest and the next advance() resumes
+    right after `stage_name` instead of trusting a stale, earlier position.
+    """
+    if stage_name not in STAGES_BY_NAME:
+        raise ValueError(f"unknown stage: {stage_name}")
+    job_state.reset_attempts(work_dir, stage_name)
+    job_state.update(work_dir, stage=stage_name, last_error=None, cleared_gate=None)
 
 
 def approve(work_dir):

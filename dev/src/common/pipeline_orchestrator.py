@@ -221,6 +221,11 @@ def run_render(ctx, chat_id, job):
         if progress_thread:
             progress_thread.join(timeout=1)
     ctx.send_message(chat_id, "렌더링 진행률: 완료")
+    if job.get("mode"):
+        # Redone outside pipeline_flow (job history rework): keep job_state.json's
+        # position honest so the next "다음 단계 ▶" resumes after render instead
+        # of trusting a stale, earlier-recorded position (e.g. already "x_post").
+        pipeline_flow.mark_stage_done(ctx.work_dir(job_id), "render")
     job["stage"] = "await_render_approval"
     ctx.send_rendered_video(chat_id, job_id)
 

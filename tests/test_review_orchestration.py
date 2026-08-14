@@ -37,6 +37,9 @@ class FakeBot:
     def send_gate(self, chat_id, job, gate):
         self.gates.append(gate)
 
+    def send_rendered_video(self, chat_id, job_id):
+        pass
+
     def start_render_progress(self, chat_id, job_id, stop_event):
         self.render_progress_started = True
         return None
@@ -190,6 +193,38 @@ class ReviewOrchestrationTests(unittest.TestCase):
         po.run_review_pipeline(self.bot, 1, self.job)
         _, env = self.bot.commands[0]
         self.assertEqual(env["CAPTION_FONT_SIZE"], "72")
+
+
+class ReworkResyncsJobStateTests(unittest.TestCase):
+    """A job history rework (re-render outside pipeline_flow.advance()) must
+    leave job_state.json pointing at "render" so the next advance() resumes
+    at upload instead of trusting a stale, already-finished position."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.bot = FakeBot(self._tmp.name)
+        self.work_dir = self.bot.work_dir("J1")
+        self.work_dir.mkdir(parents=True)
+        job_state.set_mode(self.work_dir, job_state.MODE_AUTO)
+        job_state.update(self.work_dir, stage="x_post")  # finished-job state
+        self._real_check = pipeline_flow.stage_guard.check
+        pipeline_flow.stage_guard.check = guard_always_ok
+
+    def tearDown(self):
+        pipeline_flow.stage_guard.check = self._real_check
+        self._tmp.cleanup()
+
+    def test_run_render_resyncs_stage_for_mode_jobs(self):
+        job = {"job_id": "J1", "mode": job_state.MODE_AUTO}
+        po.run_render(self.bot, 1, job)
+        self.assertEqual(job_state.load(self.work_dir)["stage"], "render")
+
+    def test_next_stage_button_then_reruns_upload_instead_of_stopping(self):
+        job = {"job_id": "J1", "mode": job_state.MODE_AUTO}
+        po.run_render(self.bot, 1, job)
+        result = po.approve_review_gate(self.bot, 1, job)
+        self.assertIn("3_upload.sh", self.bot.scripts_run)
+        self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
 
 
 if __name__ == "__main__":

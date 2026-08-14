@@ -2749,6 +2749,11 @@ def handle_rerun(chat_id, job, text):
     script, next_stage, sender = mapping[target]
     send_message(chat_id, f"{target} 재생성 시작")
     run_command([str(BASE_DIR / "sh" / script)], job_id, job.get("topic"))
+    if job.get("mode"):
+        # Redone outside pipeline_flow (job history rework): keep job_state.json's
+        # position honest so the next "다음 단계 ▶" resumes after this stage
+        # instead of trusting a stale, earlier-recorded position.
+        pipeline_flow.mark_stage_done(work_dir(job_id), target)
     job["stage"] = next_stage
     sender(chat_id, job_id)
 

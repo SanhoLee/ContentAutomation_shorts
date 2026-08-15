@@ -70,6 +70,7 @@ STAGES = (
         # this is a downstream-only artifact (see x_thread_adapter.py).
         name="x_thread",
         command=("sh/common/x_thread.sh",),
+        gates=("x_photo_intake",),
     ),
     Stage(
         name="tts",
@@ -123,8 +124,8 @@ MODE_GATES = {
     # Auto otherwise honours no gate, but the thumbnail hold is an explicit
     # exception the operator asked for: even a fully unattended run stops
     # here rather than shipping a video nobody had a chance to brand.
-    job_state.MODE_AUTO: frozenset({"thumbnail_intake"}),
-    job_state.MODE_REVIEW: frozenset({"script_review", "thumbnail_intake", "final_confirm"}),
+    job_state.MODE_AUTO: frozenset({"thumbnail_intake", "x_photo_intake"}),
+    job_state.MODE_REVIEW: frozenset({"script_review", "thumbnail_intake", "x_photo_intake", "final_confirm"}),
     job_state.MODE_FULL_GATE: frozenset(ALL_GATES),
 }
 

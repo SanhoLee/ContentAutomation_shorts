@@ -14,7 +14,6 @@ sys.path.insert(0, str(SRC))
 # the pipeline modules can import each other; tests must do the same.
 sys.path.insert(0, str(ROOT / "dev" / "src" / "youtube"))
 import job_state
-import pipeline_orchestrator as _po
 import slack_bot
 
 
@@ -507,7 +506,8 @@ class SlackBotTests(unittest.TestCase):
         # after upload). thumbnail_intake now parks every one of these runs
         # once before render -- it's the one gate auto mode still honours --
         # so each expected command list stops there; approving it lets the
-        # rest (render onward) run in a second pass.
+        # rest (render onward) run in a second pass. await_script_approval
+        # resumes before x_thread has run, so it hits x_photo_intake first.
         expected_commands_before_gate = {
             "await_script_approval": ["scene_visuals.sh", "x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh"],
             "await_tts_approval": ["1_caption.sh", "1_broll.sh"],
@@ -517,6 +517,7 @@ class SlackBotTests(unittest.TestCase):
             "await_render_approval": [],
             "await_upload_meta_approval": [],
         }
+        extra_gate_stages = {"await_script_approval": ["scene_visuals.sh", "x_thread.sh"]}
         # These three stages resume from render.sh (or later), so pipeline_flow
         # is already past broll and its thumbnail_intake gate never fires again.
         no_gate_stages = {"await_render_approval", "await_upload_meta_approval"}
@@ -526,24 +527,38 @@ class SlackBotTests(unittest.TestCase):
         real_check = slack_bot.pipeline_flow.stage_guard.check
         slack_bot.pipeline_flow.stage_guard.check = lambda *a, **k: (True, "")
         try:
-            self._assert_auto_finish_resumes(expected_commands_before_gate, no_gate_stages)
+            self._assert_auto_finish_resumes(expected_commands_before_gate, no_gate_stages,
+                                              extra_gate_stages)
         finally:
             slack_bot.pipeline_flow.stage_guard.check = real_check
 
-    def _assert_auto_finish_resumes(self, expected_commands_before_gate, no_gate_stages):
+    def _assert_auto_finish_resumes(self, expected_commands_before_gate, no_gate_stages,
+                                     extra_gate_stages=None):
+        extra_gate_stages = extra_gate_stages or {}
         for stage in slack_bot.WORKFLOW_STAGES:
-            commands, renders, gates = [], [], []
+            commands, renders, gates, x_photo_gates = [], [], [], []
             old_run_command = slack_bot.run_command
             old_run_render_silent = slack_bot._run_render_silent
             old_send_message = slack_bot.send_message
             old_send_thumbnail_prompt = slack_bot.send_thumbnail_prompt
+            old_send_x_photo_prompt = slack_bot.send_x_photo_prompt
             try:
                 slack_bot.run_command = lambda args, *a, **k: commands.append(Path(args[0]).name)
                 slack_bot._run_render_silent = lambda *a, **k: renders.append("render")
                 slack_bot.send_message = lambda *a, **k: None
                 slack_bot.send_thumbnail_prompt = lambda chat_id, job_id: gates.append(job_id)
+                slack_bot.send_x_photo_prompt = lambda chat_id, job_id: x_photo_gates.append(job_id)
                 job = {"job_id": f"job-{stage}", "topic": "테스트", "stage": stage}
                 slack_bot.run_remaining_to_upload("C1", job)
+
+                if stage in extra_gate_stages:
+                    # x_thread hasn't run yet at this resume point, so
+                    # x_photo_intake fires before thumbnail_intake can.
+                    self.assertEqual(x_photo_gates, [job["job_id"]])
+                    self.assertEqual(job["stage"], "await_x_photo_intake")
+                    self.assertEqual(commands, extra_gate_stages[stage])
+                    slack_bot.approve_review_gate("C1", job)
+
                 if stage in no_gate_stages:
                     self.assertEqual(gates, [])
                     self.assertEqual(job["stage"], "done")
@@ -568,6 +583,7 @@ class SlackBotTests(unittest.TestCase):
                 slack_bot._run_render_silent = old_run_render_silent
                 slack_bot.send_message = old_send_message
                 slack_bot.send_thumbnail_prompt = old_send_thumbnail_prompt
+                slack_bot.send_x_photo_prompt = old_send_x_photo_prompt
 
     def test_cancel_request_is_available_while_busy(self):
         job_id = f"cancel-{slack_bot.__name__}"
@@ -1176,40 +1192,6 @@ class ThumbnailIntakeTests(unittest.TestCase):
             slack_bot.approve_review_gate = old_approve
         self.assertNotIn("thumbnail_target", job)
         self.assertTrue(self.sent_files)
-
-
-class XPhotoPipelineHookTests(unittest.TestCase):
-    """The request has to fire off the x_thread stage finishing -- that is
-    what buys the operator the whole render window to make an image."""
-
-    def _events(self, ctx, job):
-        return _po._review_progress(ctx, "C1", job=job)
-
-    def test_x_thread_completion_requests_the_photo(self):
-        calls = []
-        ctx = types.SimpleNamespace(
-            send_message=lambda chat_id, text: None,
-            request_x_photo=lambda chat_id, job: calls.append(job),
-        )
-        job = {"job_id": "J1"}
-        self._events(ctx, job)("stage_done", {"stage": "x_thread", "reason": ""})
-        self.assertEqual(calls, [job])
-
-    def test_other_stages_do_not_request_a_photo(self):
-        calls = []
-        ctx = types.SimpleNamespace(
-            send_message=lambda chat_id, text: None,
-            request_x_photo=lambda chat_id, job: calls.append(job),
-        )
-        on_event = self._events(ctx, {"job_id": "J1"})
-        for stage in ("script", "tts", "render", "upload"):
-            on_event("stage_done", {"stage": stage, "reason": ""})
-        self.assertEqual(calls, [])
-
-    def test_bot_without_the_hook_is_unaffected(self):
-        """A driver without request_x_photo must still complete the stage."""
-        ctx = types.SimpleNamespace(send_message=lambda chat_id, text: None)
-        self._events(ctx, {"job_id": "J1"})("stage_done", {"stage": "x_thread", "reason": ""})
 
 
 CANDIDATES = [

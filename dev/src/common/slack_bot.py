@@ -434,6 +434,19 @@ def send_job_browser(chat_id, notice=None):
     send_action_message(chat_id, "\n".join(text_lines), rows)
 
 
+def x_thread_status_lines(job_id):
+    """텍스트/사진 준비 상태를 한 줄씩. 초안이 없으면 안전하게 '없음' 두 줄만 반환."""
+    payload = x_thread_adapter.load_x_thread(work_dir(job_id))
+    if not payload or not payload.get("tweets"):
+        return ["X 스레드 텍스트: 없음", "X 스레드 사진: 없음"]
+    if payload.get("posted"):
+        text_state = "이미 게시됨"
+    else:
+        text_state = f"초안 {len(payload['tweets'])}개"
+    photo_state = "저장됨" if payload.get("photo_path") else "없음"
+    return [f"X 스레드 텍스트: {text_state}", f"X 스레드 사진: {photo_state}"]
+
+
 def send_loaded_job_menu(chat_id, job, notice=None):
     job_id = job.get("job_id")
     if not job_id:
@@ -444,6 +457,7 @@ def send_loaded_job_menu(chat_id, job, notice=None):
         f"주제: {job.get('topic') or job_id}",
         f"작업 ID: `{job_id}`",
         f"상태: {job_status_label(job_id)}",
+        *x_thread_status_lines(job_id),
     ]
     if notice:
         lines.extend(("", notice))
@@ -453,6 +467,7 @@ def send_loaded_job_menu(chat_id, job, notice=None):
         [
             [button("다시 렌더링", "hist_render"), button("B-roll 다시 만들기", "hist_rerun:broll")],
             [button("TTS 다시 만들기", "hist_rerun:tts"), button("자막 다시 만들기", "hist_rerun:caption")],
+            [button("YouTube 업로드", "hist_upload_yt"), button("X 게시", "hist_upload_x")],
             [button("다른 작업 선택", "browse_jobs"), button("메뉴 표시", "show_home")],
         ],
     )
@@ -1281,6 +1296,7 @@ def send_gate(chat_id, job, gate):
     senders = {
         "script_review": send_script,
         "thumbnail_intake": send_thumbnail_prompt,
+        "x_photo_intake": send_x_photo_prompt,
         "final_confirm": send_final_confirm,
     }
     sender = senders.get(gate)
@@ -1687,15 +1703,18 @@ def apply_x_photo_message(chat_id, job, message):
     target_path = Path(target)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     staged = target_path.with_name(f"x_thread_photo_upload{suffix}")
+    # X has no aspect-ratio constraint (size limit only), so the original is
+    # kept as-is -- no crop/resize, unlike the YouTube thumbnail path which
+    # must fit a fixed frame.
+    final_path = target_path.with_suffix(suffix)
     try:
         download_slack_file(doc, staged)
-        final_path = x_photo_card.normalize_thread_photo(staged, target_path)
+        if staged != final_path:
+            staged.replace(final_path)
     except Exception as exc:
         staged.unlink(missing_ok=True)
         send_message(chat_id, f"이미지를 저장하지 못했습니다: {exc}\n다시 첨부해 주세요.")
         return True
-    if staged != final_path:
-        staged.unlink(missing_ok=True)
 
     payload["photo_path"] = str(final_path)
     # The thread waits for this flag -- x_poster holds an unposted thread
@@ -1708,10 +1727,16 @@ def apply_x_photo_message(chat_id, job, message):
         return True
     job.pop("x_photo_target", None)
     send_file_or_path(chat_id, final_path, "첫 트윗에 붙일 이미지로 저장했습니다.")
-    # The image is the last thing the thread was waiting for. If the video
-    # is already up, this upload is the release trigger; if not, the
-    # pipeline's own x_post stage will find the flag set and post normally.
-    _maybe_post_x_thread(chat_id, job)
+    if job.pop("x_photo_gate", None):
+        # Armed via the x_photo_intake gate -- clear it and keep the
+        # pipeline moving, same as resume_after_thumbnail.
+        resume_after_x_photo(chat_id, job)
+    else:
+        # Armed via the standalone /x_photo re-attach (post-gate replace).
+        # If the video is already up, this upload is the release trigger;
+        # if not, the pipeline's own x_post stage will find the flag set
+        # and post normally.
+        _maybe_post_x_thread(chat_id, job)
     return True
 
 
@@ -1812,6 +1837,35 @@ def resume_after_thumbnail(chat_id, job):
     by clearing the gate; a mode-less job is the legacy /run step chain,
     which never touches pipeline_flow at all.
     """
+    if job.get("mode"):
+        approve_review_gate(chat_id, job)
+    else:
+        run_next_stage(chat_id, job)
+
+
+def send_x_photo_prompt(chat_id, job_id):
+    """x_photo_intake 게이트 화면. 초안이 없거나 이미 게시된 스레드면 사진을
+    첨부할 대상이 없다는 것만 알리고, "건너뛰기" 버튼은 기존 범용 approve:
+    핸들러가 그대로 처리한다."""
+    payload = x_thread_adapter.load_x_thread(work_dir(job_id))
+    if not payload or not payload.get("tweets") or payload.get("posted"):
+        send_action_message(
+            chat_id,
+            "X 스레드 초안이 없어 사진을 첨부할 수 없습니다. 건너뛰고 계속할까요?",
+            [[button("건너뛰기", "approve:await_x_photo_intake")]],
+        )
+        return
+    lead = (payload["tweets"][0] or {}).get("text", "")
+    send_action_message(
+        chat_id,
+        f"X 스레드 첫 트윗에 붙일 이미지를 첨부할까요?\n\n첫 트윗 내용:\n{lead}",
+        [[button("예 - 이미지 첨부", "x_photo_yes:await_x_photo_intake"),
+          button("아니오 - 건너뛰기", "approve:await_x_photo_intake")]],
+    )
+
+
+def resume_after_x_photo(chat_id, job):
+    """x_photo_intake 게이트 해제. resume_after_thumbnail과 동일한 모양."""
     if job.get("mode"):
         approve_review_gate(chat_id, job)
     else:
@@ -2494,6 +2548,34 @@ def handle_callback(state, callback):
                 state, chat_id, job, f"{target} 재생성(이전 작업)",
                 lambda: handle_rerun(chat_id, job, f"/rerun {target}"),
             )
+        elif data == "hist_upload_yt":
+            if not job.get("job_id"):
+                send_home_screen(chat_id, "불러온 작업이 없습니다.")
+                return
+            send_action_message(
+                chat_id, "정말 YouTube에 업로드하시겠습니까?",
+                [[button("확인: 업로드", "hist_upload_yt_confirm"), button("취소", "show_status")]],
+            )
+        elif data == "hist_upload_yt_confirm":
+            if not job.get("job_id"):
+                send_home_screen(chat_id, "불러온 작업이 없습니다.")
+                return
+            start_background_task(state, chat_id, job, "YouTube 업로드(이전 작업)",
+                                  lambda: handle_hist_upload_youtube(chat_id, job))
+        elif data == "hist_upload_x":
+            if not job.get("job_id"):
+                send_home_screen(chat_id, "불러온 작업이 없습니다.")
+                return
+            send_action_message(
+                chat_id, "정말 X에 게시하시겠습니까?",
+                [[button("확인: 게시", "hist_upload_x_confirm"), button("취소", "show_status")]],
+            )
+        elif data == "hist_upload_x_confirm":
+            if not job.get("job_id"):
+                send_home_screen(chat_id, "불러온 작업이 없습니다.")
+                return
+            start_background_task(state, chat_id, job, "X 게시(이전 작업)",
+                                  lambda: handle_x_post(chat_id, job))
         elif data == "cancel_all":
             send_action_message(
                 chat_id,
@@ -2598,6 +2680,18 @@ def handle_callback(state, callback):
                 "썸네일로 쓸 이미지를 이 스레드에 첨부해 주세요. "
                 "도착하면 바로 렌더링을 이어서 진행합니다.",
             )
+        elif data.startswith("x_photo_yes:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            job_id = job.get("job_id")
+            if not job_id:
+                send_message(chat_id, "진행 중인 작업이 없습니다.")
+                return
+            job["x_photo_target"] = str(work_dir(job_id) / x_photo_card.PHOTO_FILENAME)
+            job["x_photo_gate"] = True
+            send_message(chat_id, "X 스레드 첫 트윗에 붙일 이미지를 이 스레드에 첨부해 주세요.")
         elif data.startswith("review_mode:"):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:
@@ -2862,6 +2956,28 @@ def handle_x_post(chat_id, job):
         + (f"\n※ 이미지 없이 나갔습니다: {photo_error}" if photo_error else ""),
     )
     _maybe_send_x_sources_dm(job_dir)
+
+
+def handle_hist_upload_youtube(chat_id, job):
+    """이전 작업 화면의 'YouTube 업로드' 확인 후 실행. 재실행할 때마다 새 영상이
+    생성된다(3_upload.py가 기존 영상 존재 여부를 확인하지 않음) -- 조작자가 2차
+    확인을 거쳐 명시적으로 누른 경우에만 도달하므로 의도된 재업로드로 간주한다."""
+    job_id = job.get("job_id")
+    if not job_id:
+        send_message(chat_id, "진행 중인 작업이 없습니다.")
+        return
+    send_message(chat_id, "YouTube 비공개 업로드 시작")
+    run_command([str(BASE_DIR / "sh" / "youtube" / "3_upload.sh")], job_id, job.get("topic"))
+    result_path = work_dir(job_id) / "upload_result.json"
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        result = {}
+    video_id = result.get("video_id")
+    if video_id:
+        send_message(chat_id, f"업로드 완료: https://youtube.com/watch?v={video_id}")
+    else:
+        send_message(chat_id, "업로드 완료. YouTube Studio에서 비공개 영상을 확인하세요.")
 
 
 def command_specs():

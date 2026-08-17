@@ -93,6 +93,20 @@ class StrategyResponse:
         return dict(self._data)
 
 
+class ClaudeTransientStatusTests(unittest.TestCase):
+    """A 520 from Cloudflare's edge in front of api.anthropic.com crashed a
+    job outright instead of retrying (see KNOWN_ISSUES.md) because the old
+    check enumerated specific codes and missed it."""
+
+    def test_429_and_every_5xx_are_transient(self):
+        for status in (429, 500, 502, 503, 504, 520, 521, 529):
+            self.assertTrue(script0.is_claude_transient_status(status), status)
+
+    def test_client_errors_other_than_429_are_not_transient(self):
+        for status in (400, 401, 403, 404):
+            self.assertFalse(script0.is_claude_transient_status(status), status)
+
+
 class ScriptQualityTests(unittest.TestCase):
     def test_stage1_uses_each_model_once_then_continues_with_local_strategy(self):
         calls = []

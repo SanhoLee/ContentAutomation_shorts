@@ -72,7 +72,16 @@ PROMPT_MAX_LENGTH_RATIO = 1.15
 TREND_CANDIDATES_PATH = os.path.join(WORK_DIR, "trend_candidates.json")
 PUBMED_STATUS_PATH = os.path.join(WORK_DIR, "pubmed_status.json")
 CLAUDE_USAGE_PATH = os.path.join(WORK_DIR, "claude_usage.jsonl")
-CLAUDE_TRANSIENT_STATUSES = (429, 500, 502, 503, 504)
+def is_claude_transient_status(status_code):
+    """429 (rate limit) plus any 5xx.
+
+    Covers Anthropic's own errors (500/502/503/529 "overloaded") and the
+    Cloudflare edge in front of api.anthropic.com (520 "unknown error",
+    521-524) -- all mean "try again," not "the request was bad." An
+    enumerated tuple missed 520 and crashed a job outright instead of
+    retrying (see KNOWN_ISSUES.md).
+    """
+    return status_code == 429 or status_code >= 500
 
 
 def creative_dna_block():
@@ -321,7 +330,7 @@ def call_claude_api(payload, timeout, label, stage):
                     stage, payload.get("model", ""), failed_response,
                     attempt=attempt, success=False,
                 )
-            if res.status_code in CLAUDE_TRANSIENT_STATUSES:
+            if is_claude_transient_status(res.status_code):
                 last_error = requests.HTTPError(f"Claude transient status {res.status_code}: {res.text[:500]}")
                 if attempt <= CLAUDE_HTTP_RETRIES:
                     print(f"{label} 일시 오류 {res.status_code}. 재시도합니다.")

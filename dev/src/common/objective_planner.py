@@ -39,6 +39,7 @@ from research_signals import (
 from script_runtime import load_runtime_settings
 import hook_types
 import story_types
+import topic_domain
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -466,6 +467,7 @@ def build_candidate_pool(
 ) -> list[dict[str, Any]]:
     """Build a 5/3/3/1 evidence, adjacent, trend, wildcard candidate pool."""
     objective_type = normalize_objective_type(objective_type)
+    domain = topic_domain.load_domain()
     rng = rng or random.Random()
     manual_seed = bool(str(seed_topic or "").strip())
     interpretation = interpretation or {}
@@ -660,7 +662,32 @@ def build_candidate_pool(
                 "confounders": confounders,
             })
             break
-    return _drop_zero_evidence(candidates)
+    return _drop_zero_evidence(_drop_missing_anchor(candidates, domain))
+
+
+def _drop_missing_anchor(
+    candidates: list[dict[str, Any]], domain: topic_domain.Domain,
+) -> list[dict[str, Any]]:
+    """Drop candidates whose topic sentence carries no domain anchor term.
+
+    `topic_family` is Claude's own label (interpret_seed's resolved_family, or
+    an existing family reused from the DB), not evidence the topic sentence
+    itself stays in scope -- a "치주질환과 혈당" topic shipped under family
+    "구강건강과 뇌건강" with zero anchor words in the topic itself, the exact
+    gap `topic_domain.py` closes on the other candidate path
+    (topic_candidate_pipeline.py) but this one never had. Same never-empty-the-
+    pool posture as `_drop_zero_evidence`: the deterministic
+    TOPIC_ANGLE_TEMPLATES fallback that runs when the interpreter is down
+    doesn't say the anchor word either, and planning has to keep moving.
+    """
+    if not domain.require_anchor:
+        return candidates
+    anchored = [c for c in candidates if topic_domain.has_anchor(c["topic"], domain)]
+    if not anchored or len(anchored) == len(candidates):
+        return candidates
+    dropped = len(candidates) - len(anchored)
+    print(f"베이스 분야 앵커 없는 후보 {dropped}개 제외 (남은 후보 {len(anchored)}개)")
+    return anchored
 
 
 def _drop_zero_evidence(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:

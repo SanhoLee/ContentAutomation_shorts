@@ -163,7 +163,7 @@ class ObjectivePlannerTests(unittest.TestCase):
             candidates = objective_planner.build_candidate_pool(
                 conn,
                 objective_type="reach",
-                trend_candidates=["새 트렌드 A", "새 트렌드 B", "새 트렌드 C"],
+                trend_candidates=["뇌건강 트렌드 A", "뇌건강 트렌드 B", "뇌건강 트렌드 C"],
             )
             conn.close()
 
@@ -171,6 +171,25 @@ class ObjectivePlannerTests(unittest.TestCase):
         self.assertEqual(len(trend_candidates), 3)
         self.assertTrue(all(not item["evidence_refs"] for item in trend_candidates))
         self.assertTrue(all(item["source_classification"] == "insufficient_data" for item in trend_candidates))
+
+    def test_trend_candidates_without_a_brain_anchor_are_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = objective_planner.feedback.connect(Path(tmp) / "feedback.db")
+            candidates = objective_planner.build_candidate_pool(
+                conn,
+                objective_type="reach",
+                trend_candidates=["치주질환과 혈당 악순환", "뇌건강 지키는 치주질환 관리"],
+            )
+            conn.close()
+
+        trend_topics = {item["topic"] for item in candidates if item["candidate_source"] == "trend"}
+        self.assertNotIn("치주질환과 혈당 악순환", trend_topics)
+        self.assertIn("뇌건강 지키는 치주질환 관리", trend_topics)
+
+    def test_drop_missing_anchor_never_empties_the_pool(self):
+        domain = objective_planner.topic_domain.load_domain()
+        candidates = [{"topic": "치주질환과 혈당 악순환"}, {"topic": "식후 졸림이 보내는 신호"}]
+        self.assertEqual(objective_planner._drop_missing_anchor(candidates, domain), candidates)
 
     def test_duplicate_gate_blocks_prefixed_copy_and_pool_does_not_reuse_old_title(self):
         old_title = "냉동 블루베리 안토시아닌, 신선한 것보다 좋다"

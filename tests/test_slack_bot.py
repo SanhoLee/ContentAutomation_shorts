@@ -503,24 +503,20 @@ class SlackBotTests(unittest.TestCase):
     def test_auto_finish_can_resume_from_every_review_stage(self):
         # slack_bot drives this through pipeline_flow.STAGES, which includes
         # scene_visuals and x_thread (right after script) and x_post (right
-        # after upload). thumbnail_intake now parks every one of these runs
-        # once before render -- it's the one gate auto mode still honours --
-        # so each expected command list stops there; approving it lets the
-        # rest (render onward) run in a second pass. await_script_approval
-        # resumes before x_thread has run, so it hits x_photo_intake first.
+        # after upload). x_photo_intake and thumbnail_intake both now sit on
+        # x_thread's own gate list, back-to-back -- the only resume point that
+        # is still *before* x_thread is await_script_approval, so that's the
+        # only stage that sees either gate fire. Every later resume point
+        # (BOT_STAGE_TO_FLOW maps them to tts/caption/broll/render, all past
+        # x_thread already) runs straight through to done with no gate at all.
         expected_commands_before_gate = {
-            "await_script_approval": ["scene_visuals.sh", "x_thread.sh", "1_tts.sh", "1_caption.sh", "1_broll.sh"],
-            "await_tts_approval": ["1_caption.sh", "1_broll.sh"],
-            "await_caption_approval": ["1_broll.sh"],
-            "await_broll_approval": [],
-            "await_render_config": [],
-            "await_render_approval": [],
-            "await_upload_meta_approval": [],
+            "await_script_approval": ["scene_visuals.sh", "x_thread.sh"],
         }
         extra_gate_stages = {"await_script_approval": ["scene_visuals.sh", "x_thread.sh"]}
-        # These three stages resume from render.sh (or later), so pipeline_flow
-        # is already past broll and its thumbnail_intake gate never fires again.
-        no_gate_stages = {"await_render_approval", "await_upload_meta_approval"}
+        no_gate_stages = {
+            "await_tts_approval", "await_caption_approval", "await_broll_approval",
+            "await_render_config", "await_render_approval", "await_upload_meta_approval",
+        }
         # This test is about which stages run, not about the stage checks --
         # those have their own coverage in test_stage_guard.py, and the fake
         # job directories here hold no artifacts for them to inspect.

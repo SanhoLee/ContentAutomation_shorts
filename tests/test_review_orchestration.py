@@ -93,7 +93,8 @@ class ReviewOrchestrationTests(unittest.TestCase):
         self.assertEqual(argv[-1], "텃밭 가꾸기와 치매")
 
         po.approve_review_gate(self.bot, 1, self.job)  # clears script_review
-        po.approve_review_gate(self.bot, 1, self.job)  # clears x_photo_intake, runs tts
+        po.approve_review_gate(self.bot, 1, self.job)  # clears x_photo_intake
+        po.approve_review_gate(self.bot, 1, self.job)  # clears thumbnail_intake, runs tts
         tts_argv = [argv for argv, _ in self.bot.commands if "1_tts.sh" in argv[0]][0]
         self.assertNotIn("텃밭 가꾸기와 치매", tts_argv)
 
@@ -153,7 +154,8 @@ class ReviewOrchestrationTests(unittest.TestCase):
         self.bot.fail_stages = {"1_caption.sh"}
         po.run_review_pipeline(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)  # clears script_review, stops at x_photo_intake
-        result = po.approve_review_gate(self.bot, 1, self.job)  # clears x_photo_intake, caption fails
+        po.approve_review_gate(self.bot, 1, self.job)  # clears x_photo_intake, stops at thumbnail_intake
+        result = po.approve_review_gate(self.bot, 1, self.job)  # clears thumbnail_intake, caption fails
         self.assertEqual(result.status, pipeline_flow.STATUS_FAILED)
         self.assertEqual(self.job["stage"], "failed")
         self.assertTrue(any("caption" in m for m in self.bot.messages))
@@ -201,8 +203,9 @@ class ReviewOrchestrationTests(unittest.TestCase):
         job = {"job_id": "J3", "topic": "취소 테스트"}
         po.run_review_pipeline(bot, 1, job)
         po.approve_review_gate(bot, 1, job)  # clears script_review, stops at x_photo_intake
+        po.approve_review_gate(bot, 1, job)  # clears x_photo_intake, stops at thumbnail_intake
         with self.assertRaises(Cancelled):
-            po.approve_review_gate(bot, 1, job)  # clears x_photo_intake, runs tts -> cancelled
+            po.approve_review_gate(bot, 1, job)  # clears thumbnail_intake, runs tts -> cancelled
         # Retrying is exactly what the operator asked to stop.
         self.assertEqual(bot.scripts_run.count("1_tts.sh"), 1)
 

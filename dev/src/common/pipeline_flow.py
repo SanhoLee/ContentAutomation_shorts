@@ -70,7 +70,11 @@ STAGES = (
         # this is a downstream-only artifact (see x_thread_adapter.py).
         name="x_thread",
         command=("sh/common/x_thread.sh",),
-        gates=("x_photo_intake",),
+        # thumbnail_intake rides along here too (not on broll where it used
+        # to live) so both image asks land back-to-back for the operator,
+        # before tts/caption/broll do any real work -- see slack_bot.py's
+        # send_thumbnail_prompt for why nothing downstream needs it earlier.
+        gates=("x_photo_intake", "thumbnail_intake"),
     ),
     Stage(
         name="tts",
@@ -87,7 +91,7 @@ STAGES = (
     Stage(
         name="broll",
         command=("sh/youtube/1_broll.sh",),
-        gates=("broll_review", "render_config", "thumbnail_intake"),
+        gates=("broll_review", "render_config"),
         guard="broll",
         # Re-searching only the failed scenes costs a fraction of the API
         # calls a full re-run would, which matters for an unattended retry.

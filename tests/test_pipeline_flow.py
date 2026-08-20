@@ -66,10 +66,14 @@ class PipelineFlowTestCase(unittest.TestCase):
         return pipeline_flow.advance(self.work_dir, BASE_DIR, runner, mode=mode)
 
     def advance_past_x_photo_gate(self, runner, mode=job_state.MODE_AUTO):
-        """Clears the x_photo_intake gate that now sits before tts/caption/broll,
-        so guard-retry tests can reach the stage they're actually testing."""
+        """Clears the x_photo_intake and thumbnail_intake gates that now sit
+        back-to-back before tts/caption/broll, so guard-retry tests can reach
+        the stage they're actually testing."""
         result = self.advance(runner, mode)
         self.assertEqual(result.gate, "x_photo_intake")
+        pipeline_flow.approve(self.work_dir)
+        result = self.advance(runner, mode)
+        self.assertEqual(result.gate, "thumbnail_intake")
         pipeline_flow.approve(self.work_dir)
 
 
@@ -91,11 +95,15 @@ class GraphTests(unittest.TestCase):
         )
         self.assertEqual(pipeline_flow.STAGES_BY_NAME["scene_visuals"].gates, ())
 
-    def test_x_thread_has_the_photo_gate_and_x_post_has_none(self):
-        # x_thread's lead-photo intake is a deliberate gate (the operator
-        # decides synchronously, like the video thumbnail); x_post remains
-        # best-effort and must never block on its own failure.
-        self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_thread"].gates, ("x_photo_intake",))
+    def test_x_thread_has_both_image_intake_gates_and_x_post_has_none(self):
+        # x_thread's lead-photo intake and the video-thumbnail intake are both
+        # deliberate gates the operator decides synchronously, back-to-back;
+        # x_post remains best-effort and must never block on its own failure.
+        self.assertEqual(
+            pipeline_flow.STAGES_BY_NAME["x_thread"].gates,
+            ("x_photo_intake", "thumbnail_intake"),
+        )
+        self.assertEqual(pipeline_flow.STAGES_BY_NAME["broll"].gates, ("broll_review", "render_config"))
         self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_post"].gates, ())
 
     def test_review_mode_honours_exactly_four_gates(self):
@@ -151,8 +159,7 @@ class AutoModeTests(PipelineFlowTestCase):
         result = self.advance(runner, job_state.MODE_AUTO)
         self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
         self.assertEqual(result.gate, "thumbnail_intake")
-        self.assertEqual(runner.stages, ["script", "scene_visuals", "x_thread", "tts",
-                                          "caption", "broll"])
+        self.assertEqual(runner.stages, ["script", "scene_visuals", "x_thread"])
 
     def test_runs_every_stage_without_stopping_again_after_both_approvals(self):
         runner = FakeRunner()
@@ -201,12 +208,9 @@ class ReviewModeTests(PipelineFlowTestCase):
         result = self.advance(runner, job_state.MODE_REVIEW)
         self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
         self.assertEqual(result.gate, "thumbnail_intake")
-        # render has not run yet -- thumbnail_intake sits before it in broll's
-        # gate order, so the operator's yes/no can still affect the render.
-        self.assertEqual(
-            runner.stages,
-            ["script", "scene_visuals", "x_thread", "tts", "caption", "broll"],
-        )
+        # thumbnail_intake now rides x_thread's gate list right after
+        # x_photo_intake, so tts/caption/broll haven't run yet.
+        self.assertEqual(runner.stages, ["script", "scene_visuals", "x_thread"])
 
     def test_after_thumbnail_intake_runs_through_to_the_final_gate(self):
         runner = FakeRunner()
@@ -263,8 +267,8 @@ class FullGateModeTests(PipelineFlowTestCase):
             result = self.advance(runner, job_state.MODE_FULL_GATE)
         self.assertEqual(
             gates,
-            ["script_review", "x_photo_intake", "tts_review", "caption_review",
-             "broll_review", "render_config", "thumbnail_intake", "final_confirm"],
+            ["script_review", "x_photo_intake", "thumbnail_intake", "tts_review",
+             "caption_review", "broll_review", "render_config", "final_confirm"],
         )
         self.assertEqual(runner.stages, list(pipeline_flow.STAGE_NAMES))
 
@@ -326,9 +330,8 @@ class GuardRetryTests(PipelineFlowTestCase):
         pipeline_flow.stage_guard.check = flaky
         runner = FakeRunner()
         self.advance_past_x_photo_gate(runner)
-        result = self.advance(runner, job_state.MODE_AUTO)
-        self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
-        pipeline_flow.approve(self.work_dir)
+        # Both AUTO-mode gates are already cleared, so tts's retry-then-recover
+        # happens on the way straight through to done.
         result = self.advance(runner, job_state.MODE_AUTO)
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
         self.assertEqual(runner.stages.count("tts"), 2)

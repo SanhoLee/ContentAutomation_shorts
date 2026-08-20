@@ -1775,9 +1775,13 @@ def handle_x_photo(chat_id, job):
 # Video-thumbnail intake. Not downstream-optional like the X lead photo --
 # render is genuinely on hold until the operator answers, so this parks the
 # job at a real pipeline_flow gate (thumbnail_intake) instead of firing
-# fire-and-forget. YouTube gives no other way to control the Shorts feed
-# thumbnail yet, so this is a manual first-frame swap: 0.1s of the supplied
-# image spliced onto the front of the render (see 2_render.sh).
+# fire-and-forget. Rides the x_thread stage's gate list right after
+# x_photo_intake (not broll, where it used to sit) so both image asks land
+# back-to-back before tts/caption/broll do any real work -- nothing
+# downstream needs the file before render actually reads it. YouTube gives
+# no other way to control the Shorts feed thumbnail yet, so this is a manual
+# first-frame swap: 0.1s of the supplied image spliced onto the front of the
+# render (see 2_render.sh).
 THUMBNAIL_EXTENSIONS = X_PHOTO_EXTENSIONS
 THUMBNAIL_MAX_BYTES = X_PHOTO_MAX_BYTES
 THUMBNAIL_SIZE = (1080, 1920)

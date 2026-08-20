@@ -43,7 +43,7 @@ BOT_STAGE_TO_FLOW = {
     "await_caption_approval": "caption",
     "await_broll_approval": "broll",
     "await_render_config": "broll",
-    "await_thumbnail_intake": "broll",
+    "await_thumbnail_intake": "x_thread",
     "await_x_photo_intake": "x_thread",
     "await_render_approval": "render",
     "await_upload_meta_approval": "render",

@@ -169,6 +169,14 @@ PLAN_PROMPT = """아래는 이미 확정된 유튜브 쇼츠 대본입니다. �
 - must_show: 화면에 반드시 보여야 할 요소 1~3개(한국어 배열)
 - 같은 brief를 두 Scene 이상에서 반복하지 마세요.
 
+[shot_queries — 이 Scene을 나눠 보여줄 영어 검색어 1~3개]
+- 긴 Scene은 클립 여러 개를 이어붙입니다. must_show의 각 요소(한국어)를 그대로 쓰지 말고,
+  같은 의미를 스톡 사이트에서 검색 가능한 **영어** 구문으로 바꿔 순서대로 나열하세요.
+  (예: must_show가 ["텃밭에서 상추를 뽑는 손", "손주와 마주 보고 웃는 얼굴"]이면
+  shot_queries는 ["hands picking lettuce garden", "grandmother grandchild laughing together"])
+- visual_query와 같은 규칙(사람을 가리키는 단어 포함, animation/slow motion/aerial 금지)을 따르되
+  요소별로 서로 다른 동작이 드러나야 합니다. 짧은 Scene은 1개만 써도 됩니다.
+
 [visual_query — 스톡 영상 검색어]
 - 장면 내용을 그대로 번역하지 말고, 스톡 사이트에 실제로 영상이 많이 존재하는 **일반적인 검색어**로 쓰세요. 영어 키워드 3~4개.
 - 구성 규칙: 일반 키워드 2~3개 + 이 영상 주제와 연결되는 키워드 1개(최대 2개). 주제 키워드를 3개 이상 넣으면 검색 결과가 거의 없어 매번 같은 영상만 나옵니다.
@@ -185,7 +193,7 @@ PLAN_PROMPT = """아래는 이미 확정된 유튜브 쇼츠 대본입니다. �
 반드시 아래 JSON 객체 포맷으로만 출력하세요. scenes 배열의 길이는 정확히 {count}개여야 합니다.
 마크다운이나 추가 설명은 절대 넣지 마세요.
 
-{{"scenes": [{{"index": 1, "visual": {{"type": "paradox", "brief": "한 줄 연출 지시", "must_show": ["요소1"]}}, "visual_query": "english search keywords"}}]}}"""
+{{"scenes": [{{"index": 1, "visual": {{"type": "paradox", "brief": "한 줄 연출 지시", "must_show": ["요소1"]}}, "shot_queries": ["english search phrase 1", "english search phrase 2"], "visual_query": "english search keywords"}}]}}"""
 
 
 def build_plan_prompt(scenes: list[dict], *, topic: str, title: str) -> str:
@@ -317,6 +325,11 @@ def fill_scene_visuals(scenes: list[dict], planned: list[dict] | None, sequence)
 
         query = re.sub(r"\s+", " ", str(proposed.get("visual_query") or "")).strip()
         scene["visual_query"] = query or story_types.FALLBACK_VISUAL_QUERY
+
+        shot_queries = proposed.get("shot_queries")
+        shot_queries = shot_queries if isinstance(shot_queries, list) else []
+        shot_queries = [re.sub(r"\s+", " ", str(item or "")).strip() for item in shot_queries]
+        scene["shot_queries"] = [item for item in shot_queries if item][:3]
         filled.append(scene)
     return filled, missing_brief
 

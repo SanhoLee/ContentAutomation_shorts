@@ -43,12 +43,12 @@ class FrameHeaderNormalizationTests(unittest.TestCase):
     def test_dev_preserves_complete_subtitle_beyond_old_limit(self):
         subtitle = "잊힌 게 아니라 뇌가 한창 자라던 시기였기 때문입니다"
         result = {"frame_header": {"title": "성장의비밀", "subtitle": subtitle}}
-        normalized = dev_script.normalize_frame_header(result, {}, [])
+        normalized = dev_script.normalize_frame_header(result, {})
         self.assertEqual(normalized["subtitle"], subtitle)
 
     def test_abnormal_output_uses_only_generous_safety_caps(self):
         result = {"frame_header": {"title": "가" * 25, "subtitle": "나" * 50}}
-        normalized = dev_script.normalize_frame_header(result, {}, [])
+        normalized = dev_script.normalize_frame_header(result, {})
         self.assertEqual(len(normalized["title"]), 20)
         self.assertEqual(len(normalized["subtitle"]), 40)
 

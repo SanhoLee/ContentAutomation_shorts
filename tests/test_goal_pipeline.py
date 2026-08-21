@@ -42,7 +42,7 @@ class GoalPipelineTests(unittest.TestCase):
         result = {
             "title": "잠이 끊기는 이유", "hook_type": "반전형",
             "hashtags": "#수면", "description": "설명", "final_answer": "수면 신호를 살펴보세요.",
-            "promise_fulfilled": True, "evidence_limit": "개인차", "thumbnail_text": ["수면 신호"],
+            "promise_fulfilled": True, "evidence_limit": "개인차",
             "frame_header": {"title": "수면신호", "subtitle": "잠이 끊기는 이유"},
             "scenes": [{"text": "수면 신호를 살펴보세요", "visual_query": "senior sleep"}],
         }

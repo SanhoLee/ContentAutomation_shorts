@@ -975,7 +975,7 @@ def strategy_output_schema():
     properties = {field: {"type": "string"} for field in string_fields}
     if USE_STORY_TYPES:
         properties["story_type"] = {"type": "string", "enum": list(story_types.STORY_TYPES)}
-    for field in ("sub_keywords", "thumbnail_text", "comparison_targets", "comparison_criteria", "required_beats"):
+    for field in ("sub_keywords", "comparison_targets", "comparison_criteria", "required_beats"):
         properties[field] = {"type": "array", "items": {"type": "string"}}
     properties["evidence_brief"] = {
         # Claude structured output (output_config.format: json_schema) rejects
@@ -1037,7 +1037,6 @@ def local_strategy_fallback(topic, trend_context=None, reason=None):
         "title": title[:28],
         "search_title_format": "생활습관형",
         "core_message": "부담을 줄이는 작은 습관부터 시작하세요",
-        "thumbnail_text": [keyword[:14]],
         "frame_header": {
             "title": clip_at_word_boundary(keyword, 10),
             "subtitle": "핵심만 쉽게 알려드립니다",
@@ -1195,7 +1194,6 @@ search_intent: 이 키워드를 검색하는 사람의 상황/걱정 (20자 이�
                - 답을 제목에서 확정해 말하지 말 것. 무엇을 다루는지만 알리고 결론은 본문에서 밝힐 것
 search_title_format: 제목 성격 (질문형/비교형/체크리스트형/생활습관형/반전형/공감형 중 하나)
 core_message : 시청자가 이 영상에서 가져갈 딱 한 문장 (30자 이내)
-thumbnail_text: 썸네일용 짧은 문구 후보 1~2개 (배열, 각 8~14자, 약간 자극적이되 사실 기반)
 frame_header : 상단 프레임용 2줄 훅 후보. 대본 맥락을 압축한 추상적이지만 이해 가능한 문구
                - title 4~10자 권장, subtitle 10~22자 권장
                - 두 줄 모두 의미가 끊기지 않는 완결된 구문으로 작성할 것. 글자 수를 맞추려고 문장을
@@ -1230,7 +1228,6 @@ JSON만 출력. 설명·주석·마크다운 없이.
   "title": "",
   "search_title_format": "",
   "core_message": "",
-  "thumbnail_text": [],
   "frame_header": {{"title": "", "subtitle": ""}},
   "intent_type": "",
   "viewer_question": "",
@@ -1311,7 +1308,6 @@ JSON만 출력. 설명·주석·마크다운 없이.
                 print(f"  ✅ story_type      : {strategy.get('story_type')} / {strategy.get('format_type')}")
             print(f"  ✅ search_format   : {strategy.get('search_title_format')}")
             print(f"  ✅ core_message    : {strategy.get('core_message')}")
-            print(f"  ✅ thumbnail_text  : {strategy.get('thumbnail_text')}")
 
             with open(STRATEGY_PATH, "w", encoding="utf-8") as f:
                 json.dump(strategy, f, ensure_ascii=False, indent=2)
@@ -1445,13 +1441,8 @@ def build_prompt(strategy, abstracts, trend_context=None, web_research="", youtu
     cta_next       = strategy.get("cta_next", "")
     topic          = strategy.get("topic", main_keyword)
     search_format  = strategy.get("search_title_format", "")
-    thumbnail_text = strategy.get("thumbnail_text", [])
     objective = strategy.get("objective") or {}
     format_type, emotion_curve, narrative_instruction = narrative_template(strategy)
-    if isinstance(thumbnail_text, list):
-        thumbnail_hint = " / ".join(str(item) for item in thumbnail_text if item)
-    else:
-        thumbnail_hint = str(thumbnail_text or "")
 
     strategy = normalize_strategy_contract(strategy, topic)
     contract = {
@@ -1613,9 +1604,8 @@ main_keyword       : {main_keyword}
   "main_keyword": "{main_keyword}",
   "search_title_format": "{search_format}",
   "hashtags": "#태그1 #태그2 #태그3",
-  "thumbnail_text": ["썸네일 문구 1", "썸네일 문구 2"],
   "frame_header": {{"title": "대제목", "subtitle": "소제목"}},
-  "description": "설명란 인트로 텍스트\\n\\n썸네일 문구 후보: {thumbnail_hint}",
+  "description": "설명란 인트로 텍스트",
   "final_answer": "제목과 시청자 질문에 대한 한 문장 최종 답",
   "hook_open_loop": "Scene 1 끝에서 아직 답하지 않고 남긴 질문 한 문장. 감추는 대상을 '이 방법' 같은 지시대명사가 아니라 구체 명사로 지목할 것",
   "promise_fulfilled": true,
@@ -1710,7 +1700,7 @@ def parse_claude_json(response, raw_filename="raw_response.txt"):
 def korean_char_count(text):
     return len(re.sub(r"[^\uAC00-\uD7A3]", "", text))
 
-def normalize_frame_header(result, strategy, thumbnail_items):
+def normalize_frame_header(result, strategy):
     raw = result.get("frame_header") or strategy.get("frame_header") or {}
     if not isinstance(raw, dict):
         raw = {}
@@ -1718,7 +1708,7 @@ def normalize_frame_header(result, strategy, thumbnail_items):
     subtitle = re.sub(r"\s+", " ", str(raw.get("subtitle") or "").strip())
 
     if not title:
-        fallback_title = thumbnail_items[0] if thumbnail_items else result.get("title") or strategy.get("title") or "브레인피프티"
+        fallback_title = result.get("title") or strategy.get("title") or "브레인피프티"
         title = re.sub(r"\s+", " ", str(fallback_title).strip())
     if not subtitle:
         subtitle = "오늘의 뇌건강"
@@ -1936,18 +1926,8 @@ def write_outputs(result, strategy, trend_context=None):
     # Bookkeeping from normalize_story_scenes; belongs in script_quality.json,
     # not in the scene file every downstream stage reads.
     full_text = "\n\n".join(s["text"] for s in scenes)
-    thumbnail_text = result.get("thumbnail_text", strategy.get("thumbnail_text", []))
-    if isinstance(thumbnail_text, str):
-        thumbnail_items = [thumbnail_text]
-    else:
-        thumbnail_items = [str(item) for item in thumbnail_text if item]
-    frame_header = normalize_frame_header(result, strategy, thumbnail_items)
+    frame_header = normalize_frame_header(result, strategy)
     description = result.get("description", "")
-    if thumbnail_items and "썸네일 문구" not in description:
-        description = (
-            f"{description.rstrip()}\n\n"
-            f"썸네일 문구 후보: {' / '.join(thumbnail_items[:2])}"
-        ).strip()
 
     with open(os.path.join(WORK_DIR, "script.txt"), "w", encoding="utf-8") as f:
         f.write(full_text)
@@ -1963,7 +1943,6 @@ def write_outputs(result, strategy, trend_context=None):
         "title":               re.sub(r"\s*#\S+", "", str(result.get("title", strategy.get("title", "")))).strip(),
         "hook_type":           result.get("hook_type", strategy.get("hook_type", "")),
         "hashtags":            result.get("hashtags", ""),
-        "thumbnail_text":      thumbnail_items,
         "frame_header":        frame_header,
         "description":         description,
         "final_answer":        result.get("final_answer", ""),

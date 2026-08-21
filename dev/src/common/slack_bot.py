@@ -952,25 +952,6 @@ def load_frame_header(job_id):
     return header
 
 
-def load_thumbnail_text(job_id):
-    """썸네일 참고 문구. Stage 0에서 이미 생성돼 있으므로(X 스레드 등 다른 단계
-    실행 여부와 무관, 추가 Claude 호출 없음) video_meta.json을 우선 읽고,
-    없으면 strategy.json으로 폴백한다."""
-    directory = work_dir(job_id)
-    for name in ("video_meta.json", "strategy.json"):
-        path = directory / name
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        phrases = [str(p).strip() for p in (data or {}).get("thumbnail_text") or [] if str(p).strip()]
-        if phrases:
-            return phrases
-    return []
-
-
 def job_topic_label(job_id):
     """Best-effort topic label for a past job folder, read straight off its
     own artifacts (no separate index to keep in sync)."""
@@ -1788,8 +1769,6 @@ THUMBNAIL_SIZE = (1080, 1920)
 
 
 def send_thumbnail_prompt(chat_id, job_id):
-    for phrase in load_thumbnail_text(job_id):
-        send_message(chat_id, f'"{phrase}"')
     send_action_message(
         chat_id,
         "썸네일 이미지를 영상 맨 앞 0.1초 프레임으로 붙일까요? "

@@ -1019,7 +1019,7 @@ def validate_planner_output(
             "emotion_curve", "series_key", "series_potential", "channel_fit",
             "family_relevance", "actionability", "narrative_fit", "topic_trust",
             "evidence_refs", "risk_flags", "search_intent", "core_message", "title",
-            "thumbnail_text", "cta_next", "main_keyword", "sub_keywords",
+            "cta_next", "main_keyword", "sub_keywords",
         }
         item = {key: raw[key] for key in allowed if key in raw}
         item.update({"candidate_id": candidate_id, "topic": topic, "risk_flags": risk_flags})

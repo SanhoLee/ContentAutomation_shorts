@@ -126,16 +126,7 @@ Service helpers:
 
 Secrets are expected in `dev/secrets.sh`. Do not commit secrets.
 
-Typical variables:
-
-```bash
-export SLACK_BOT_TOKEN="..."
-export SLACK_APP_TOKEN="..."
-export ANTHROPIC_API_KEY="..."
-export PEXELS_API_KEY="..."
-export TTS_BIN=/home/ubuntu/.local/bin/supertonic
-export CLAUDE_TIMEOUT=300
-```
+Full variable list (required + tuning): `ENVIRONMENT_CAPTURE.md` → "Recommended Lightsail Environment Variables".
 
 ## External Tools
 

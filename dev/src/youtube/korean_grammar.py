@@ -154,9 +154,6 @@ COMPOUND_TERMS = (
     "유산소 운동", "근력 운동", "지중해 식단",
 )
 
-# Sentence terminator that survives decimals: 1.29 must stay one number.
-SENTENCE_END = re.compile(r"(?<!\d)\.(?!\d)|[!?]")
-
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 
 
@@ -249,11 +246,6 @@ def split_priority(prev_word: str) -> int:
     if is_nominalizing(prev_word):
         return 1
     return 0
-
-
-def split_into_sentences(text: str) -> list[str]:
-    """Split on terminators without cutting 1.29 into 1 and 29."""
-    return [part.strip() for part in SENTENCE_END.split(text) if part and part.strip()]
 
 
 def verify_numbers_preserved(source: str, subtitles) -> bool:

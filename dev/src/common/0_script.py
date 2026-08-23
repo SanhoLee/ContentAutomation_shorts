@@ -237,17 +237,6 @@ def describe_http_error(response):
     return f"HTTP {response.status_code}: {body}"
 
 
-def is_invalid_model_error(response):
-    if response.status_code not in (400, 404):
-        return False
-    try:
-        body = response.json()
-    except Exception:
-        body = {"raw": response.text}
-    text = json.dumps(body, ensure_ascii=False).lower()
-    return "model" in text and ("not found" in text or "invalid" in text or "does not exist" in text)
-
-
 def strategy_model_candidates():
     candidates = [CLAUDE_STRATEGY_MODEL, *CLAUDE_STRATEGY_FALLBACK_MODELS, CLAUDE_SCRIPT_MODEL]
     seen = set()

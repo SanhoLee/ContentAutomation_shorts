@@ -209,13 +209,5 @@ class SeedAnchoringTests(unittest.TestCase):
             )
             self.assertEqual([i.seed for i in anchored], ["치매 콜레스테롤"])
 
-    def test_seed_item_to_dict_carries_the_anchor(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pool = self._pool(tmp)
-            item = next(i for i in pool if i.seed == "치매 고혈압")
-            self.assertEqual(item.to_dict()["anchor"], "치매")
-            self.assertEqual(item.to_dict()["base_seed"], "고혈압")
-
-
 if __name__ == "__main__":
     unittest.main()

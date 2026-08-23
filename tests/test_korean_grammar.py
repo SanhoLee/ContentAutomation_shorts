@@ -79,12 +79,6 @@ class PriorityTests(unittest.TestCase):
 
 
 class NumberTests(unittest.TestCase):
-    def test_decimals_do_not_end_a_sentence(self):
-        self.assertEqual(
-            kg.split_into_sentences("위험은 1.32배였습니다. 네 번 이상은 1.42배."),
-            ["위험은 1.32배였습니다", "네 번 이상은 1.42배"],
-        )
-
     def test_verify_numbers_preserved(self):
         self.assertTrue(kg.verify_numbers_preserved("1.32배였고", ["1.32", "배였고"]))
         self.assertFalse(kg.verify_numbers_preserved("1.32배였고", ["1 32배였고"]))

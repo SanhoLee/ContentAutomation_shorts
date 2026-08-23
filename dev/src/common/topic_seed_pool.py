@@ -45,13 +45,6 @@ class SeedItem:
     def anchored(self) -> bool:
         return self.anchor is not None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "seed": self.seed, "origin": self.origin,
-            "category_id": self.category_id, "weight": self.weight,
-            "base_seed": self.base_seed, "anchor": self.anchor,
-        }
-
 
 def _normalize(term: Any, min_len: int, max_len: int) -> str | None:
     text = " ".join(str(term).split()).strip().lower()

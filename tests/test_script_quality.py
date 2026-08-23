@@ -296,10 +296,6 @@ class ScriptQualityTests(unittest.TestCase):
         finally:
             script0._call_claude_loop = old_loop
 
-    def test_invalid_model_error_detects_404_model_not_found(self):
-        response = FakeResponse(404, {"error": {"message": "model claude-test not found"}})
-        self.assertTrue(script0.is_invalid_model_error(response))
-
     def test_validate_script_requires_final_answer(self):
         result = complete_result()
         result["final_answer"] = ""

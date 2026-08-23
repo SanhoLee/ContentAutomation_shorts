@@ -2786,6 +2786,39 @@ def handle_callback(state, callback):
             if job.get("stage") != expected_stage:
                 send_message(chat_id, f"현재 단계가 바뀌어 실행하지 않았습니다. 현재 단계: {job.get('stage')}")
                 return
+            if expected_stage == "await_script_approval":
+                # auto-finish는 job["mode"]를 MODE_AUTO로 바꿔버리는데
+                # x_thread_confirm은 MODE_AUTO 게이트 목록에 없어 조용히
+                # 건너뛰어진다. 대본을 방금 사람이 직접 승인한 시점이므로
+                # x_thread_confirm의 원래 취지(사람이 대본을 읽고 판단)에는
+                # 맞다 -- 그래서 이 진입점에서만 한 번 더 물어보고 넘어간다.
+                send_action_message(
+                    chat_id,
+                    "대본은 자동 승인하고 넘어갑니다. 이 대본으로 X 스레드용 콘텐츠도 만들까요? "
+                    "'아니오'를 선택하면 X 콘텐츠 제작 API 호출 없이 쇼츠만 끝까지 진행합니다.",
+                    [[button("예 - X 콘텐츠도 제작", f"auto_finish_x_thread_yes:{expected_stage}"),
+                      button("아니오 - 쇼츠만 진행", f"auto_finish_x_thread_no:{expected_stage}")]],
+                )
+            else:
+                start_background_task(state, chat_id, job, "끝까지 자동 처리", lambda: run_remaining_to_upload(chat_id, job))
+        elif data.startswith("auto_finish_x_thread_yes:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"현재 단계가 바뀌어 실행하지 않았습니다. 현재 단계: {job.get('stage')}")
+                return
+            start_background_task(state, chat_id, job, "끝까지 자동 처리", lambda: run_remaining_to_upload(chat_id, job))
+        elif data.startswith("auto_finish_x_thread_no:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"현재 단계가 바뀌어 실행하지 않았습니다. 현재 단계: {job.get('stage')}")
+                return
+            job_id = job.get("job_id")
+            if not job_id:
+                send_message(chat_id, "진행 중인 작업이 없습니다.")
+                return
+            # x_thread.sh / x_post.sh 둘 다 이 마커를 실행 전에 확인하므로,
+            # 백그라운드 작업이 시작되기 전에 먼저 만들어둬야 한다.
+            (work_dir(job_id) / "x_thread_skip").touch()
             start_background_task(state, chat_id, job, "끝까지 자동 처리", lambda: run_remaining_to_upload(chat_id, job))
         elif data == "proceed_no_pubmed":
             start_background_task(state, chat_id, job, "근거 부족 상태로 계속", lambda: handle_proceed(chat_id, job))

@@ -627,6 +627,58 @@ class SlackBotTests(unittest.TestCase):
             slack_bot.start_background_task = old_start_background_task
             slack_bot.save_state = old_save_state
 
+    def test_auto_finish_from_script_approval_confirms_x_thread(self):
+        # auto-finish flips job["mode"] to MODE_AUTO, and x_thread_confirm
+        # isn't in MODE_AUTO's gate list -- so without this interstitial the
+        # gate silently never fires even though a human just approved the
+        # script it depends on. Only this entry point (script_review screen)
+        # needs it; every other auto_finish stage is already past x_thread.
+        tmp = tempfile.TemporaryDirectory()
+        job_dir = Path(tmp.name)
+        state = {"chats": {"C1": {"job_id": "job-1", "topic": "테스트", "stage": "await_script_approval"}}}
+        confirmations, started = [], []
+        old_work_dir = slack_bot.work_dir
+        old_send_action_message = slack_bot.send_action_message
+        old_start_background_task = slack_bot.start_background_task
+        old_save_state = slack_bot.save_state
+        try:
+            slack_bot.work_dir = lambda job_id: job_dir
+            slack_bot.send_action_message = lambda channel_id, text, rows: confirmations.append((text, rows))
+            slack_bot.start_background_task = lambda *args: started.append(args)
+            slack_bot.save_state = lambda state: None
+
+            callback = {"message": {"chat": {"id": "C1"}}, "data": "auto_finish_confirm:await_script_approval"}
+            slack_bot.handle_callback(state, callback)
+
+            self.assertFalse(started)
+            text, rows = confirmations[-1]
+            self.assertIn("X 스레드", text)
+            callbacks = {item["callback_data"] for row in rows for item in row}
+            self.assertIn("auto_finish_x_thread_yes:await_script_approval", callbacks)
+            self.assertIn("auto_finish_x_thread_no:await_script_approval", callbacks)
+
+            # "아니오": x_thread.sh/x_post.sh가 실행 전에 이 마커를 보므로,
+            # 백그라운드 작업이 시작되기 전에 먼저 존재해야 한다.
+            callback["data"] = "auto_finish_x_thread_no:await_script_approval"
+            slack_bot.handle_callback(state, callback)
+            self.assertTrue((job_dir / "x_thread_skip").exists())
+            self.assertTrue(started)
+
+            started.clear()
+            (job_dir / "x_thread_skip").unlink()
+
+            # "예": 마커를 남기지 않고 그대로 진행한다.
+            callback["data"] = "auto_finish_x_thread_yes:await_script_approval"
+            slack_bot.handle_callback(state, callback)
+            self.assertFalse((job_dir / "x_thread_skip").exists())
+            self.assertTrue(started)
+        finally:
+            slack_bot.work_dir = old_work_dir
+            slack_bot.send_action_message = old_send_action_message
+            slack_bot.start_background_task = old_start_background_task
+            slack_bot.save_state = old_save_state
+            tmp.cleanup()
+
 
 class MaybePostXThreadTests(unittest.TestCase):
     """Auto-posting after upload must never mask the pipeline's own result.

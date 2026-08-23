@@ -1295,6 +1295,7 @@ def send_gate(chat_id, job, gate):
     """Dispatch a pipeline_flow gate to the message that presents it."""
     senders = {
         "script_review": send_script,
+        "x_thread_confirm": send_x_thread_confirm,
         "thumbnail_intake": send_thumbnail_prompt,
         "x_photo_intake": send_x_photo_prompt,
         "final_confirm": send_final_confirm,
@@ -1846,6 +1847,20 @@ def resume_after_thumbnail(chat_id, job):
         approve_review_gate(chat_id, job)
     else:
         run_next_stage(chat_id, job)
+
+
+def send_x_thread_confirm(chat_id, job_id):
+    """x_thread_confirm 게이트 화면. script_review 승인 직후, scene_visuals/x_thread가
+    돌기 전에 뜬다 -- 방금 승인한 대본을 근거로 판단하는 것이므로 대본을 다시
+    보여주지 않는다. "아니오"는 x_thread_skip 마커를 남기는 x_thread_no: 콜백으로,
+    "예"는 기존 범용 approve: 콜백으로 그대로 처리한다."""
+    send_action_message(
+        chat_id,
+        "이 대본으로 X 스레드용 콘텐츠도 만들까요? '아니오'를 선택하면 X 콘텐츠 제작 "
+        "API 호출 없이 쇼츠만 진행합니다.",
+        [[button("예 - X 콘텐츠도 제작", "approve:await_x_thread_confirm"),
+          button("아니오 - 쇼츠만 진행", "x_thread_no:await_x_thread_confirm")]],
+    )
 
 
 def send_x_photo_prompt(chat_id, job_id):
@@ -2664,6 +2679,13 @@ def handle_callback(state, callback):
                 if job_id:
                     for stale in work_dir(job_id).glob("thumbnail.*"):
                         stale.unlink(missing_ok=True)
+            elif expected_stage == "await_x_thread_confirm":
+                # A rerun/rework can bring the job back through script_review;
+                # a leftover x_thread_skip marker from an earlier "아니오"
+                # must not silently override this fresh "예".
+                job_id = job.get("job_id")
+                if job_id:
+                    (work_dir(job_id) / "x_thread_skip").unlink(missing_ok=True)
             # Any job with a mode is pipeline_flow-driven (review or auto --
             # auto only ever parks at thumbnail_intake); a mode-less job is
             # the legacy /run step chain, which never touches pipeline_flow.
@@ -2699,6 +2721,24 @@ def handle_callback(state, callback):
             job["x_photo_target"] = str(work_dir(job_id) / x_photo_card.PHOTO_FILENAME)
             job["x_photo_gate"] = True
             send_message(chat_id, "X 스레드 첫 트윗에 붙일 이미지를 이 스레드에 첨부해 주세요.")
+        elif data.startswith("x_thread_no:"):
+            expected_stage = data.split(":", 1)[1]
+            if job.get("stage") != expected_stage:
+                send_message(chat_id, f"이전 단계 버튼입니다. 현재 단계는 {job.get('stage')}입니다.")
+                return
+            job_id = job.get("job_id")
+            if not job_id:
+                send_message(chat_id, "진행 중인 작업이 없습니다.")
+                return
+            # x_thread.sh / x_post.sh both check for this marker before doing
+            # any work, so it must exist before the gate clears -- otherwise
+            # a fast advance() could run x_thread before the file lands.
+            (work_dir(job_id) / "x_thread_skip").touch()
+            if job.get("mode"):
+                start_background_task(state, chat_id, job, "승인 후 진행",
+                                      lambda: approve_review_gate(chat_id, job))
+            else:
+                start_background_task(state, chat_id, job, "현재 단계 실행", lambda: run_next_stage(chat_id, job))
         elif data.startswith("review_mode:"):
             expected_stage = data.split(":", 1)[1]
             if job.get("stage") != expected_stage:

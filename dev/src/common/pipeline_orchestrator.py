@@ -28,6 +28,7 @@ from stage_guard import media_duration_seconds  # noqa: F401  (re-exported)
 # of its edit affordances (본문 수정 / 타이틀 수정) keep working unchanged.
 GATE_STAGES = {
     "script_review": "await_script_approval",
+    "x_thread_confirm": "await_x_thread_confirm",
     "thumbnail_intake": "await_thumbnail_intake",
     "x_photo_intake": "await_x_photo_intake",
     "final_confirm": "await_final_confirm",
@@ -39,6 +40,7 @@ GATE_STAGES = {
 # wherever a gated run stopped.
 BOT_STAGE_TO_FLOW = {
     "await_script_approval": "script",
+    "await_x_thread_confirm": "script",
     "await_tts_approval": "tts",
     "await_caption_approval": "caption",
     "await_broll_approval": "broll",

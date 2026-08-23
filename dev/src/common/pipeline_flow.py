@@ -49,7 +49,11 @@ STAGES = (
     Stage(
         name="script",
         command=("sh/common/0_script.sh",),
-        gates=("script_review",),
+        # x_thread_confirm rides along right after script_review so the
+        # operator decides whether to spend an X-thread API call while the
+        # script is still fresh in front of them -- before scene_visuals or
+        # x_thread have run at all.
+        gates=("script_review", "x_thread_confirm"),
     ),
     Stage(
         # Placed after script's gate on purpose: advance() parks *after* a
@@ -129,7 +133,12 @@ MODE_GATES = {
     # exception the operator asked for: even a fully unattended run stops
     # here rather than shipping a video nobody had a chance to brand.
     job_state.MODE_AUTO: frozenset({"thumbnail_intake", "x_photo_intake"}),
-    job_state.MODE_REVIEW: frozenset({"script_review", "thumbnail_intake", "x_photo_intake", "final_confirm"}),
+    # x_thread_confirm depends on a human having actually read the script,
+    # which auto mode never does -- script_review itself isn't forced there
+    # either, so this stays paired with it instead of joining the auto set.
+    job_state.MODE_REVIEW: frozenset({
+        "script_review", "x_thread_confirm", "thumbnail_intake", "x_photo_intake", "final_confirm",
+    }),
     job_state.MODE_FULL_GATE: frozenset(ALL_GATES),
 }
 

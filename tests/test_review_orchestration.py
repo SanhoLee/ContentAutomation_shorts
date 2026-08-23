@@ -93,6 +93,7 @@ class ReviewOrchestrationTests(unittest.TestCase):
         self.assertEqual(argv[-1], "텃밭 가꾸기와 치매")
 
         po.approve_review_gate(self.bot, 1, self.job)  # clears script_review
+        po.approve_review_gate(self.bot, 1, self.job)  # clears x_thread_confirm
         po.approve_review_gate(self.bot, 1, self.job)  # clears x_photo_intake
         po.approve_review_gate(self.bot, 1, self.job)  # clears thumbnail_intake, runs tts
         tts_argv = [argv for argv, _ in self.bot.commands if "1_tts.sh" in argv[0]][0]
@@ -104,23 +105,33 @@ class ReviewOrchestrationTests(unittest.TestCase):
         argv, _ = self.bot.commands[0]
         self.assertEqual(argv[-2:], ["--topic-json", "/work/topic_plan.json"])
 
-    def test_approval_stops_at_x_photo_intake_before_thumbnail(self):
+    def test_approval_stops_at_x_thread_confirm_before_x_photo(self):
         po.run_review_pipeline(self.bot, 1, self.job)
+        result = po.approve_review_gate(self.bot, 1, self.job)
+        self.assertEqual(result.gate, "x_thread_confirm")
+        self.assertEqual(self.job["stage"], "await_x_thread_confirm")
+        self.assertNotIn("2_render.sh", self.bot.scripts_run)
+
+    def test_second_approval_stops_at_x_photo_intake_before_thumbnail(self):
+        po.run_review_pipeline(self.bot, 1, self.job)
+        po.approve_review_gate(self.bot, 1, self.job)
         result = po.approve_review_gate(self.bot, 1, self.job)
         self.assertEqual(result.gate, "x_photo_intake")
         self.assertEqual(self.job["stage"], "await_x_photo_intake")
         self.assertNotIn("2_render.sh", self.bot.scripts_run)
 
-    def test_second_approval_stops_at_thumbnail_intake_before_render(self):
+    def test_third_approval_stops_at_thumbnail_intake_before_render(self):
         po.run_review_pipeline(self.bot, 1, self.job)
+        po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         result = po.approve_review_gate(self.bot, 1, self.job)
         self.assertEqual(result.gate, "thumbnail_intake")
         self.assertEqual(self.job["stage"], "await_thumbnail_intake")
         self.assertNotIn("2_render.sh", self.bot.scripts_run)
 
-    def test_third_approval_runs_to_the_final_gate_without_uploading(self):
+    def test_fourth_approval_runs_to_the_final_gate_without_uploading(self):
         po.run_review_pipeline(self.bot, 1, self.job)
+        po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         result = po.approve_review_gate(self.bot, 1, self.job)
@@ -128,8 +139,9 @@ class ReviewOrchestrationTests(unittest.TestCase):
         self.assertEqual(self.job["stage"], "await_final_confirm")
         self.assertNotIn("3_upload.sh", self.bot.scripts_run)
 
-    def test_fourth_approval_uploads_and_finishes(self):
+    def test_fifth_approval_uploads_and_finishes(self):
         po.run_review_pipeline(self.bot, 1, self.job)
+        po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
@@ -139,21 +151,23 @@ class ReviewOrchestrationTests(unittest.TestCase):
         # x_post (no gate of its own) runs immediately after upload.
         self.assertEqual(self.bot.scripts_run[-2:], ["3_upload.sh", "x_post.sh"])
 
-    def test_the_human_sees_exactly_four_gates(self):
+    def test_the_human_sees_exactly_five_gates(self):
         po.run_review_pipeline(self.bot, 1, self.job)
+        po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)
         self.assertEqual(
             self.bot.gates,
-            ["script_review", "x_photo_intake", "thumbnail_intake", "final_confirm"],
+            ["script_review", "x_thread_confirm", "x_photo_intake", "thumbnail_intake", "final_confirm"],
         )
 
     def test_failure_reports_the_stage_and_reason(self):
         self.bot.fail_stages = {"1_caption.sh"}
         po.run_review_pipeline(self.bot, 1, self.job)
-        po.approve_review_gate(self.bot, 1, self.job)  # clears script_review, stops at x_photo_intake
+        po.approve_review_gate(self.bot, 1, self.job)  # clears script_review, stops at x_thread_confirm
+        po.approve_review_gate(self.bot, 1, self.job)  # clears x_thread_confirm, stops at x_photo_intake
         po.approve_review_gate(self.bot, 1, self.job)  # clears x_photo_intake, stops at thumbnail_intake
         result = po.approve_review_gate(self.bot, 1, self.job)  # clears thumbnail_intake, caption fails
         self.assertEqual(result.status, pipeline_flow.STATUS_FAILED)
@@ -165,7 +179,7 @@ class ReviewOrchestrationTests(unittest.TestCase):
         job = {"job_id": "J2", "topic": "수면과 기억력"}
         bot = FakeBot(self._tmp.name)
         result = po.switch_to_review(bot, 1, job)
-        self.assertEqual(result.gate, "x_photo_intake")
+        self.assertEqual(result.gate, "x_thread_confirm")
         self.assertNotIn("0_script.sh", bot.scripts_run)
 
     def test_mode_is_persisted_so_another_process_can_resume(self):
@@ -179,6 +193,7 @@ class ReviewOrchestrationTests(unittest.TestCase):
         # A 1080p render is long; no ticks reads as a hang.
         po.run_review_pipeline(self.bot, 1, self.job)
         po.approve_review_gate(self.bot, 1, self.job)  # clears script_review
+        po.approve_review_gate(self.bot, 1, self.job)  # clears x_thread_confirm
         po.approve_review_gate(self.bot, 1, self.job)  # clears x_photo_intake
         po.approve_review_gate(self.bot, 1, self.job)  # clears thumbnail_intake, runs render
         self.assertTrue(self.bot.render_progress_started)
@@ -202,7 +217,8 @@ class ReviewOrchestrationTests(unittest.TestCase):
         bot.run_command = cancelling
         job = {"job_id": "J3", "topic": "취소 테스트"}
         po.run_review_pipeline(bot, 1, job)
-        po.approve_review_gate(bot, 1, job)  # clears script_review, stops at x_photo_intake
+        po.approve_review_gate(bot, 1, job)  # clears script_review, stops at x_thread_confirm
+        po.approve_review_gate(bot, 1, job)  # clears x_thread_confirm, stops at x_photo_intake
         po.approve_review_gate(bot, 1, job)  # clears x_photo_intake, stops at thumbnail_intake
         with self.assertRaises(Cancelled):
             po.approve_review_gate(bot, 1, job)  # clears thumbnail_intake, runs tts -> cancelled

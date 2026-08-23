@@ -8,6 +8,11 @@
 # thread goes out on its own the moment the operator attaches one.
 source "$(dirname "$0")/../../config.sh"
 
+if [ -f "$WORK_DIR/x_thread_skip" ]; then
+    echo "건너뜀: 운영자가 X 콘텐츠를 만들지 않기로 했습니다."
+    exit 0
+fi
+
 echo "X 게시 중..."
 python3 "$SRC_DIR/common/adapters/x_poster.py" --job-id "$JOB_ID"
 status=$?

@@ -106,10 +106,11 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(pipeline_flow.STAGES_BY_NAME["broll"].gates, ("broll_review", "render_config"))
         self.assertEqual(pipeline_flow.STAGES_BY_NAME["x_post"].gates, ())
 
-    def test_review_mode_honours_exactly_four_gates(self):
+    def test_review_mode_honours_exactly_five_gates(self):
         gates = pipeline_flow.gates_for_mode(job_state.MODE_REVIEW)
         self.assertEqual(
-            gates, {"script_review", "x_photo_intake", "thumbnail_intake", "final_confirm"}
+            gates,
+            {"script_review", "x_thread_confirm", "x_photo_intake", "thumbnail_intake", "final_confirm"},
         )
 
     def test_auto_mode_honours_only_the_two_intake_gates(self):
@@ -187,20 +188,36 @@ class ReviewModeTests(PipelineFlowTestCase):
         self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
         self.assertEqual(runner.stages, ["script"])  # nothing new ran
 
-    def test_after_script_approval_stops_at_x_photo_intake(self):
+    def test_after_script_approval_stops_at_x_thread_confirm(self):
         runner = FakeRunner()
         self.advance(runner, job_state.MODE_REVIEW)
         pipeline_flow.approve(self.work_dir)
         result = self.advance(runner, job_state.MODE_REVIEW)
         self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
+        self.assertEqual(result.gate, "x_thread_confirm")
+        # x_thread_confirm rides the script gate's own list, so it parks
+        # before scene_visuals/x_thread ever run -- the whole point is
+        # deciding whether x_thread's API call happens at all.
+        self.assertEqual(runner.stages, ["script"])
+
+    def test_after_x_thread_confirm_stops_at_x_photo_intake(self):
+        runner = FakeRunner()
+        self.advance(runner, job_state.MODE_REVIEW)
+        pipeline_flow.approve(self.work_dir)
+        self.advance(runner, job_state.MODE_REVIEW)
+        pipeline_flow.approve(self.work_dir)
+        result = self.advance(runner, job_state.MODE_REVIEW)
+        self.assertEqual(result.status, pipeline_flow.STATUS_GATE)
         self.assertEqual(result.gate, "x_photo_intake")
-        # scene_visuals and x_thread run right after the script gate (neither
-        # has a gate of its own before x_thread's), so both see the approved
-        # text by the time x_photo_intake asks about the lead photo.
+        # scene_visuals and x_thread only run once x_thread_confirm clears,
+        # so both see the approved text by the time x_photo_intake asks
+        # about the lead photo.
         self.assertEqual(runner.stages, ["script", "scene_visuals", "x_thread"])
 
     def test_after_x_photo_intake_stops_at_thumbnail_intake_before_render(self):
         runner = FakeRunner()
+        self.advance(runner, job_state.MODE_REVIEW)
+        pipeline_flow.approve(self.work_dir)
         self.advance(runner, job_state.MODE_REVIEW)
         pipeline_flow.approve(self.work_dir)
         self.advance(runner, job_state.MODE_REVIEW)
@@ -214,6 +231,8 @@ class ReviewModeTests(PipelineFlowTestCase):
 
     def test_after_thumbnail_intake_runs_through_to_the_final_gate(self):
         runner = FakeRunner()
+        self.advance(runner, job_state.MODE_REVIEW)
+        pipeline_flow.approve(self.work_dir)
         self.advance(runner, job_state.MODE_REVIEW)
         pipeline_flow.approve(self.work_dir)
         self.advance(runner, job_state.MODE_REVIEW)
@@ -234,6 +253,8 @@ class ReviewModeTests(PipelineFlowTestCase):
         self.advance(runner, job_state.MODE_REVIEW)
         pipeline_flow.approve(self.work_dir)
         self.advance(runner, job_state.MODE_REVIEW)
+        pipeline_flow.approve(self.work_dir)
+        self.advance(runner, job_state.MODE_REVIEW)
         self.assertNotIn("upload", runner.stages)
 
         pipeline_flow.approve(self.work_dir)
@@ -242,7 +263,7 @@ class ReviewModeTests(PipelineFlowTestCase):
         # x_post (no gate) runs immediately after upload in the same pass.
         self.assertEqual(runner.stages[-2:], ["upload", "x_post"])
 
-    def test_a_human_intervenes_exactly_four_times(self):
+    def test_a_human_intervenes_exactly_five_times(self):
         runner = FakeRunner()
         gates = []
         result = self.advance(runner, job_state.MODE_REVIEW)
@@ -251,7 +272,8 @@ class ReviewModeTests(PipelineFlowTestCase):
             pipeline_flow.approve(self.work_dir)
             result = self.advance(runner, job_state.MODE_REVIEW)
         self.assertEqual(
-            gates, ["script_review", "x_photo_intake", "thumbnail_intake", "final_confirm"]
+            gates,
+            ["script_review", "x_thread_confirm", "x_photo_intake", "thumbnail_intake", "final_confirm"],
         )
         self.assertEqual(result.status, pipeline_flow.STATUS_DONE)
 
@@ -267,7 +289,7 @@ class FullGateModeTests(PipelineFlowTestCase):
             result = self.advance(runner, job_state.MODE_FULL_GATE)
         self.assertEqual(
             gates,
-            ["script_review", "x_photo_intake", "thumbnail_intake", "tts_review",
+            ["script_review", "x_thread_confirm", "x_photo_intake", "thumbnail_intake", "tts_review",
              "caption_review", "broll_review", "render_config", "final_confirm"],
         )
         self.assertEqual(runner.stages, list(pipeline_flow.STAGE_NAMES))
@@ -361,7 +383,7 @@ class ResumeTests(PipelineFlowTestCase):
         pipeline_flow.approve(self.work_dir)
         later_runner = FakeRunner()
         result = pipeline_flow.advance(self.work_dir, BASE_DIR, later_runner)
-        self.assertEqual(result.gate, "x_photo_intake")
+        self.assertEqual(result.gate, "x_thread_confirm")
         self.assertNotIn("script", later_runner.stages)
 
     def test_mode_defaults_to_the_stored_one(self):
